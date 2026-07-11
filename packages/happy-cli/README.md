@@ -6,11 +6,17 @@ Free. Open source. Code anywhere.
 
 ## Installation
 
+This fork ships on npm as **`@sokdak/happy`** (the upstream package is `happy`):
+
 ```bash
-npm install -g happy
+npm install -g @sokdak/happy
 ```
 
-> Migrated from the `happy-coder` package. Thanks to [@franciscop](https://github.com/franciscop) for donating the `happy` package name!
+Both packages install the same `happy` / `happy-mcp` binaries, so install one or the
+other — not both.
+
+> Upstream installs use `npm install -g happy` (migrated from the `happy-coder` package.
+> Thanks to [@franciscop](https://github.com/franciscop) for donating the `happy` package name!)
 
 ## Usage
 
