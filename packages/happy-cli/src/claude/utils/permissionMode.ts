@@ -25,6 +25,30 @@ export function mapToClaudeMode(mode: PermissionMode): ClaudeSdkPermissionMode {
     return codexToClaudeMap[mode] ?? (mode as ClaudeSdkPermissionMode);
 }
 
+const DANGEROUSLY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
+
+/**
+ * Apply Happy's permission mode to the arguments used by local Claude Code.
+ * The Happy-only `yolo` alias is normalized through `mapToClaudeMode`, keeping
+ * local and remote permission behavior aligned without altering other modes.
+ */
+export function applyClaudePermissionModeToArgs(
+    mode: PermissionMode | undefined,
+    claudeArgs?: readonly string[],
+): string[] | undefined {
+    const args = claudeArgs ? [...claudeArgs] : [];
+
+    if (
+        mode !== undefined
+        && mapToClaudeMode(mode) === 'bypassPermissions'
+        && !args.includes(DANGEROUSLY_SKIP_PERMISSIONS_FLAG)
+    ) {
+        args.push(DANGEROUSLY_SKIP_PERMISSIONS_FLAG);
+    }
+
+    return args.length > 0 ? args : undefined;
+}
+
 const VALID_PERMISSION_MODES: readonly PermissionMode[] = [
     'default',
     'acceptEdits',
@@ -81,7 +105,7 @@ export function resolveInitialClaudePermissionMode(
     optionMode: PermissionMode | undefined,
     claudeArgs?: string[],
 ): PermissionMode | undefined {
-    if (claudeArgs?.includes('--dangerously-skip-permissions')) {
+    if (claudeArgs?.includes(DANGEROUSLY_SKIP_PERMISSIONS_FLAG)) {
         return 'bypassPermissions';
     }
     return extractPermissionModeFromClaudeArgs(claudeArgs) ?? optionMode;
