@@ -16,7 +16,7 @@ You are the release operator for the Happy monorepo. When invoked, walk the user
 
 Ask which component to release:
 
-- **CLI** — npm package `happy`
+- **CLI** — npm package `@sokdak/happy` (this fork; upstream owns `happy`)
 - **Mobile** — Expo/EAS builds for iOS + Android
 - **Web** — Docker image + K8s deploy via TeamCity
 - **Server** — Docker image + K8s deploy via TeamCity
@@ -29,9 +29,33 @@ Present these as options. Wait for the user to pick.
 ## CLI Release
 
     Package:     packages/happy-cli
-    npm name:    happy
+    npm name:    @sokdak/happy (this fork) — in-tree name stays `happy`; upstream owns `happy` on npm
     Registry:    https://registry.npmjs.org
-    Git tags:    cli-{version}
+    Git tags:    cli-{version} (upstream); npm-publish/{version} triggers this fork's CI publish
+
+### Fork publish path (sokdak/happy → @sokdak/happy)
+
+This fork must NOT publish `happy` — the upstream slopus maintainers own that npm
+package. The fork's CLI ships as the scoped package **`@sokdak/happy`**
+(install: `npm i -g @sokdak/happy`); betas go to the default `latest` dist-tag.
+
+Publishing runs in GitHub Actions (`.github/workflows/publish-cli.yml`), NOT locally:
+the prepublishOnly unit-test gate contains POSIX-path/binary tests that fail on
+Windows hosts (they pass on the Linux runner).
+
+1. Bump `packages/happy-cli/package.json` version (commit: `Release version X.Y.Z`).
+2. Push a tag `npm-publish/X.Y.Z`. The workflow checks out that commit, renames the
+   package to `@sokdak/happy` + sets `publishConfig.access=public` (the in-tree name
+   stays `happy`), then runs `pnpm publish --no-git-checks`.
+3. Auth is the `NPM_TOKEN` repo secret — use an npm automation/granular publish
+   token; a 2FA-linked token fails at upload with `EOTP` even though auth succeeds.
+   Without the secret the workflow falls back to `pnpm publish --dry-run` (full
+   build + unit tests + pack, no upload) so the pipeline can be validated first.
+4. Verify: `npm view @sokdak/happy dist-tags`, then `npm i -g @sokdak/happy@latest`
+   and confirm the version stamp inside the installed `dist/` bundle.
+
+The remainder of this section documents the upstream (slopus/happy) release flow;
+its version-bake, `--ignore-scripts`, and `pnpm publish` warnings all still apply.
 
 Tag namespace note:
 - CLI releases use `cli-X.Y.Z`
