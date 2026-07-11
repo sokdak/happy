@@ -7,6 +7,7 @@ import { layout } from '@/components/layout';
 import {
     getAvailableModels,
     getAvailablePermissionModes,
+    getDefaultEffortKey,
     getEffortLevelsForModel,
     resolveCurrentOption,
     EffortLevel,
@@ -484,8 +485,9 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
         resolveCurrentOption(availableEffortLevels, [
             session.effortLevel,
             effectiveAgentDefaults.effortLevel,
+            getDefaultEffortKey(flavor),
         ])
-    ), [availableEffortLevels, session.effortLevel, effectiveAgentDefaults.effortLevel]);
+    ), [availableEffortLevels, session.effortLevel, effectiveAgentDefaults.effortLevel, flavor]);
 
     const sessionStatus = useSessionStatus(session);
     const sessionUsage = useSessionUsage(sessionId);
@@ -556,9 +558,8 @@ function SessionViewLoaded({ sessionId, session }: { sessionId: string, session:
     }, [sessionId, expImageUpload, selectedImages, clearImages]);
 
     const handleAbort = React.useCallback(() => {
-        // Mode picks live in synced metadata — clear them there, otherwise the
-        // next inbound metadata update resurrects them (#1492)
-        sessionSetAgentModes(sessionId, { permissionMode: null, modelMode: null, effortLevel: null });
+        // Abort stops only the active turn. Permission, model, and effort are
+        // session-level choices and must survive the interruption.
         sessionAbort(sessionId);
     }, [sessionId]);
 

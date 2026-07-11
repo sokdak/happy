@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { applySandboxPermissionPolicy, extractPermissionModeFromClaudeArgs, mapToClaudeMode, resolveInitialClaudePermissionMode, resolveRemoteClaudePermissionMode } from './permissionMode';
+import {
+    applyClaudePermissionModeToArgs,
+    applySandboxPermissionPolicy,
+    extractPermissionModeFromClaudeArgs,
+    mapToClaudeMode,
+    resolveInitialClaudePermissionMode,
+    resolveRemoteClaudePermissionMode,
+} from './permissionMode';
 import type { PermissionMode } from '@/api/types';
 
 describe('mapToClaudeMode', () => {
@@ -49,6 +56,42 @@ describe('mapToClaudeMode', () => {
                 expect(validClaudeModes).toContain(result);
             });
         });
+    });
+});
+
+describe('applyClaudePermissionModeToArgs', () => {
+    it.each<PermissionMode>(['yolo', 'bypassPermissions'])(
+        'adds --dangerously-skip-permissions for %s mode',
+        (mode) => {
+            expect(applyClaudePermissionModeToArgs(mode, ['--verbose'])).toEqual([
+                '--verbose',
+                '--dangerously-skip-permissions',
+            ]);
+        },
+    );
+
+    it('does not duplicate an existing --dangerously-skip-permissions flag', () => {
+        expect(applyClaudePermissionModeToArgs('yolo', [
+            '--dangerously-skip-permissions',
+            '--verbose',
+        ])).toEqual([
+            '--dangerously-skip-permissions',
+            '--verbose',
+        ]);
+    });
+
+    it.each<PermissionMode>(['default', 'acceptEdits', 'plan', 'read-only', 'safe-yolo'])(
+        'leaves local args unchanged for %s mode',
+        (mode) => {
+            const args = ['--verbose'];
+
+            expect(applyClaudePermissionModeToArgs(mode, args)).toEqual(args);
+            expect(args).toEqual(['--verbose']);
+        },
+    );
+
+    it('keeps absent args absent for modes that do not bypass permissions', () => {
+        expect(applyClaudePermissionModeToArgs('default')).toBeUndefined();
     });
 });
 

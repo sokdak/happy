@@ -9,6 +9,7 @@ import {
     getDefaultEffortKey,
     getDefaultModelKey,
     getDefaultPermissionModeKey,
+    getEffortLevelsForModel,
     mapMetadataOptions,
     resolveCurrentOption,
 } from './modelModeOptions';
@@ -51,12 +52,14 @@ describe('modelModeOptions', () => {
         expect(models[1].name).toBe('gpt-5.6 sol');
     });
 
-    it('builds claude model fallbacks with fable 5', () => {
+    it('builds claude model fallbacks with aliased and 1M opus/fable variants', () => {
         const models = getClaudeModelModes();
         expect(models.map((model) => model.key)).toEqual([
             'default',
             'opus',
+            'claude-opus-4-8[1m]',
             'fable',
+            'claude-fable-5[1m]',
             'sonnet',
             'haiku',
         ]);
@@ -65,6 +68,34 @@ describe('modelModeOptions', () => {
             name: 'fable 5',
             description: null,
         });
+        expect(models.find((model) => model.key === 'claude-opus-4-8[1m]')).toEqual({
+            key: 'claude-opus-4-8[1m]',
+            name: 'opus 4.8 (1M)',
+            description: null,
+        });
+        expect(models.find((model) => model.key === 'claude-fable-5[1m]')).toEqual({
+            key: 'claude-fable-5[1m]',
+            name: 'fable 5 (1M)',
+            description: null,
+        });
+    });
+
+    it('gates claude effort levels by selected model capabilities', () => {
+        const effortKeys = (modelKey: string) => (
+            getEffortLevelsForModel('claude', modelKey).map((level) => level.key)
+        );
+
+        const fullEffort = ['low', 'medium', 'high', 'xhigh', 'max'];
+        expect(effortKeys('opus')).toEqual(fullEffort);
+        expect(effortKeys('claude-opus-4-8[1m]')).toEqual(fullEffort);
+        expect(effortKeys('fable')).toEqual(fullEffort);
+        expect(effortKeys('claude-fable-5[1m]')).toEqual(fullEffort);
+        expect(effortKeys('claude-opus-4-7')).toEqual(fullEffort);
+        expect(effortKeys('sonnet')).toEqual(['low', 'medium', 'high', 'max']);
+        expect(effortKeys('claude-opus-4-6')).toEqual(['low', 'medium', 'high', 'max']);
+        expect(effortKeys('claude-opus-4-5')).toEqual(['low', 'medium', 'high']);
+        expect(effortKeys('haiku')).toEqual([]);
+        expect(effortKeys('custom-gateway-model')).toEqual(fullEffort);
     });
 
     it('uses code defaults for agent defaults', () => {
