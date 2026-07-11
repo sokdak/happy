@@ -101,7 +101,9 @@ export function getClaudeModelModes(): ModelMode[] {
         // while the full ID passes straight through to the API.
         { key: 'claude-opus-5', name: 'opus 5', description: null },
         { key: 'opus', name: 'opus 4.8', description: null },
+        { key: 'claude-opus-4-8[1m]', name: 'opus 4.8 (1M)', description: null },
         { key: 'fable', name: 'fable 5', description: null },
+        { key: 'claude-fable-5[1m]', name: 'fable 5 (1M)', description: null },
         { key: 'sonnet', name: 'sonnet 4.6', description: null },
         { key: 'haiku', name: 'haiku 4.5', description: null },
     ];
@@ -359,6 +361,42 @@ export function getDefaultEffortKey(flavor: AgentFlavor): string | null {
     return getCodeAgentDefaults(flavor).effortLevel;
 }
 
+const CLAUDE_EFFORT_WITHOUT_XHIGH: EffortLevel[] = [
+    { key: 'low', name: 'low' },
+    { key: 'medium', name: 'medium' },
+    { key: 'high', name: 'high' },
+    { key: 'max', name: 'max' },
+];
+
+const CLAUDE_EFFORT_BASIC: EffortLevel[] = [
+    { key: 'low', name: 'low' },
+    { key: 'medium', name: 'medium' },
+    { key: 'high', name: 'high' },
+];
+
+function getClaudeEffortLevelsForModel(modelKey: string): EffortLevel[] {
+    const normalizedModelKey = modelKey.toLowerCase();
+
+    // Haiku 4.5 does not accept an effort parameter.
+    if (normalizedModelKey.includes('haiku')) {
+        return [];
+    }
+
+    // Sonnet 4.6 and Opus 4.6 support max, but not xhigh.
+    if (normalizedModelKey.includes('sonnet') || normalizedModelKey.includes('opus-4-6')) {
+        return CLAUDE_EFFORT_WITHOUT_XHIGH;
+    }
+
+    // Opus 4.5 supports neither xhigh nor max.
+    if (normalizedModelKey.includes('opus-4-5')) {
+        return CLAUDE_EFFORT_BASIC;
+    }
+
+    // The current opus/fable aliases, their 1M variants, Opus 4.7+, and
+    // unknown gateway models retain the complete SDK-supported set.
+    return getClaudeEffortLevels();
+}
+
 // Per-model effort: returns effort levels for a specific model, or empty if the model has no effort
 export function getEffortLevelsForModel(
     flavor: AgentFlavor,
@@ -371,12 +409,8 @@ export function getEffortLevelsForModel(
             name: level,
         }));
     }
-    // Claude and Codex expose effort/thought levels regardless of which
-    // specific model is picked — the same low/medium/high/max scale applies
-    // to the whole flavor (mirrors how Codex already worked, which the user
-    // asked Claude to match).
     if (flavor === 'claude') {
-        return getClaudeEffortLevels();
+        return getClaudeEffortLevelsForModel(modelKey);
     }
     if (flavor === 'codex') {
         return getCodexEffortLevels();

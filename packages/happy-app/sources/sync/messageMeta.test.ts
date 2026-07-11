@@ -113,4 +113,46 @@ describe('resolveMessageModeMeta', () => {
 
         expect(meta.effort).toBe('high');
     });
+
+    it('clears stale effort when the selected Claude model accepts no effort', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: 'haiku',
+            effortLevel: 'max',
+            metadata: { flavor: 'claude' },
+        } as any);
+
+        expect(meta).toEqual({
+            model: 'haiku',
+            effort: null,
+        });
+    });
+
+    it('normalizes an unsupported Claude effort to the supported default', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: 'sonnet',
+            effortLevel: 'xhigh',
+            metadata: { flavor: 'claude' },
+        } as any);
+
+        expect(meta).toEqual({
+            model: 'sonnet',
+            effort: 'medium',
+        });
+    });
+
+    it('preserves max effort for the Fable 1M model', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: 'claude-fable-5[1m]',
+            effortLevel: 'max',
+            metadata: { flavor: 'claude' },
+        } as any);
+
+        expect(meta).toEqual({
+            model: 'claude-fable-5[1m]',
+            effort: 'max',
+        });
+    });
 });

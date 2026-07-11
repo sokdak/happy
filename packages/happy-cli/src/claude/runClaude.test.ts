@@ -834,4 +834,50 @@ describe('runClaude remote JSONL scanner', () => {
         expect(harness.loopOptions.messageQueue.queue).toEqual([]);
         await harness.finish();
     });
+
+    it('preserves the selected permission, model, and effort after aborting a turn', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+        const userMessageHandler = harness.sessionClient.onUserMessage.mock.calls[0]?.[0];
+        if (!userMessageHandler) throw new Error('user message handler not registered');
+
+        await userMessageHandler({
+            content: { text: 'start with the large-context model' },
+            meta: {
+                model: 'claude-fable-5[1m]',
+                effort: 'max',
+                permissionMode: 'bypassPermissions',
+            },
+        });
+
+        harness.loopOptions.onAbort();
+
+        // Option responses and legacy clients may omit mode metadata. The
+        // runtime must retain the session selection instead of restarting the
+        // SDK query with its smaller launch default.
+        await userMessageHandler({
+            content: { text: 'continue with this option' },
+            meta: {},
+        });
+
+        expect(harness.loopOptions.messageQueue.queue).toEqual([
+            expect.objectContaining({
+                message: 'start with the large-context model',
+                mode: expect.objectContaining({
+                    permissionMode: 'bypassPermissions',
+                    model: 'claude-fable-5[1m]',
+                    effort: 'max',
+                }),
+            }),
+            expect.objectContaining({
+                message: 'continue with this option',
+                mode: expect.objectContaining({
+                    permissionMode: 'bypassPermissions',
+                    model: 'claude-fable-5[1m]',
+                    effort: 'max',
+                }),
+            }),
+        ]);
+
+        await harness.finish();
+    });
 });
