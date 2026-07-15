@@ -5,6 +5,14 @@ on:
     - cron: '0 18 * * *'
   release:
     types: [published]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/android-apk-release.yml'
+      - 'packages/happy-app/**'
+      - 'patches/fix-react-native-audio-api-windows-build.cjs'
+      - 'patches/fix-react-native-libsodium-windows-cmake.cjs'
+      - 'scripts/postinstall.cjs'
   workflow_dispatch:
     inputs:
       ref:
@@ -22,7 +30,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: android-apk-${{ github.event_name }}
+  group: android-apk-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -39,12 +47,15 @@ jobs:
         shell: bash
         env:
           RELEASE_REF: ${{ github.event.release.tag_name }}
+          PULL_REQUEST_SHA: ${{ github.event.pull_request.head.sha }}
           MANUAL_REF: ${{ inputs.ref }}
           NIGHTLY_REF: ${{ vars.ANDROID_NIGHTLY_REF }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [[ "${{ github.event_name }}" == "release" ]]; then
             ref="$RELEASE_REF"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            ref="$PULL_REQUEST_SHA"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             ref="$MANUAL_REF"
           elif [[ -n "$NIGHTLY_REF" ]]; then
