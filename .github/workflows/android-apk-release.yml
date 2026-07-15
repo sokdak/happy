@@ -1,0 +1,165 @@
+name: Android APK release asset
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: true
+        default: main
+        type: string
+      publish_nightly:
+        description: Replace the nightly release assets
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      APP_ENV: production
+      NODE_ENV: production
+
+    steps:
+      - name: Resolve source ref
+        id: source
+        shell: bash
+        env:
+          RELEASE_REF: ${{ github.event.release.tag_name }}
+          MANUAL_REF: ${{ inputs.ref }}
+          NIGHTLY_REF: ${{ vars.ANDROID_NIGHTLY_REF }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            ref="$RELEASE_REF"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ref="$MANUAL_REF"
+          elif [[ -n "$NIGHTLY_REF" ]]; then
+            ref="$NIGHTLY_REF"
+          else
+            ref="$DEFAULT_BRANCH"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Building ref: $ref"
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006' 'cmake;3.22.1'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript typecheck
+        run: pnpm --filter happy-app typecheck
+
+      - name: Generate Android project
+        working-directory: packages/happy-app
+        run: pnpm exec expo prebuild --platform android --clean --no-install
+
+      - name: Configure Gradle memory
+        working-directory: packages/happy-app/android
+        shell: bash
+        run: |
+          sed -i '/^org.gradle.jvmargs=/d' gradle.properties
+          echo 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m' >> gradle.properties
+
+      - name: Build ARM64 release APK
+        working-directory: packages/happy-app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+
+      - name: Prepare release assets
+        id: asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp packages/happy-app/android/app/build/outputs/apk/release/app-release.apk dist/happy-android-arm64.apk
+          sha256sum dist/happy-android-arm64.apk > dist/happy-android-arm64.apk.sha256
+          source_sha=$(git rev-parse HEAD)
+          echo "$source_sha" > dist/source-sha.txt
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: happy-android-arm64-${{ steps.asset.outputs.source_sha }}
+          path: |
+            dist/happy-android-arm64.apk
+            dist/happy-android-arm64.apk.sha256
+            dist/source-sha.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach APK to published release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$RELEASE_TAG" 'dist/happy-android-arm64.apk#happy-android-arm64.apk' 'dist/happy-android-arm64.apk.sha256#happy-android-arm64.apk.sha256' --clobber
+
+      - name: Update nightly release
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish_nightly)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_REF: ${{ steps.source.outputs.ref }}
+          SOURCE_SHA: ${{ steps.asset.outputs.source_sha }}
+        run: |
+          if gh api "repos/$REPOSITORY/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$REPOSITORY/git/refs/tags/nightly" -f sha="$SOURCE_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$REPOSITORY/git/refs" -f ref='refs/tags/nightly' -f sha="$SOURCE_SHA" >/dev/null
+          fi
+
+          body=$(printf 'Automated Android nightly build.\n\nSource ref: `%s`\nSource commit: `%s`' "$SOURCE_REF" "$SOURCE_SHA")
+          if release_json=$(gh api "repos/$REPOSITORY/releases/tags/nightly" 2>/dev/null); then
+            release_id=$(printf '%s' "$release_json" | jq -r '.id')
+            gh api --method PATCH "repos/$REPOSITORY/releases/$release_id" -f name='Android Nightly' -f body="$body" -F draft=false -F prerelease=true >/dev/null
+          else
+            gh api --method POST "repos/$REPOSITORY/releases" -f tag_name='nightly' -f target_commitish="$SOURCE_SHA" -f name='Android Nightly' -f body="$body" -F draft=false -F prerelease=true >/dev/null
+          fi
+
+          gh release upload nightly 'dist/happy-android-arm64.apk#happy-nightly-arm64.apk' 'dist/happy-android-arm64.apk.sha256#happy-nightly-arm64.apk.sha256' --clobber
