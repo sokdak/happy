@@ -199,6 +199,14 @@ class Sync {
                 this.friendsSync.invalidate();
                 this.friendRequestsSync.invalidate();
                 this.feedSync.invalidate();
+
+                // Resume/refocus does NOT remount SessionView, and realtimeStatus
+                // (LiveKit voice status) doesn't change on resume, so SessionView's
+                // onSessionVisible effect never re-fires for the open chat. Re-fetch
+                // the currently-viewed session's messages + git status here so any
+                // updates missed while backgrounded are backfilled. Mirrors the same
+                // call in onReconnected() and the web focus handler below.
+                this.refreshViewingSession();
             } else {
                 log.log(`📱 App state changed to: ${nextAppState}`);
                 this.maybeStartBackgroundSendWatchdog();
@@ -212,6 +220,16 @@ class Sync {
         if (Platform.OS === 'web' && typeof document !== 'undefined') {
             const broadcast = () => {
                 apiSocket.sendAppState(getCurrentAppState());
+
+                // On web the socket usually stays connected across tab switches and
+                // window focus changes, so neither onReconnected nor (for a pure
+                // window focus, which fires no visibilitychange) the AppState 'active'
+                // handler runs. When the tab regains focus/visibility, refresh the
+                // open chat so updates missed while it was hidden are backfilled.
+                // Skipped on blur since getCurrentAppState() is then 'background'.
+                if (getCurrentAppState() === 'active') {
+                    this.refreshViewingSession();
+                }
             };
             document.addEventListener('visibilitychange', broadcast);
             window.addEventListener('focus', broadcast);
@@ -299,6 +317,22 @@ class Sync {
         const session = storage.getState().sessions[sessionId];
         if (session) {
             voiceHooks.onSessionFocus(sessionId, session.metadata || undefined);
+        }
+    }
+
+    /**
+     * Refresh the currently-viewed session (messages + git status) on the
+     * app-resume / web-refocus / socket-reconnect paths — none of which remount
+     * SessionView, so onSessionVisible would otherwise never re-fire for the open
+     * chat. Guarded on the session still existing in the store: a session deleted
+     * while it was the viewed one (delete-session update races these triggers)
+     * must not lazily (re)create a messagesSync whose fetchMessages throws forever
+     * (missing encryption / 404), which would arm a permanent backoff retry loop.
+     */
+    private refreshViewingSession = () => {
+        const viewingSessionId = storage.getState().currentViewingSessionId;
+        if (viewingSessionId && storage.getState().sessions[viewingSessionId]) {
+            this.onSessionVisible(viewingSessionId);
         }
     }
 
@@ -2143,9 +2177,17 @@ class Sync {
             this.friendsSync.invalidate();
             this.friendRequestsSync.invalidate();
             this.feedSync.invalidate();
-            // Messages are fetched lazily per-session via onSessionVisible (called by SessionView
-            // when realtimeStatus changes). Session metadata + agentState (including permission
-            // requests) are already refreshed by sessionsSync.invalidate() above.
+
+            // Re-fetch the currently-viewed session's messages on reconnect.
+            // Session metadata + agentState (incl. permission requests) are refreshed
+            // by sessionsSync.invalidate() above, but the open chat's message list is
+            // NOT — it's only re-fetched via onSessionVisible, which SessionView calls
+            // on mount / voice-status change, neither of which happens on a socket
+            // reconnect. Without this, messages received while the socket was down
+            // (e.g. Android background→resume, laptop sleep) are never backfilled for
+            // the open chat until the user navigates out and back in.
+            this.refreshViewingSession();
+
             for (const sync of this.sendSync.values()) {
                 sync.invalidate();
             }
@@ -2270,7 +2312,14 @@ class Sync {
 
             // Clear any cached git status
             gitStatusSync.clearForSession(sessionId);
+            // Stop any in-flight backoff loop BEFORE dropping the map entry. The
+            // session's encryption is removed just above, so a still-running (or
+            // newly-armed) fetchMessages/flushOutbox throws forever — backoff()
+            // never rethrows — orphaning a permanent ~1/sec retry loop that map
+            // deletion alone does not cancel.
+            this.messagesSync.get(sessionId)?.stop();
             this.messagesSync.delete(sessionId);
+            this.sendSync.get(sessionId)?.stop();
             this.sendSync.delete(sessionId);
             this.pendingOutbox.delete(sessionId);
             this.sessionLastSeq.delete(sessionId);
