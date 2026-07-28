@@ -42,7 +42,7 @@ This replaces today's manual flow (happy-helm's `build-image.yml` is `workflow_d
 A single workflow, `.github/workflows/deploy-on-main.yml`.
 
 **Trigger:** `push` to `main`, plus `workflow_dispatch` for manual re-runs.
-**Concurrency:** group `deploy-on-main`, `cancel-in-progress: true` — a newer merge supersedes an in-flight run so no stale helm PR is opened.
+**Concurrency:** group `deploy-on-main`, `cancel-in-progress: true` — a newer merge supersedes an in-flight run so no stale helm PR is opened. Trade-off: a rapid follow-up merge may cancel an in-flight run before its npm prerelease publishes; skipping an intermediate prerelease is acceptable (only the newest merge needs to ship).
 
 ### Job 1 — `image` (build & push to GHCR)
 
