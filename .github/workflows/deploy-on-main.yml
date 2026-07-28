@@ -1,0 +1,314 @@
+# On merge to main: build the deployable arm64 image → GHCR, publish the CLI and
+# server packages to npmjs as prereleases (dist-tags `main` and `latest`), then open a PR on
+# sokdak/happy-helm bumping the image reference.
+#
+# See docs/superpowers/specs/2026-07-28-deploy-on-main-image-npm-helm-design.md
+#
+# Required secrets:
+#   NPM_TOKEN        - npm automation token owning the @sokdak scope (publish jobs)
+#   HELM_REPO_TOKEN  - PAT with write access to sokdak/happy-helm (helm-pr job)
+# GITHUB_TOKEN (built-in) pushes the image to ghcr.io/sokdak/happy.
+name: deploy-on-main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer merge supersedes an in-flight run so no stale helm PR is opened.
+concurrency:
+  group: deploy-on-main
+  cancel-in-progress: true
+
+jobs:
+  # ---- Build & push the combined arm64 image to GHCR ----------------------
+  image:
+    runs-on: ubuntu-24.04-arm # deployed image is arm64-only (helm values nodeArch: arm64)
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - name: Resolve tag & sha
+        id: meta
+        run: |
+          echo "tag=$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      # Reuse happy-helm's Dockerfile: it clones sokdak/happy@HAPPY_REF itself,
+      # so the image contains exactly the merged commit (zero drift vs deploy).
+      - name: Checkout happy-helm (Dockerfile source)
+        uses: actions/checkout@v4
+        with:
+          repository: sokdak/happy-helm
+          path: happy-helm
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: happy-helm/docker
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            HAPPY_REPO=https://github.com/sokdak/happy.git
+            HAPPY_REF=${{ github.sha }}
+          tags: |
+            ghcr.io/sokdak/happy:${{ steps.meta.outputs.tag }}
+            ghcr.io/sokdak/happy:latest
+
+      - name: Summary
+        run: |
+          echo "Image: \`ghcr.io/sokdak/happy:${{ steps.meta.outputs.tag }}\` (sha \`${GITHUB_SHA}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- Publish @sokdak/happy (CLI) prerelease to npmjs -------------------
+  publish-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm via corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test deployment helpers
+        run: node --test scripts/prepare-main-npm-packages.test.cjs scripts/deploy-on-main-workflow.test.cjs
+
+      - name: Prepare fork package manifests
+        id: packages
+        run: node scripts/prepare-main-npm-packages.cjs "$GITHUB_RUN_NUMBER"
+
+      # Each package's prepublishOnly runs its build and unit tests. The wire
+      # must reach npm before the CLI version that aliases it is published.
+      - name: Publish wire then CLI (dist-tags main and latest; dry-run when NPM_TOKEN unset)
+        id: publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          WIRE_VERSION: ${{ steps.packages.outputs.wire_version }}
+          CLI_VERSION: ${{ steps.packages.outputs.cli_version }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> ~/.npmrc
+
+            publish_if_missing() {
+              package_name="$1"
+              package_version="$2"
+              package_dir="$3"
+              if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+                echo "::notice::${package_name}@${package_version} already published — skipping"
+              else
+                (cd "$package_dir" && pnpm publish --no-git-checks --tag main)
+              fi
+              npm dist-tag add "${package_name}@${package_version}" main
+              npm dist-tag add "${package_name}@${package_version}" latest
+            }
+
+            publish_if_missing "@sokdak/happy-wire" "$WIRE_VERSION" "packages/happy-wire"
+            publish_if_missing "@sokdak/happy" "$CLI_VERSION" "packages/happy-cli"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::NPM_TOKEN not set — running dry-runs"
+            (cd packages/happy-wire && pnpm publish --no-git-checks --tag main --dry-run)
+            (cd packages/happy-cli && pnpm publish --no-git-checks --tag main --dry-run)
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test published CLI
+        if: steps.publish.outputs.published == 'true'
+        env:
+          WIRE_VERSION: ${{ steps.packages.outputs.wire_version }}
+          CLI_VERSION: ${{ steps.packages.outputs.cli_version }}
+        run: |
+          wait_for_npm_version() {
+            package_name="$1"
+            package_version="$2"
+            for attempt in $(seq 1 60); do
+              if npm view "${package_name}@${package_version}" version --prefer-online >/dev/null 2>&1; then
+                echo "::notice::${package_name}@${package_version} is visible on npm"
+                return 0
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                echo "::error::Timed out waiting for ${package_name}@${package_version} on npm"
+                return 1
+              fi
+              sleep 10
+            done
+          }
+
+          wait_for_npm_tag() {
+            package_name="$1"
+            package_tag="$2"
+            expected_version="$3"
+            for attempt in $(seq 1 60); do
+              actual_version="$(npm view "${package_name}@${package_tag}" version --prefer-online 2>/dev/null || true)"
+              if [ "$actual_version" = "$expected_version" ]; then
+                echo "::notice::${package_name}@${package_tag} points to ${expected_version}"
+                return 0
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                echo "::error::Timed out waiting for ${package_name}@${package_tag} to point to ${expected_version}"
+                return 1
+              fi
+              sleep 10
+            done
+          }
+
+          wait_for_npm_version "@sokdak/happy-wire" "$WIRE_VERSION"
+          wait_for_npm_version "@sokdak/happy" "$CLI_VERSION"
+          wait_for_npm_tag "@sokdak/happy" "latest" "$CLI_VERSION"
+
+          SMOKE_DIR="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_DIR"' EXIT
+          cd "$SMOKE_DIR"
+          npm init -y >/dev/null
+          npm install --prefer-online "@sokdak/happy"
+          node -e 'const pkg = require("./node_modules/@sokdak/happy/package.json"); if (pkg.version !== process.env.CLI_VERSION) throw new Error("installed " + pkg.version + ", expected " + process.env.CLI_VERSION)'
+          node -e "const pkg = require('./node_modules/@sokdak/happy/package.json'); if (pkg.dependencies['@slopus/happy-wire'] !== 'npm:@sokdak/happy-wire@${{ steps.packages.outputs.wire_version }}') process.exit(1)"
+          node --input-type=module -e "await import('@sokdak/happy')"
+
+  # ---- Publish @sokdak/happy-server-self-host to npmjs ON VERSION BUMP ----
+  # Cheap gate first (npm view, no install): if packages/happy-server's version is
+  # already on npm, skip the whole heavy bun+expo build. So ordinary merges cost one
+  # `npm view`; the expensive build only runs when the version was actually bumped.
+  publish-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Gate — publish only when this version is new
+        id: gate
+        run: |
+          NAME="@sokdak/happy-server-self-host"
+          VERSION="$(node -p "require('./packages/happy-server/package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION already on npm — skipping build & publish"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION not on npm — building & publishing"
+          fi
+
+      - name: Enable pnpm via corepack
+        if: steps.gate.outputs.publish == 'true'
+        run: corepack enable
+      - name: Setup bun (build-runtime.cjs bundles via bun)
+        if: steps.gate.outputs.publish == 'true'
+        uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        if: steps.gate.outputs.publish == 'true'
+        run: SKIP_HAPPY_WIRE_BUILD=1 pnpm install --frozen-lockfile
+
+      # Build artifacts explicitly (server prepublishOnly also runs vitest, which
+      # needs a DB) — we publish with --ignore-scripts to skip that gate.
+      - name: Build happy-wire
+        if: steps.gate.outputs.publish == 'true'
+        run: pnpm --filter @slopus/happy-wire build
+      - name: Build server runtime (bun)
+        if: steps.gate.outputs.publish == 'true'
+        run: pnpm --filter happy-server-self-host run build
+      - name: Bundle web UI (expo export)
+        if: steps.gate.outputs.publish == 'true'
+        run: pnpm --filter happy-server-self-host run bundle:webapp
+
+      - name: Rename to @sokdak/happy-server-self-host
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "packages/happy-server/package.json";
+            const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
+            pkg.name = "@sokdak/happy-server-self-host";
+            pkg.publishConfig = { registry: "https://registry.npmjs.org", access: "public" };
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n");
+            console.log("publishing", pkg.name, "@", pkg.version);
+          '
+
+      - name: Publish to npmjs (scripts already run; dry-run when NPM_TOKEN unset)
+        if: steps.gate.outputs.publish == 'true'
+        working-directory: packages/happy-server
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> ~/.npmrc
+            pnpm publish --no-git-checks --ignore-scripts
+          else
+            echo "::warning::NPM_TOKEN not set — running dry-run"
+            pnpm publish --no-git-checks --ignore-scripts --dry-run
+          fi
+
+  # ---- Open a PR on happy-helm bumping the image reference ---------------
+  helm-pr:
+    runs-on: ubuntu-latest
+    needs: image
+    steps:
+      - name: Checkout happy-helm
+        uses: actions/checkout@v4
+        with:
+          repository: sokdak/happy-helm
+          path: happy-helm
+          token: ${{ secrets.HELM_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Install pinned yq
+        run: |
+          YQ_VERSION="v4.53.3"
+          YQ_SHA256="fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4"
+          YQ_PATH="$RUNNER_TEMP/yq"
+          curl --fail --location --silent --show-error \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            --output "$YQ_PATH"
+          echo "${YQ_SHA256}  ${YQ_PATH}" | sha256sum --check --strict
+          chmod +x "$YQ_PATH"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$YQ_PATH" --version
+
+      - name: Bump image reference
+        working-directory: happy-helm
+        env:
+          TAG: ${{ needs.image.outputs.tag }}
+          SHA: ${{ needs.image.outputs.sha }}
+        run: |
+          yq -i '.image.repository = "ghcr.io/sokdak/happy" | .image.tag = strenv(TAG)' values.yaml
+          yq -i '.appVersion = strenv(TAG)' Chart.yaml
+          sed -i 's#\(HAPPY_REF="${HAPPY_REF:-\)[^}]*\(}"\)#\1'"${SHA}"'\2#' docker/build.sh
+          sed -i 's#\(IMAGE="${IMAGE:-\)[^}]*\(}"\)#\1ghcr.io/sokdak/happy\2#' docker/build.sh
+          echo "---- values.yaml image ----"; yq '.image' values.yaml
+          echo "---- Chart.yaml appVersion ----"; yq '.appVersion' Chart.yaml
+          echo "---- docker/build.sh ----"; grep -E 'HAPPY_REF=|IMAGE=' docker/build.sh
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.HELM_REPO_TOKEN }}
+          path: happy-helm
+          base: main
+          branch: bump-image-${{ needs.image.outputs.tag }}-${{ github.sha }}
+          delete-branch: true
+          commit-message: "chore: bump happy image to ${{ needs.image.outputs.tag }} (${{ github.sha }})"
+          title: "Bump happy image to ${{ needs.image.outputs.tag }}"
+          body: |
+            Automated bump from [`sokdak/happy@${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
+
+            - image: `ghcr.io/sokdak/happy:${{ needs.image.outputs.tag }}`
+            - `HAPPY_REF`: `${{ github.sha }}`
+
+            Triggered by `${{ github.event_name }}`.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

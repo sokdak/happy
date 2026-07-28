@@ -1,0 +1,60 @@
+# Publishes packages/happy-cli to npm as @sokdak/happy (the fork's scoped CLI).
+# Trigger: push a tag like npm-publish/1.1.11-beta.0 (tag suffix is informational;
+# the published version always comes from packages/happy-cli/package.json).
+#
+# Runs on Linux because the unit-test gate (prepublishOnly -> pnpm test) includes
+# POSIX-path/binary-dependent tests that fail on Windows hosts.
+#
+# Without an NPM_TOKEN repo secret this falls back to `pnpm publish --dry-run`,
+# which still runs the full build + unit-test + pack pipeline (no upload).
+name: publish-cli
+
+on:
+  push:
+    tags:
+      - 'npm-publish/**'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm via corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rename package to @sokdak/happy
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "packages/happy-cli/package.json";
+            const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
+            pkg.name = "@sokdak/happy";
+            pkg.publishConfig = { registry: "https://registry.npmjs.org", access: "public" };
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n");
+            console.log("publishing", pkg.name, "@", pkg.version);
+          '
+
+      - name: Publish (dry-run when NPM_TOKEN is not configured)
+        working-directory: packages/happy-cli
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> ~/.npmrc
+            pnpm publish --no-git-checks
+          else
+            echo "::warning::NPM_TOKEN secret not set — running pnpm publish --dry-run (build + unit tests + pack, no upload)"
+            pnpm publish --no-git-checks --dry-run
+          fi
