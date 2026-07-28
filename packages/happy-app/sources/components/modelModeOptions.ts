@@ -96,15 +96,15 @@ export function getGeminiPermissionModes(translate: Translate): PermissionMode[]
 export function getClaudeModelModes(): ModelMode[] {
     return [
         { key: 'default', name: 'default model', description: null },
-        // Full model ID, not the `opus-5` short alias: the alias is not in the
-        // CLI's alias table yet (`claude --model opus-5` errors on 2.1.199),
-        // while the full ID passes straight through to the API.
+        // Full model IDs, not the `opus-5`/`sonnet-5` short aliases: those aliases
+        // are not in the CLI's alias table yet (`claude --model opus-5` errors on
+        // 2.1.199), while the full IDs pass straight through to the API.
         { key: 'claude-opus-5', name: 'opus 5', description: null },
-        { key: 'opus', name: 'opus 4.8', description: null },
-        { key: 'claude-opus-4-8[1m]', name: 'opus 4.8 (1M)', description: null },
+        { key: 'claude-opus-5[1m]', name: 'opus 5 (1M)', description: null },
         { key: 'fable', name: 'fable 5', description: null },
         { key: 'claude-fable-5[1m]', name: 'fable 5 (1M)', description: null },
-        { key: 'sonnet', name: 'sonnet 4.6', description: null },
+        { key: 'claude-sonnet-5', name: 'sonnet 5', description: null },
+        { key: 'claude-sonnet-5[1m]', name: 'sonnet 5 (1M)', description: null },
         { key: 'haiku', name: 'haiku 4.5', description: null },
     ];
 }
@@ -382,8 +382,10 @@ function getClaudeEffortLevelsForModel(modelKey: string): EffortLevel[] {
         return [];
     }
 
-    // Sonnet 4.6 and Opus 4.6 support max, but not xhigh.
-    if (normalizedModelKey.includes('sonnet') || normalizedModelKey.includes('opus-4-6')) {
+    // Sonnet 4.6 and Opus 4.6 support max, but not xhigh. Match only the 4.6-era
+    // sonnet ids here — a bare `includes('sonnet')` would also catch
+    // claude-sonnet-5, which is the first Sonnet-tier model that supports xhigh.
+    if (normalizedModelKey.includes('sonnet-4-6') || normalizedModelKey.includes('opus-4-6')) {
         return CLAUDE_EFFORT_WITHOUT_XHIGH;
     }
 
@@ -392,8 +394,8 @@ function getClaudeEffortLevelsForModel(modelKey: string): EffortLevel[] {
         return CLAUDE_EFFORT_BASIC;
     }
 
-    // The current opus/fable aliases, their 1M variants, Opus 4.7+, and
-    // unknown gateway models retain the complete SDK-supported set.
+    // Opus 5 / Sonnet 5, the opus/fable aliases, their 1M variants, Opus 4.7+,
+    // and unknown gateway models retain the complete SDK-supported set.
     return getClaudeEffortLevels();
 }
 

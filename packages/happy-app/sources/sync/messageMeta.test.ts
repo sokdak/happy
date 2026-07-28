@@ -131,13 +131,13 @@ describe('resolveMessageModeMeta', () => {
     it('normalizes an unsupported Claude effort to the supported default', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
-            modelMode: 'sonnet',
+            modelMode: 'claude-sonnet-4-6',
             effortLevel: 'xhigh',
             metadata: { flavor: 'claude' },
         } as any);
 
         expect(meta).toEqual({
-            model: 'sonnet',
+            model: 'claude-sonnet-4-6',
             effort: 'medium',
         });
     });
