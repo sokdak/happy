@@ -8,6 +8,7 @@ import { layout } from '@/components/layout';
 import {
     getAvailableModels,
     getAvailablePermissionModes,
+    getDefaultEffortKey,
     getEffortLevelsForModel,
     getRigCurrentModelOptionKey,
     resolveCurrentOption,
@@ -750,8 +751,9 @@ export function SessionViewLoaded({
         resolveCurrentOption(availableEffortLevels, [
             session.effortLevel,
             isRig ? getRigReasoningSelection(session.metadata, modelKey) : effectiveAgentDefaults.effortLevel,
+            getDefaultEffortKey(flavor),
         ])
-    ), [availableEffortLevels, session.effortLevel, effectiveAgentDefaults.effortLevel, session.metadata, modelKey, isRig]);
+    ), [availableEffortLevels, session.effortLevel, effectiveAgentDefaults.effortLevel, session.metadata, modelKey, isRig, flavor]);
 
     const sessionStatus = useSessionStatus(session);
     const sessionUsage = useSessionUsage(sessionId);
@@ -835,13 +837,10 @@ export function SessionViewLoaded({
     }, [sessionId, expImageUpload, selectedImages, clearImages]);
 
     const handleAbort = React.useCallback(() => {
-        // Mode picks live in synced metadata — clear them there, otherwise the
-        // next inbound metadata update resurrects them (#1492)
-        if (!isRig) {
-            sessionSetAgentModes(sessionId, { permissionMode: null, modelMode: null, effortLevel: null });
-        }
+        // Abort stops only the active turn. Permission, model, and effort are
+        // session-level choices and must survive the interruption.
         sessionAbort(sessionId);
-    }, [sessionId, isRig]);
+    }, [sessionId]);
 
     const handleFileViewerPress = React.useCallback(() => {
         router.push(`/session/${sessionId}/files`);

@@ -536,17 +536,17 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
     let currentEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined = options.effort ?? DEFAULT_CLAUDE_EFFORT; // Track current Claude effort (thinking depth)
 
-    const resetCurrentModeDefaults = () => {
-        // Model and effort are deliberately NOT reset here. The app sends them
-        // only when the user changes the picker, so resetting them on abort
-        // silently desyncs the picker from what the next turn actually runs.
-        currentPermissionMode = initialPermissionMode;
-        currentFallbackModel = undefined;
+    const resetTransientModeStateAfterAbort = () => {
+        // Aborting a turn must not change the permission, model, or effort
+        // selected for the session. A different mode hash restarts the SDK
+        // query, and falling back from a 1M model can make the existing
+        // context exceed the new model's window. Prompt/tool overrides remain
+        // transient and are cleared below.
         currentCustomSystemPrompt = undefined;
         currentAppendSystemPrompt = undefined;
         currentAllowedTools = undefined;
         currentDisallowedTools = undefined;
-        logger.debug('[loop] Reset current mode defaults after abort');
+        logger.debug(`[loop] Reset transient mode state after abort; preserving permission=${currentPermissionMode ?? 'default'}, model=${currentModel ?? 'default'}, fallbackModel=${currentFallbackModel ?? 'none'}, effort=${currentEffort ?? 'default'}`);
     };
     const currentEnhancedMode = (): EnhancedMode => ({
         permissionMode: currentPermissionMode || 'default',
@@ -946,7 +946,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // Store reference for hook server callback
             currentSession = sessionInstance;
         },
-        onAbort: resetCurrentModeDefaults,
+        onAbort: resetTransientModeStateAfterAbort,
         mcpServers: {
             'happy': {
                 type: 'http' as const,

@@ -96,6 +96,40 @@ describe('PermissionHandler', () => {
         expect(setMode).toHaveBeenCalledWith('bypassPermissions');
     });
 
+    it('does not re-sync equivalent yolo and bypassPermissions modes', () => {
+        const { session } = createSessionMock();
+        const handler = new PermissionHandler(session as any);
+        const setMode = vi.fn(async () => {});
+
+        handler.setPermissionModeUpdater(setMode);
+        handler.handleModeChange('yolo');
+        handler.handleModeChange('bypassPermissions');
+
+        expect(setMode).toHaveBeenCalledTimes(1);
+        expect(setMode).toHaveBeenCalledWith('bypassPermissions');
+    });
+
+    it('keeps AskUserQuestion interactive in yolo mode', async () => {
+        const { session, getState } = createSessionMock();
+        const handler = new PermissionHandler(session as any);
+        const controller = new AbortController();
+
+        handler.handleModeChange('yolo');
+        const pending = handler.handleToolCall(
+            'AskUserQuestion',
+            { questions: [{ question: 'Choose one' }] },
+            mode,
+            { signal: controller.signal, toolUseID: 'toolu_question' },
+        );
+
+        expect(getState().requests.toolu_question).toMatchObject({
+            tool: 'AskUserQuestion',
+        });
+
+        controller.abort();
+        await expect(pending).rejects.toThrow('Permission request aborted');
+    });
+
     it('keeps main-thread request IDs unchanged', async () => {
         const { session, getState, handlers } = createSessionMock();
         const handler = new PermissionHandler(session as any);

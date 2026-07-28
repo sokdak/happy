@@ -10,7 +10,7 @@ import type { CanCallToolOptions, PermissionResult } from "../sdk/types";
 import { Session } from "../session";
 import { EnhancedMode, PermissionMode } from "../loop";
 import { getToolDescriptor } from "./getToolDescriptor";
-import { isClaudeBypassEquivalent, mapToClaudeMode } from "./permissionMode";
+import { mapToClaudeMode, type ClaudeSdkPermissionMode } from "./permissionMode";
 
 export interface PermissionResponse {
     id: string;
@@ -40,10 +40,10 @@ export class PermissionHandler {
     private allowedTools = new Set<string>();
     private allowedBashLiterals = new Set<string>();
     private allowedBashPrefixes = new Set<string>();
-    private permissionMode: PermissionMode = 'default';
+    private permissionMode: ClaudeSdkPermissionMode = 'default';
     private onPermissionRequestCallback?: (toolCallId: string) => void;
     /** Callback to change permission mode on the active query (set by claudeRemote) */
-    private setPermissionModeCallback?: (mode: PermissionMode) => Promise<void>;
+    private setPermissionModeCallback?: (mode: ClaudeSdkPermissionMode) => Promise<void>;
 
     constructor(session: Session) {
         this.session = session;
@@ -58,14 +58,15 @@ export class PermissionHandler {
     }
 
     handleModeChange(mode: PermissionMode) {
+        const normalizedMode = mapToClaudeMode(mode);
         const previousMode = this.permissionMode;
-        this.permissionMode = mode;
+        this.permissionMode = normalizedMode;
 
         // The message-queue hash excludes permissionMode, so a default -> yolo
         // switch never restarts the SDK query. Push the mapped mode into the
         // live query so the SDK stops consulting canUseTool on its own.
-        if (this.setPermissionModeCallback && mapToClaudeMode(previousMode) !== mapToClaudeMode(mode)) {
-            this.setPermissionModeCallback(mapToClaudeMode(mode)).catch((err) => {
+        if (this.setPermissionModeCallback && previousMode !== normalizedMode) {
+            this.setPermissionModeCallback(normalizedMode).catch((err) => {
                 logger.debug('Failed to sync permission mode via SDK:', err);
             });
         }
@@ -75,7 +76,7 @@ export class PermissionHandler {
      * Set callback to dynamically change permission mode on the active query.
      * Called by claudeRemote after the Query object is created.
      */
-    setPermissionModeUpdater(callback: (mode: PermissionMode) => Promise<void>) {
+    setPermissionModeUpdater(callback: (mode: ClaudeSdkPermissionMode) => Promise<void>) {
         this.setPermissionModeCallback = callback;
     }
 
@@ -183,7 +184,7 @@ export class PermissionHandler {
         // Handle special cases
         //
 
-        if (isClaudeBypassEquivalent(this.permissionMode)) {
+        if (this.permissionMode === 'bypassPermissions') {
             return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
         }
 
