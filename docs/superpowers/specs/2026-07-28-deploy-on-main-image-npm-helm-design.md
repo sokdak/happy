@@ -34,7 +34,8 @@ This replaces today's manual flow (happy-helm's `build-image.yml` is `workflow_d
 | Image build definition | **Reuse happy-helm's `docker/Dockerfile`**, built at the merged SHA (zero drift vs deployed image) |
 | Image tag scheme | **Date only** — `YYYY.MM.DD` (+ `latest`) |
 | npm packages | **Both**: CLI (`packages/happy-cli`) and server (`packages/happy-server`) |
-| npm versioning | **Prerelease per merge** — never collides |
+| npm versioning — CLI | **Prerelease per merge** — `<base>-main.<run_number>`, dist-tag `main` |
+| npm versioning — server | **On version bump only** — publish the real `package.json` version to `latest` when it isn't already on npm; otherwise skip the whole job (incl. the build) |
 | happy-helm PR auth | **PAT secret** `HELM_REPO_TOKEN` in this repo |
 
 ## Design
@@ -42,7 +43,7 @@ This replaces today's manual flow (happy-helm's `build-image.yml` is `workflow_d
 A single workflow, `.github/workflows/deploy-on-main.yml`.
 
 **Trigger:** `push` to `main`, plus `workflow_dispatch` for manual re-runs.
-**Concurrency:** group `deploy-on-main`, `cancel-in-progress: true` — a newer merge supersedes an in-flight run so no stale helm PR is opened. Trade-off: a rapid follow-up merge may cancel an in-flight run before its npm prerelease publishes; skipping an intermediate prerelease is acceptable (only the newest merge needs to ship).
+**Concurrency:** group `deploy-on-main`, `cancel-in-progress: true` — a newer merge supersedes an in-flight run so no stale helm PR is opened. Trade-off: a rapid follow-up merge may cancel an in-flight run before the CLI prerelease publishes; skipping an intermediate prerelease is acceptable (only the newest merge needs to ship). The server only publishes on a version bump, so cancellation rarely affects it.
 
 ### Job 1 — `image` (build & push to GHCR)
 
@@ -63,16 +64,19 @@ A single workflow, `.github/workflows/deploy-on-main.yml`.
 
 Rationale: the Dockerfile clones happy@`HAPPY_REF` itself, so passing `HAPPY_REF=${{ github.sha }}` yields an image containing exactly the merged commit — no dependence on this repo's own Dockerfiles.
 
-### Job 2 — `npm` (publish prereleases to npmjs)
+### Job 2a — `publish-cli` (prerelease every merge)
 
-- **Runner:** `ubuntu-latest`. **Independent** of Jobs 1/3 (runs in parallel).
-- **Setup:** `actions/setup-node@v4` (node 22), `corepack enable`, `pnpm install --frozen-lockfile`.
-- **Auth:** write `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` to `~/.npmrc`.
-- **For each package**, mutate `package.json` (via a small node script), then `pnpm --filter <pkg> publish --no-git-checks --tag main`:
-  - **CLI** — `packages/happy-cli`: name → `@sokdak/happy`; version → `<base>-main.<run_number>`; `publishConfig = { registry: https://registry.npmjs.org, access: public }`.
-  - **Server** — `packages/happy-server`: name → `@sokdak/happy-server-self-host` (scoped — the unscoped `happy-server-self-host` is owned upstream and would 403); version → `<base>-main.<run_number>`; same `publishConfig`.
-- **Dist-tag `main`** (not `latest`) so ordinary `npm install` stays on the stable release; prereleases are opt-in via `@main`.
-- `prepublishOnly`/build hooks run automatically during `pnpm publish` (packages build/test themselves).
+- **Runner:** `ubuntu-latest`. Independent of the other jobs.
+- Rename `packages/happy-cli` → `@sokdak/happy`; set version `<base>-main.<run_number>`; `publishConfig = { registry, access: public }`.
+- `pnpm publish --no-git-checks --tag main` — `prepublishOnly` (`pnpm test` = build + unit tests) runs during publish, matching the proven `publish-cli.yml`. Dist-tag `main` keeps ordinary installs on stable `latest`; falls back to `--dry-run` if `NPM_TOKEN` is unset.
+
+### Job 2b — `publish-server` (only on version bump)
+
+- **Runner:** `ubuntu-latest`. Independent of the other jobs.
+- **Cheap gate first** (`gate` step): read `packages/happy-server` version, `npm view @sokdak/happy-server-self-host@<version>`. If it already exists → set `publish=false` and **every subsequent step is skipped** (`if: steps.gate.outputs.publish == 'true'`). So an ordinary merge costs a single `npm view`; the heavy build runs only when the version was bumped.
+- When publishing: `oven-sh/setup-bun` (the server's `build-runtime.cjs` bundles via `bun`), `SKIP_HAPPY_WIRE_BUILD=1 pnpm install`, build `@slopus/happy-wire`, `pnpm run build` (bun), `pnpm run bundle:webapp` (`expo export`) — these produce `dist/` + `webapp/` explicitly.
+- Rename `packages/happy-server` → `@sokdak/happy-server-self-host` (scoped — the unscoped name is owned upstream and would 403); keep the real version.
+- `pnpm publish --no-git-checks --ignore-scripts` — `--ignore-scripts` skips `prepublishOnly` (which re-runs build/bundle **and vitest, which needs a DB**); artifacts were built above. Publishes to `latest` (a real version bump = a real release). Falls back to `--dry-run` if `NPM_TOKEN` is unset.
 
 ### Job 3 — `helm-pr` (bump happy-helm, open PR)
 
@@ -103,7 +107,7 @@ Rationale: the Dockerfile clones happy@`HAPPY_REF` itself, so passing `HAPPY_REF
 
 ## Relationship to existing workflows
 
-- `publish-cli.yml` (tag-triggered, stable `latest` for `@sokdak/happy`) is **left intact**. The new merge-based publish uses the `main` dist-tag and prerelease versions, so the two never collide.
+- `publish-cli.yml` (tag-triggered, stable `latest` for `@sokdak/happy`) is **left intact**. The new merge-based CLI publish uses the `main` dist-tag and prerelease versions, so the two never collide. The server package `@sokdak/happy-server-self-host` is a new scoped name with no other publisher, and it only publishes on a version bump.
 - happy-helm's `build-image.yml` (manual `workflow_dispatch`) stays as a manual fallback.
 
 ## Out of scope

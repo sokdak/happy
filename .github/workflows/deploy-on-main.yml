@@ -111,7 +111,10 @@ jobs:
             pnpm publish --no-git-checks --tag main --dry-run
           fi
 
-  # ---- Publish @sokdak/happy-server-self-host prerelease to npmjs --------
+  # ---- Publish @sokdak/happy-server-self-host to npmjs ON VERSION BUMP ----
+  # Cheap gate first (npm view, no install): if packages/happy-server's version is
+  # already on npm, skip the whole heavy bun+expo build. So ordinary merges cost one
+  # `npm view`; the expensive build only runs when the version was actually bumped.
   publish-server:
     runs-on: ubuntu-latest
     steps:
@@ -119,46 +122,68 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Setup bun (build-runtime.cjs bundles via bun)
-        uses: oven-sh/setup-bun@v2
+
+      - name: Gate — publish only when this version is new
+        id: gate
+        run: |
+          NAME="@sokdak/happy-server-self-host"
+          VERSION="$(node -p "require('./packages/happy-server/package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION already on npm — skipping build & publish"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME@$VERSION not on npm — building & publishing"
+          fi
+
       - name: Enable pnpm via corepack
+        if: steps.gate.outputs.publish == 'true'
         run: corepack enable
+      - name: Setup bun (build-runtime.cjs bundles via bun)
+        if: steps.gate.outputs.publish == 'true'
+        uses: oven-sh/setup-bun@v2
       - name: Install dependencies
+        if: steps.gate.outputs.publish == 'true'
         run: SKIP_HAPPY_WIRE_BUILD=1 pnpm install --frozen-lockfile
 
       # Build artifacts explicitly (server prepublishOnly also runs vitest, which
       # needs a DB) — we publish with --ignore-scripts to skip that gate.
       - name: Build happy-wire
+        if: steps.gate.outputs.publish == 'true'
         run: pnpm --filter @slopus/happy-wire build
       - name: Build server runtime (bun)
+        if: steps.gate.outputs.publish == 'true'
         run: pnpm --filter happy-server-self-host run build
       - name: Bundle web UI (expo export)
+        if: steps.gate.outputs.publish == 'true'
         run: pnpm --filter happy-server-self-host run bundle:webapp
 
-      - name: Rename to @sokdak/happy-server-self-host and set prerelease version
+      - name: Rename to @sokdak/happy-server-self-host
+        if: steps.gate.outputs.publish == 'true'
         run: |
           node -e '
             const fs = require("fs");
             const p = "packages/happy-server/package.json";
             const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
             pkg.name = "@sokdak/happy-server-self-host";
-            pkg.version = `${pkg.version}-main.${process.env.GITHUB_RUN_NUMBER}`;
             pkg.publishConfig = { registry: "https://registry.npmjs.org", access: "public" };
             fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n");
             console.log("publishing", pkg.name, "@", pkg.version);
           '
 
-      - name: Publish (dist-tag main, scripts already run; dry-run when NPM_TOKEN unset)
+      - name: Publish to npmjs (scripts already run; dry-run when NPM_TOKEN unset)
+        if: steps.gate.outputs.publish == 'true'
         working-directory: packages/happy-server
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -n "$NPM_TOKEN" ]; then
             echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> ~/.npmrc
-            pnpm publish --no-git-checks --ignore-scripts --tag main
+            pnpm publish --no-git-checks --ignore-scripts
           else
             echo "::warning::NPM_TOKEN not set — running dry-run"
-            pnpm publish --no-git-checks --ignore-scripts --tag main --dry-run
+            pnpm publish --no-git-checks --ignore-scripts --dry-run
           fi
 
   # ---- Open a PR on happy-helm bumping the image reference ---------------
