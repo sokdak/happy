@@ -334,15 +334,14 @@ export class CodexAppServerClient {
             logger.debug(`[CodexAppServer] Ignoring duplicate ${source} for completed turn ${turnId}`);
             return;
         }
+        if (turnId) {
+            this.completedTurnIds.add(turnId);
+        }
 
         const aborted = status === 'cancelled' || status === 'canceled' || status === 'aborted' || status === 'interrupted';
 
         this.tryResolvePendingTurn(aborted, turnId, source);
         this._turnId = null;
-
-        if (turnId) {
-            this.completedTurnIds.add(turnId);
-        }
 
         if (aborted) {
             this.eventHandler?.({
@@ -1571,18 +1570,17 @@ export class CodexAppServerClient {
                 }
                 const isTerminal = msg.type === 'task_complete' || msg.type === 'turn_aborted';
                 const terminalTurnId = isTerminal ? msg.turn_id ?? msg.turnId ?? null : null;
-                if (terminalTurnId && this.completedTurnIds.has(terminalTurnId)) {
+                if (isTerminal && terminalTurnId && this.completedTurnIds.has(terminalTurnId)) {
                     logger.debug(`[CodexAppServer] Ignoring duplicate codex/event/${msg.type} for completed turn ${terminalTurnId}`);
                     return;
+                }
+                if (isTerminal && terminalTurnId) {
+                    this.completedTurnIds.add(terminalTurnId);
                 }
                 // Fire event handler first (so consumer processes the event)
                 this.eventHandler?.(msg);
                 // Then resolve turn completion promise
                 if (isTerminal) {
-                    // Mark as completed so v2 turn/completed doesn't duplicate
-                    if (terminalTurnId) {
-                        this.completedTurnIds.add(terminalTurnId);
-                    }
                     this.tryResolvePendingTurn(
                         msg.type === 'turn_aborted',
                         terminalTurnId,

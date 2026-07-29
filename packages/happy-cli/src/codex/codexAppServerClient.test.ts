@@ -369,6 +369,12 @@ describe('CodexAppServerClient sandbox integration', () => {
 
         const { CodexAppServerClient } = await import('./codexAppServerClient');
         const client = new CodexAppServerClient();
+        const terminalEvents: unknown[] = [];
+        client.setEventHandler((msg) => {
+            if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
+                terminalEvents.push(msg);
+            }
+        });
         await client.connect();
         await client.startThread({
             model: 'gpt-test',
@@ -389,11 +395,45 @@ describe('CodexAppServerClient sandbox integration', () => {
         pushTerminalEvent(harness, duplicate, 'turn-old', 'cancelled');
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(internals.pendingTurnCompletion).not.toBeNull();
+        expect(terminalEvents).toHaveLength(1);
 
         const nextTurn = harness.turnStarts()[1];
         harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
         pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
         await expect(followUp).resolves.toEqual({ aborted: false });
+
+        await client.disconnect();
+    });
+
+    it('does not re-emit a terminal event when legacy completion re-enters raw completion', async () => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const terminalEvents: unknown[] = [];
+        client.setEventHandler((msg) => {
+            if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
+                terminalEvents.push(msg);
+            }
+            if (msg.type === 'task_complete' && msg.turn_id === 'turn-old') {
+                pushTerminalEvent(harness, 'raw', 'turn-old', 'cancelled');
+            }
+        });
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const turn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+        pushTerminalEvent(harness, 'legacy', 'turn-old', 'completed');
+
+        await expect(turn).resolves.toEqual({ aborted: false });
+        expect(terminalEvents).toHaveLength(1);
 
         await client.disconnect();
     });
