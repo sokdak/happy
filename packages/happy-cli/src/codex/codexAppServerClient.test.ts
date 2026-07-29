@@ -136,6 +136,36 @@ function createAbortBarrierHarness() {
     };
 }
 
+type TerminalProtocol = 'legacy' | 'raw';
+
+function pushTerminalEvent(
+    harness: ReturnType<typeof createAbortBarrierHarness>,
+    protocol: TerminalProtocol,
+    turnId: string,
+    status: 'completed' | 'cancelled',
+) {
+    if (protocol === 'legacy') {
+        harness.push({
+            method: 'codex/event',
+            params: {
+                msg: {
+                    type: status === 'cancelled' ? 'turn_aborted' : 'task_complete',
+                    turn_id: turnId,
+                },
+            },
+        });
+        return;
+    }
+
+    harness.push({
+        method: 'turn/completed',
+        params: {
+            threadId: 'thread-abort-race',
+            turn: { id: turnId, status, items: [], error: null },
+        },
+    });
+}
+
 const sandboxConfig: SandboxConfig = {
     enabled: true,
     workspaceRoot: '~/projects',
@@ -327,6 +357,90 @@ describe('CodexAppServerClient sandbox integration', () => {
         });
         await expect(followUp).resolves.toEqual({ aborted: false });
 
+        await client.disconnect();
+    });
+
+    it.each([
+        ['legacy', 'raw'],
+        ['raw', 'legacy'],
+    ] as const)('ignores a duplicate $duplicate terminal event after $first completion', async (first, duplicate) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const initialTurn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+        pushTerminalEvent(harness, first, 'turn-old', 'completed');
+        await expect(initialTurn).resolves.toEqual({ aborted: false });
+
+        const followUp = client.sendTurnAndWait('queued follow-up');
+        const internals = client as unknown as { pendingTurnCompletion: unknown | null };
+        await waitFor(() => harness.turnStarts().length === 2);
+
+        pushTerminalEvent(harness, duplicate, 'turn-old', 'cancelled');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(internals.pendingTurnCompletion).not.toBeNull();
+
+        const nextTurn = harness.turnStarts()[1];
+        harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
+        pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
+        await expect(followUp).resolves.toEqual({ aborted: false });
+
+        await client.disconnect();
+    });
+
+    it('completes an unseen turn without a turn/started notification', async () => {
+        const proc = createMockProcess({
+            onRequest: (msg, stdout) => {
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: {
+                            thread: { id: 'thread-fast', path: '/tmp/thread-fast' },
+                            model: 'gpt-test',
+                            modelProvider: 'openai',
+                            cwd: '/tmp/project',
+                            approvalPolicy: 'on-request',
+                            sandbox: { type: 'readOnly' },
+                            reasoningEffort: null,
+                        },
+                    });
+                }
+
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-fast' } } });
+                    pushJsonLine(stdout, {
+                        method: 'turn/completed',
+                        params: {
+                            threadId: 'thread-fast',
+                            turn: { id: 'turn-fast', status: 'completed', items: [], error: null },
+                        },
+                    });
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        await expect(client.sendTurnAndWait('fast turn')).resolves.toEqual({ aborted: false });
         await client.disconnect();
     });
 
