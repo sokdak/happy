@@ -1050,10 +1050,13 @@ export class CodexAppServerClient {
         }
 
         const abort = this.performAbortTurnWithFallback(opts);
-        this.pendingAbort = abort.finally(() => {
-            this.pendingAbort = null;
+        const operation = abort.finally(() => {
+            if (this.pendingAbort === operation) {
+                this.pendingAbort = null;
+            }
         });
-        return this.pendingAbort;
+        this.pendingAbort = operation;
+        return operation;
     }
 
     private async performAbortTurnWithFallback(opts?: {

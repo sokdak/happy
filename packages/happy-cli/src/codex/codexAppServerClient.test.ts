@@ -330,6 +330,49 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('does not clear a newer abort while a prior abort settles', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        type AbortResult = {
+            hadActiveTurn: boolean;
+            aborted: boolean;
+            forcedRestart: boolean;
+            resumedThread: boolean;
+        };
+        const internals = client as unknown as {
+            pendingAbort: Promise<AbortResult> | null;
+            performAbortTurnWithFallback: () => Promise<AbortResult>;
+        };
+        let settleFirstAbort!: (result: AbortResult) => void;
+        const firstAbortOperation = new Promise<AbortResult>((resolve) => {
+            settleFirstAbort = resolve;
+        });
+        internals.performAbortTurnWithFallback = () => firstAbortOperation;
+
+        const firstAbort = client.abortTurnWithFallback();
+        const newerAbort = Promise.resolve({
+            hadActiveTurn: true,
+            aborted: true,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+        internals.pendingAbort = newerAbort;
+        settleFirstAbort({
+            hadActiveTurn: false,
+            aborted: false,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+
+        await expect(firstAbort).resolves.toEqual({
+            hadActiveTurn: false,
+            aborted: false,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+        expect(internals.pendingAbort).toBe(newerAbort);
+    });
+
     it('reconnects and resumes the same thread after forced restart timeout', async () => {
         const firstProcessRequests: MockRpcMessage[] = [];
         const secondProcessRequests: MockRpcMessage[] = [];
