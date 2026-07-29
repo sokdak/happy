@@ -58,6 +58,13 @@ type PendingRequest = {
     epoch: number;
 };
 
+type AbortTurnResult = {
+    hadActiveTurn: boolean;
+    aborted: boolean;
+    forcedRestart: boolean;
+    resumedThread: boolean;
+};
+
 type LegacyPatchChanges = Record<string, Record<string, unknown>>;
 
 export type ApprovalHandler = (params: {
@@ -242,6 +249,7 @@ export class CodexAppServerClient {
     // Tracks in-flight interruptTurn() RPCs so sendTurnAndWait can wait for them
     // before starting a new turn (prevents stale turn/interrupt from aborting the next turn).
     private pendingInterrupt: Promise<void> | null = null;
+    private pendingAbort: Promise<AbortTurnResult> | null = null;
     private notificationProtocol: 'unknown' | 'legacy' | 'raw' = 'unknown';
     private completedTurnIds = new Set<string>();
     private rawFileChangesByItemId = new Map<string, LegacyPatchChanges>();
@@ -1033,10 +1041,25 @@ export class CodexAppServerClient {
      * Request turn interruption and optionally force-restart the app-server if
      * the turn does not settle within a short grace period.
      */
-    async abortTurnWithFallback(opts?: {
+    abortTurnWithFallback(opts?: {
         gracePeriodMs?: number;
         forceRestartOnTimeout?: boolean;
-    }): Promise<{ hadActiveTurn: boolean; aborted: boolean; forcedRestart: boolean; resumedThread: boolean }> {
+    }): Promise<AbortTurnResult> {
+        if (this.pendingAbort) {
+            return this.pendingAbort;
+        }
+
+        const abort = this.performAbortTurnWithFallback(opts);
+        this.pendingAbort = abort.finally(() => {
+            this.pendingAbort = null;
+        });
+        return this.pendingAbort;
+    }
+
+    private async performAbortTurnWithFallback(opts?: {
+        gracePeriodMs?: number;
+        forceRestartOnTimeout?: boolean;
+    }): Promise<AbortTurnResult> {
         const hadActiveTurn = this.hasPendingTurnCompletion();
 
         // No active turn pending in this client call-site.
@@ -1152,6 +1175,10 @@ export class CodexAppServerClient {
         extraInputItems?: InputItem[];
         turnTimeoutMs?: number;
     }): Promise<{ aborted: boolean }> {
+        if (this.pendingAbort) {
+            await this.pendingAbort;
+        }
+
         // Wait for any in-flight interruptTurn() to complete before starting a new
         // turn. Otherwise the stale turn/interrupt RPC can reach Codex after our
         // turn/start and abort the wrong turn.

@@ -98,6 +98,44 @@ async function waitFor(predicate: () => boolean, timeoutMs: number = 1000): Prom
     }
 }
 
+function createAbortBarrierHarness() {
+    const requests: MockRpcMessage[] = [];
+    const proc = createMockProcess({
+        onRequest: (msg, stdout) => {
+            requests.push(msg);
+
+            if (msg.method === 'thread/start' && msg.id != null) {
+                pushJsonLine(stdout, {
+                    id: msg.id,
+                    result: {
+                        thread: { id: 'thread-abort-barrier', path: '/tmp/thread-abort-barrier' },
+                        model: 'gpt-test',
+                        modelProvider: 'openai',
+                        cwd: '/tmp/project',
+                        approvalPolicy: 'on-request',
+                        sandbox: { type: 'readOnly' },
+                        reasoningEffort: null,
+                    },
+                });
+            }
+
+            if (msg.method === 'turn/start' && msg.id != null && requests.filter((request) => request.method === 'turn/start').length === 1) {
+                pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-old' } } });
+            }
+
+            if (msg.method === 'turn/interrupt' && msg.id != null) {
+                pushJsonLine(stdout, { id: msg.id, result: { abortReason: 'interrupted' } });
+            }
+        },
+    });
+
+    return {
+        proc,
+        push: (payload: unknown) => pushJsonLine(proc.stdout, payload),
+        turnStarts: () => requests.filter((msg) => msg.method === 'turn/start'),
+    };
+}
+
 const sandboxConfig: SandboxConfig = {
     enabled: true,
     workspaceRoot: '~/projects',
@@ -234,6 +272,61 @@ describe('CodexAppServerClient sandbox integration', () => {
         }, 10);
 
         await expect(reconnect).resolves.toBeUndefined();
+        await client.disconnect();
+    });
+
+    it('does not start a queued follow-up until abort fallback settles', async () => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const initialTurn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+
+        const abort = client.abortTurnWithFallback({
+            gracePeriodMs: 1000,
+            forceRestartOnTimeout: false,
+        });
+        await waitFor(() => harness.turnStarts().length === 1);
+        harness.push({
+            method: 'codex/event',
+            params: { msg: { type: 'task_complete', turn_id: 'turn-old' } },
+        });
+        await expect(initialTurn).resolves.toEqual({ aborted: false });
+
+        const followUp = client.sendTurnAndWait('queued follow-up');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(harness.turnStarts()).toHaveLength(1);
+
+        await expect(abort).resolves.toEqual({
+            hadActiveTurn: true,
+            aborted: true,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+
+        await waitFor(() => harness.turnStarts().length === 2);
+        const nextTurn = harness.turnStarts()[1];
+        harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
+        harness.push({
+            method: 'codex/event',
+            params: { msg: { type: 'task_started', turn_id: 'turn-next' } },
+        });
+        harness.push({
+            method: 'codex/event',
+            params: { msg: { type: 'task_complete', turn_id: 'turn-next' } },
+        });
+        await expect(followUp).resolves.toEqual({ aborted: false });
+
         await client.disconnect();
     });
 
