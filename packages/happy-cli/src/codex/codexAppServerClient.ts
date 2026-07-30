@@ -58,6 +58,13 @@ type PendingRequest = {
     epoch: number;
 };
 
+type AbortTurnResult = {
+    hadActiveTurn: boolean;
+    aborted: boolean;
+    forcedRestart: boolean;
+    resumedThread: boolean;
+};
+
 type LegacyPatchChanges = Record<string, Record<string, unknown>>;
 
 export type ApprovalHandler = (params: {
@@ -242,6 +249,7 @@ export class CodexAppServerClient {
     // Tracks in-flight interruptTurn() RPCs so sendTurnAndWait can wait for them
     // before starting a new turn (prevents stale turn/interrupt from aborting the next turn).
     private pendingInterrupt: Promise<void> | null = null;
+    private pendingAbort: Promise<AbortTurnResult> | null = null;
     private notificationProtocol: 'unknown' | 'legacy' | 'raw' = 'unknown';
     private completedTurnIds = new Set<string>();
     private rawFileChangesByItemId = new Map<string, LegacyPatchChanges>();
@@ -322,17 +330,18 @@ export class CodexAppServerClient {
         error: unknown,
         source: string,
     ): void {
-        const aborted = status === 'cancelled' || status === 'canceled' || status === 'aborted' || status === 'interrupted';
-
-        this.tryResolvePendingTurn(aborted, turnId, source);
-        this._turnId = null;
-
         if (turnId && this.completedTurnIds.has(turnId)) {
+            logger.debug(`[CodexAppServer] Ignoring duplicate ${source} for completed turn ${turnId}`);
             return;
         }
         if (turnId) {
             this.completedTurnIds.add(turnId);
         }
+
+        const aborted = status === 'cancelled' || status === 'canceled' || status === 'aborted' || status === 'interrupted';
+
+        this.tryResolvePendingTurn(aborted, turnId, source);
+        this._turnId = null;
 
         if (aborted) {
             this.eventHandler?.({
@@ -1033,10 +1042,28 @@ export class CodexAppServerClient {
      * Request turn interruption and optionally force-restart the app-server if
      * the turn does not settle within a short grace period.
      */
-    async abortTurnWithFallback(opts?: {
+    abortTurnWithFallback(opts?: {
         gracePeriodMs?: number;
         forceRestartOnTimeout?: boolean;
-    }): Promise<{ hadActiveTurn: boolean; aborted: boolean; forcedRestart: boolean; resumedThread: boolean }> {
+    }): Promise<AbortTurnResult> {
+        if (this.pendingAbort) {
+            return this.pendingAbort;
+        }
+
+        const abort = this.performAbortTurnWithFallback(opts);
+        const operation = abort.finally(() => {
+            if (this.pendingAbort === operation) {
+                this.pendingAbort = null;
+            }
+        });
+        this.pendingAbort = operation;
+        return operation;
+    }
+
+    private async performAbortTurnWithFallback(opts?: {
+        gracePeriodMs?: number;
+        forceRestartOnTimeout?: boolean;
+    }): Promise<AbortTurnResult> {
         const hadActiveTurn = this.hasPendingTurnCompletion();
 
         // No active turn pending in this client call-site.
@@ -1152,6 +1179,10 @@ export class CodexAppServerClient {
         extraInputItems?: InputItem[];
         turnTimeoutMs?: number;
     }): Promise<{ aborted: boolean }> {
+        if (this.pendingAbort) {
+            await this.pendingAbort;
+        }
+
         // Wait for any in-flight interruptTurn() to complete before starting a new
         // turn. Otherwise the stale turn/interrupt RPC can reach Codex after our
         // turn/start and abort the wrong turn.
@@ -1537,18 +1568,22 @@ export class CodexAppServerClient {
                 if (msg.type === 'task_started') {
                     this.markPendingTurnStarted(msg.turn_id ?? msg.turnId ?? null);
                 }
+                const isTerminal = msg.type === 'task_complete' || msg.type === 'turn_aborted';
+                const terminalTurnId = isTerminal ? msg.turn_id ?? msg.turnId ?? null : null;
+                if (isTerminal && terminalTurnId && this.completedTurnIds.has(terminalTurnId)) {
+                    logger.debug(`[CodexAppServer] Ignoring duplicate codex/event/${msg.type} for completed turn ${terminalTurnId}`);
+                    return;
+                }
+                if (isTerminal && terminalTurnId) {
+                    this.completedTurnIds.add(terminalTurnId);
+                }
                 // Fire event handler first (so consumer processes the event)
                 this.eventHandler?.(msg);
                 // Then resolve turn completion promise
-                if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
-                    const turnId = msg.turn_id ?? msg.turnId ?? null;
-                    // Mark as completed so v2 turn/completed doesn't duplicate
-                    if (turnId) {
-                        this.completedTurnIds.add(turnId);
-                    }
+                if (isTerminal) {
                     this.tryResolvePendingTurn(
                         msg.type === 'turn_aborted',
-                        turnId,
+                        terminalTurnId,
                         `codex/event/${msg.type}`,
                     );
                     this._turnId = null;
