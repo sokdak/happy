@@ -331,7 +331,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             method: 'codex/event',
             params: { msg: { type: 'task_complete', turn_id: 'turn-old' } },
         });
-        await expect(initialTurn).resolves.toEqual({ aborted: false });
+        await expect(initialTurn).resolves.toEqual({ aborted: false, timedOut: false });
 
         const followUp = client.sendTurnAndWait('queued follow-up');
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -355,7 +355,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             method: 'codex/event',
             params: { msg: { type: 'task_complete', turn_id: 'turn-next' } },
         });
-        await expect(followUp).resolves.toEqual({ aborted: false });
+        await expect(followUp).resolves.toEqual({ aborted: false, timedOut: false });
 
         await client.disconnect();
     });
@@ -386,7 +386,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         const initialTurn = client.sendTurnAndWait('initial turn');
         await waitFor(() => harness.turnStarts().length === 1);
         pushTerminalEvent(harness, first, 'turn-old', 'completed');
-        await expect(initialTurn).resolves.toEqual({ aborted: false });
+        await expect(initialTurn).resolves.toEqual({ aborted: false, timedOut: false });
 
         const followUp = client.sendTurnAndWait('queued follow-up');
         const internals = client as unknown as { pendingTurnCompletion: unknown | null };
@@ -400,7 +400,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         const nextTurn = harness.turnStarts()[1];
         harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
         pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
-        await expect(followUp).resolves.toEqual({ aborted: false });
+        await expect(followUp).resolves.toEqual({ aborted: false, timedOut: false });
 
         await client.disconnect();
     });
@@ -432,7 +432,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         await waitFor(() => harness.turnStarts().length === 1);
         pushTerminalEvent(harness, 'legacy', 'turn-old', 'completed');
 
-        await expect(turn).resolves.toEqual({ aborted: false });
+        await expect(turn).resolves.toEqual({ aborted: false, timedOut: false });
         expect(terminalEvents).toHaveLength(1);
 
         await client.disconnect();
@@ -480,7 +480,48 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'read-only',
         });
 
-        await expect(client.sendTurnAndWait('fast turn')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('fast turn')).resolves.toEqual({ aborted: false, timedOut: false });
+        await client.disconnect();
+    });
+
+    it('reports a timed-out turn as timedOut so callers can surface it to the user', async () => {
+        const proc = createMockProcess({
+            onRequest: (msg, stdout) => {
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: {
+                            thread: { id: 'thread-timeout', path: '/tmp/thread-timeout' },
+                            model: 'gpt-test',
+                            modelProvider: 'openai',
+                            cwd: '/tmp/project',
+                            approvalPolicy: 'on-request',
+                            sandbox: { type: 'readOnly' },
+                            reasoningEffort: null,
+                        },
+                    });
+                }
+
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    // Acknowledge the turn but never send any completion event.
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-hang' } } });
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        await expect(client.sendTurnAndWait('hang with no completion', { turnTimeoutMs: 50 }))
+            .resolves.toEqual({ aborted: true, timedOut: true });
         await client.disconnect();
     });
 
@@ -637,7 +678,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             forceRestartOnTimeout: true,
         });
 
-        await expect(pendingTurn).resolves.toEqual({ aborted: true });
+        await expect(pendingTurn).resolves.toEqual({ aborted: true, timedOut: false });
         expect(abortResult).toEqual({
             hadActiveTurn: true,
             aborted: true,
@@ -662,7 +703,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         }));
         expect(client.threadId).toBe('thread-1');
 
-        await expect(client.sendTurnAndWait('follow up after reconnect')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('follow up after reconnect')).resolves.toEqual({ aborted: false, timedOut: false });
 
         await client.disconnect();
     });
@@ -758,7 +799,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         });
 
         expect(Date.now() - startedAt).toBeLessThan(1000);
-        await expect(pendingTurn).resolves.toEqual({ aborted: true });
+        await expect(pendingTurn).resolves.toEqual({ aborted: true, timedOut: false });
         expect(firstProcessRequests.some((msg) => msg.method === 'turn/interrupt')).toBe(true);
         expect(abortResult).toEqual({
             hadActiveTurn: true,
@@ -1305,7 +1346,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'danger-full-access',
         });
 
-        await expect(client.sendTurnAndWait('run pwd')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('run pwd')).resolves.toEqual({ aborted: false, timedOut: false });
 
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({ type: 'task_started', turn_id: 'turn-raw-1' }),
@@ -1622,7 +1663,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'danger-full-access',
         });
 
-        await expect(client.sendTurnAndWait('patch the file')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('patch the file')).resolves.toEqual({ aborted: false, timedOut: false });
 
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({
@@ -1957,7 +1998,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'danger-full-access',
         });
 
-        await expect(client.sendTurnAndWait('say hi')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('say hi')).resolves.toEqual({ aborted: false, timedOut: false });
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({ type: 'task_started', turn_id: 'turn-raw-2' }),
             expect.objectContaining({ type: 'agent_message', message: 'still works' }),
