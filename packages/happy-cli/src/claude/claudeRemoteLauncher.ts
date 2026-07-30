@@ -427,8 +427,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         logger.debug('[remote]: Session reset');
                         session.clearSessionId();
                     },
-                    onReady: () => {
-                        session.client.closeClaudeSessionTurn('completed');
+                    onReady: (status) => {
+                        session.client.closeClaudeSessionTurn(status ?? 'completed');
                         if (!pending && session.queue.size() === 0) {
                             session.api.push().sendSessionNotification({
                                 kind: 'done',

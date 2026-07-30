@@ -1051,7 +1051,16 @@ export async function runCodex(opts: {
                     appendSystemPromptInjected = true;
                 }
 
-                if (result.aborted) {
+                if (result.timedOut) {
+                    // A timed-out turn never produced a turn_aborted event, so
+                    // nothing reached the app — without this the session just
+                    // goes idle with no response and no error.
+                    messageBuffer.addMessage('Turn timed out waiting for Codex', 'status');
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Codex error: the turn timed out without a response and was abandoned. Try sending your message again.',
+                    });
+                } else if (result.aborted) {
                     // Turn was aborted (user abort or permission cancel).
                     // UI handling already done by the event handler (turn_aborted).
                     logger.debug('[Codex] Turn aborted');

@@ -273,7 +273,10 @@ async function readSessionEntries(projectDir: string, sessionId: string): Promis
             
             let parsed = RawJSONLinesSchema.safeParse(message);
             if (!parsed.success) {
-                // Unknown message types are silently skipped
+                // Unknown message types are skipped, but leave a trace: a schema
+                // mismatch here drops transcript content from the app with no
+                // other signal anywhere (see #1553 for a shipped example).
+                logger.debug(`[SESSION_SCANNER] Skipping transcript line failing schema validation: type=${message?.type ?? 'unknown'} — ${parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).slice(0, 3).join('; ')}`);
                 continue;
             }
             entries.push({

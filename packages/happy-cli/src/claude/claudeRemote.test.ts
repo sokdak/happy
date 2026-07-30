@@ -105,4 +105,95 @@ describe('claudeRemote', () => {
             isCompactSummary: true,
         }));
     });
+
+    it('surfaces error results to the user and closes the turn as failed', async () => {
+        vi.mocked(query).mockReturnValue({
+            setPermissionMode: vi.fn(),
+            async *[Symbol.asyncIterator]() {
+                yield {
+                    type: 'result',
+                    subtype: 'error_during_execution',
+                    is_error: true,
+                    num_turns: 2,
+                };
+            },
+        } as any);
+
+        const onCompletionEvent = vi.fn();
+        const onReady = vi.fn();
+        let messageCount = 0;
+
+        await claudeRemote({
+            sessionId: null,
+            path: process.cwd(),
+            allowedTools: [],
+            hookSettingsPath: '/tmp/happy-test-settings.json',
+            nextMessage: async () => {
+                messageCount += 1;
+                return messageCount === 1
+                    ? {
+                        message: 'do something',
+                        mode,
+                    }
+                    : null;
+            },
+            onReady,
+            canCallTool: async () => ({ behavior: 'allow' }) as any,
+            isAborted: () => false,
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            onMessage: vi.fn(),
+            onCompletionEvent,
+            onSessionReset: vi.fn(),
+        });
+
+        expect(onCompletionEvent).toHaveBeenCalledWith(expect.stringMatching(/error during execution/i));
+        expect(onReady).toHaveBeenCalledWith('failed');
+    });
+
+    it('closes clean turns as completed without emitting an error event', async () => {
+        vi.mocked(query).mockReturnValue({
+            setPermissionMode: vi.fn(),
+            async *[Symbol.asyncIterator]() {
+                yield {
+                    type: 'result',
+                    subtype: 'success',
+                    is_error: false,
+                    result: 'All done',
+                    num_turns: 1,
+                };
+            },
+        } as any);
+
+        const onCompletionEvent = vi.fn();
+        const onReady = vi.fn();
+        let messageCount = 0;
+
+        await claudeRemote({
+            sessionId: null,
+            path: process.cwd(),
+            allowedTools: [],
+            hookSettingsPath: '/tmp/happy-test-settings.json',
+            nextMessage: async () => {
+                messageCount += 1;
+                return messageCount === 1
+                    ? {
+                        message: 'do something',
+                        mode,
+                    }
+                    : null;
+            },
+            onReady,
+            canCallTool: async () => ({ behavior: 'allow' }) as any,
+            isAborted: () => false,
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            onMessage: vi.fn(),
+            onCompletionEvent,
+            onSessionReset: vi.fn(),
+        });
+
+        expect(onCompletionEvent).not.toHaveBeenCalled();
+        expect(onReady).toHaveBeenCalledWith('completed');
+    });
 });

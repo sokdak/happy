@@ -1,5 +1,5 @@
 import { EnhancedMode } from "./loop";
-import { query, type CanCallToolOptions, type QueryOptions, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
+import { query, type CanCallToolOptions, type QueryOptions, type SDKMessage, type SDKSystemMessage, type SDKResultMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import type { MessageParam } from '@anthropic-ai/sdk/resources'
 import { mapToClaudeMode } from "./utils/permissionMode";
 import { mapToClaudeModel } from "./utils/modelAlias";
@@ -14,6 +14,7 @@ import { systemPrompt } from "./utils/systemPrompt";
 import { PermissionResult } from "./sdk/types";
 import type { JsRuntime } from "./runClaude";
 import { fromRateLimitEvent, windowsFromGetUsage, type UnboundRateLimit, type UsageLimitsPatch, type RateLimitEventInfo } from "./utils/usageLimits";
+import { describeClaudeResultFailure } from "./utils/resultFailure";
 import type { UsageLimitWindow } from "@/api/types";
 
 export async function claudeRemote(opts: {
@@ -36,7 +37,8 @@ export async function claudeRemote(opts: {
 
     // Dynamic parameters
     nextMessage: () => Promise<{ message: MessageParam['content'], mode: EnhancedMode } | null>,
-    onReady: () => void,
+    /** Called when a turn finishes; status defaults to 'completed' when omitted. */
+    onReady: (status?: 'completed' | 'failed') => void,
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
@@ -332,17 +334,27 @@ export async function claudeRemote(opts: {
                 // sessions and experimental besides, so failures are ignored.
                 scheduleUsageFlush();
 
+                // Error results never enter the transcript log, so this event
+                // is the only way the app learns the turn failed at all.
+                const failure = describeClaudeResultFailure(message as SDKResultMessage);
+                if (failure) {
+                    logger.debug(`[claudeRemote] Turn failed: ${failure}`);
+                    if (opts.onCompletionEvent) {
+                        opts.onCompletionEvent(failure);
+                    }
+                }
+
                 // Send completion messages
                 if (isCompactCommand) {
                     logger.debug('[claudeRemote] Compaction completed');
-                    if (opts.onCompletionEvent) {
+                    if (!failure && opts.onCompletionEvent) {
                         opts.onCompletionEvent('Compaction completed');
                     }
                     isCompactCommand = false;
                 }
 
                 // Send ready event
-                opts.onReady();
+                opts.onReady(failure ? 'failed' : 'completed');
 
                 // Wait for next user message without blocking the message loop.
                 // Background task messages (task_started, task_progress, task_notification)
@@ -354,7 +366,8 @@ export async function claudeRemote(opts: {
                         mode = next.mode;
                         messages.push({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: next.message } });
                     }
-                }).catch(() => {
+                }).catch((e) => {
+                    logger.debug('[claudeRemote] nextMessage failed — ending message stream', e);
                     messages.end();
                 });
             }

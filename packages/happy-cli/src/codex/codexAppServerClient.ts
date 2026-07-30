@@ -1169,6 +1169,9 @@ export class CodexAppServerClient {
     /**
      * Send a user turn and wait for it to complete (task_complete or turn_aborted).
      * Returns { aborted: true } if the turn was aborted (user cancel, permission reject, etc.).
+     * A timed-out turn resolves with { aborted: true, timedOut: true }: no completion
+     * event ever arrived from Codex, so unless the caller reports it the user
+     * sees the session go idle with no response at all.
      */
     async sendTurnAndWait(prompt: string, opts?: {
         model?: string;
@@ -1178,7 +1181,7 @@ export class CodexAppServerClient {
         effort?: ReasoningEffort;
         extraInputItems?: InputItem[];
         turnTimeoutMs?: number;
-    }): Promise<{ aborted: boolean }> {
+    }): Promise<{ aborted: boolean; timedOut: boolean }> {
         if (this.pendingAbort) {
             await this.pendingAbort;
         }
@@ -1196,6 +1199,7 @@ export class CodexAppServerClient {
 
         const timeoutMs = opts?.turnTimeoutMs ?? CodexAppServerClient.TURN_TIMEOUT_MS;
         let timer: ReturnType<typeof setTimeout> | null = null;
+        let timedOut = false;
 
         const completion = new Promise<boolean>((resolve) => {
             this.pendingTurnCompletion = {
@@ -1206,6 +1210,7 @@ export class CodexAppServerClient {
             timer = setTimeout(() => {
                 if (this.pendingTurnCompletion) {
                     logger.warn(`[CodexAppServer] Turn timed out after ${timeoutMs}ms — treating as abort`);
+                    timedOut = true;
                     this.resolvePendingTurn(true);
                 }
             }, timeoutMs);
@@ -1221,7 +1226,7 @@ export class CodexAppServerClient {
 
         const aborted = await completion;
         if (timer) clearTimeout(timer);
-        return { aborted };
+        return { aborted, timedOut };
     }
 
     async interruptTurn(opts?: { timeoutMs?: number }): Promise<void> {
