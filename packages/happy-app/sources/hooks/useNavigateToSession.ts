@@ -15,15 +15,17 @@ export function navigateToSession(router: Router, sessionId: string, currentPath
         trackSessionSwitched(session);
     }
 
-    const href = `/session/${encodeURIComponent(sessionId)}`;
+    // The template literal is repeated rather than hoisted into a variable on
+    // purpose: typedRoutes needs the literal type, and assigning it to a
+    // `const` first widens it to `string`, which is not assignable to `Href`.
     if (mode === 'replace') {
         // Session-to-session moves replace rather than push. Pushing left every
         // visited session screen mounted — with its ChatList and store
         // subscriptions — for the lifetime of the tab.
-        router.replace(href);
+        router.replace(`/session/${encodeURIComponent(sessionId)}`);
         return;
     }
-    router.push(href);
+    router.push(`/session/${encodeURIComponent(sessionId)}`);
 }
 
 export function useNavigateToSession() {
