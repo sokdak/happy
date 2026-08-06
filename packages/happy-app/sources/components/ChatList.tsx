@@ -316,7 +316,7 @@ const ChatListInternal = React.memo((props: {
                     metadata={props.metadata}
                     sessionId={props.sessionId}
                     expanded={!collapsedGroups.has(item.id)}
-                    onToggle={() => handleToggleGroup(item.id)}
+                    onToggle={handleToggleGroup}
                 />
             );
         }
@@ -327,7 +327,7 @@ const ChatListInternal = React.memo((props: {
                     metadata={props.metadata}
                     sessionId={props.sessionId}
                     expanded={!collapsedGroups.has(item.id)}
-                    onToggle={() => handleToggleGroup(item.id)}
+                    onToggle={handleToggleGroup}
                 />
             );
         }

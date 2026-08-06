@@ -24,7 +24,9 @@ interface ToolGroupViewProps {
     metadata: Metadata | null;
     sessionId: string;
     expanded: boolean;
-    onToggle: () => void;
+    // Takes the group id so call sites can pass a stable handler. An inline
+    // closure here defeated React.memo on every render.
+    onToggle: (groupId: string) => void;
     nested?: boolean;
     hideSingleToolChildren?: boolean;
     forceCompleted?: boolean;
@@ -42,7 +44,7 @@ export const ToolGroupView = React.memo<ToolGroupViewProps>((props) => {
         : null;
     const handleSingleToolPress = React.useCallback(() => {
         if (!singleToolMessage) {
-            onToggle();
+            onToggle(group.id);
             return;
         }
         const filePath = isFileEditTool(singleToolMessage.tool.name) && typeof singleToolMessage.tool.input?.file_path === 'string'
@@ -53,7 +55,7 @@ export const ToolGroupView = React.memo<ToolGroupViewProps>((props) => {
             return;
         }
         router.push(`/session/${sessionId}/message/${singleToolMessage.id}`);
-    }, [onToggle, router, sessionId, singleToolMessage]);
+    }, [group.id, onToggle, router, sessionId, singleToolMessage]);
     const renderGroupMessage = React.useCallback((msg: Message) => (
         <ToolGroupMessageRow
             key={msg.id}
@@ -69,7 +71,7 @@ export const ToolGroupView = React.memo<ToolGroupViewProps>((props) => {
                 expanded={expanded}
                 hasRunning={hasRunning}
                 label={summary}
-                onPress={singleToolMessage ? handleSingleToolPress : onToggle}
+                onPress={singleToolMessage ? handleSingleToolPress : () => onToggle(group.id)}
                 category={summaryCategory}
                 showChevron
             />
@@ -101,7 +103,9 @@ interface AgentWorkGroupViewProps {
     metadata: Metadata | null;
     sessionId: string;
     expanded: boolean;
-    onToggle: () => void;
+    // Takes the group id so call sites can pass a stable handler. An inline
+    // closure here defeated React.memo on every render.
+    onToggle: (groupId: string) => void;
 }
 
 export const AgentWorkGroupView = React.memo<AgentWorkGroupViewProps>((props) => {
@@ -177,7 +181,7 @@ export const AgentWorkGroupView = React.memo<AgentWorkGroupViewProps>((props) =>
                     metadata={metadata}
                     sessionId={sessionId}
                     expanded={!collapsedToolGroups.has(item.id)}
-                    onToggle={() => handleToggleNestedGroup(item.id)}
+                    onToggle={handleToggleNestedGroup}
                     nested
                     hideSingleToolChildren
                     forceCompleted={isCompleted}
@@ -201,7 +205,7 @@ export const AgentWorkGroupView = React.memo<AgentWorkGroupViewProps>((props) =>
                     expanded={expanded}
                     hasRunning={!isCompleted && group.hasRunning}
                     label={label}
-                    onPress={onToggle}
+                    onPress={() => onToggle(group.id)}
                 />
                 {expanded && (
                     <View style={styles.content}>
