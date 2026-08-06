@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Message } from '@/sync/typesMessage';
 import { knownTools } from '@/components/tools/knownTools';
 import { t } from '@/text';
+import { reconcileDisplayItems } from './displayItemReconcile';
 
 // Display item types for the grouped message list
 export type TextItem = {
@@ -45,8 +46,15 @@ export function useGroupedMessages(
     options: { collapseCurrentTurn?: boolean } = {},
 ): DisplayItem[] {
     const collapseCurrentTurn = options.collapseCurrentTurn ?? true;
+    // Group objects are freshly allocated on every regrouping, so reconcile
+    // against the previous result to restore identity for untouched groups.
+    // Without this, every group cell re-renders on every streamed token.
+    const previousRef = React.useRef<DisplayItem[]>([]);
     return React.useMemo(() => {
-        return groupMessagesForDisplay(messages, enabled, { collapseCurrentTurn });
+        const grouped = groupMessagesForDisplay(messages, enabled, { collapseCurrentTurn });
+        const reconciled = reconcileDisplayItems(previousRef.current, grouped);
+        previousRef.current = reconciled;
+        return reconciled;
     }, [messages, enabled, collapseCurrentTurn]);
 }
 
