@@ -8,9 +8,9 @@ const DEMO_SESSION_ID = 'demo-messages-session';
 export function useDemoMessages(messages: Message[]) {
     useEffect(() => {
         // Create messages map
-        const messagesMap: Record<string, Message> = {};
+        const messagesMap = new Map<string, Message>();
         messages.forEach(msg => {
-            messagesMap[msg.id] = msg;
+            messagesMap.set(msg.id, msg);
         });
 
         // Sort messages by createdAt
