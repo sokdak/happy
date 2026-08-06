@@ -903,19 +903,23 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Consumes: everything from Tasks 1-4.
 - Produces: the measured per-message cost, recorded below.
 
-**Context you need:** The investigation benchmark bundled the real modules with esbuild and stubbed three imports. Rebuild it against the current tree so the numbers reflect the new merge path.
+**Context you need:** The investigation benchmark bundled the real modules with esbuild and stubbed three imports.
 
-- [ ] **Step 1: Rebuild and run the benchmark**
+**Correction — do not use `bench.ts` for this.** The investigation harness defines its own local `storageMergeSort` copy of the old clone-and-sort; it never imports the store's real merge path, so running it proves nothing about this change. Use `bench3.ts`, which imports `mergeMessagesInto` from `sources/sync/messageList.ts` and keeps the old path only as a labelled baseline.
+
+- [x] **Step 1: Rebuild and run the benchmark**
 
 The harness lives in `/tmp/happybench`. If it is gone, recreate `react.stub.ts` exporting `useMemo`/`useRef`, `knownTools.stub.ts` exporting `knownTools`, `text.stub.ts` exporting `t`, and `types.stub.ts` exporting `Message`/`ToolCallMessage` as `any`, then bundle with:
 
 ```bash
-cd /tmp/happybench && npx --yes esbuild@0.24.0 bench.ts --bundle --platform=node --format=esm --outfile=bench.mjs \
+cd /tmp/happybench && npx --yes esbuild@0.24.0 bench3.ts --bundle --platform=node --format=esm --outfile=bench3.mjs \
   --alias:react=/tmp/happybench/react.stub.ts \
   '--alias:@/components/tools/knownTools=/tmp/happybench/knownTools.stub.ts' \
   '--alias:@/text=/tmp/happybench/text.stub.ts' \
-  '--alias:@/sync/typesMessage=/tmp/happybench/types.stub.ts' && node bench.mjs
+  '--alias:@/sync/typesMessage=/tmp/happybench/types.stub.ts' && node bench3.mjs
 ```
+
+Seed the lookup `Map` outside the timed loop and use a distinct message id per iteration, or the numbers measure seeding and the replace branch instead of insertion.
 
 - [ ] **Step 2: Record the result**
 
@@ -944,13 +948,19 @@ Baseline, from the investigation:
 | 2000 | 0.233 ms | 0.522 ms | 0.755 ms |
 | 8000 | 1.141 ms | 2.798 ms | 3.938 ms |
 
-After, to be filled in by Task 5:
+After, measured against the real `mergeMessagesInto`:
 
 | messages | grouping | merge (incremental) | total per message |
 |---|---|---|---|
-| 500 | | | |
-| 2000 | | | |
-| 8000 | | | |
+| 500 | 0.125 ms | 0.002 ms | 0.127 ms |
+| 2000 | 0.193 ms | 0.003 ms | 0.196 ms |
+| 8000 | 1.000 ms | 0.015 ms | 1.016 ms |
+
+The merge is 170x cheaper at 8000 messages (2.544 ms to 0.015 ms measured in the same run), and the per-message total drops 3.5x. Grouping is now the dominant remaining cost, which is expected: incremental grouping was deferred, so that column is unchanged within noise.
+
+**Task 5's original instruction was wrong.** It said to rebuild and run `/tmp/happybench/bench.ts`, but that harness defines its own local `storageMergeSort` replica of the old clone-and-sort and never imports the store's real merge path. Running it as written would have produced numbers that say nothing about this change. The corrected harness, `/tmp/happybench/bench3.ts`, imports `mergeMessagesInto` from `sources/sync/messageList.ts` directly and keeps the old path only as a labelled baseline. The figures above come from that.
+
+Two measurement details worth preserving. The lookup `Map` must be seeded outside the timed loop, or seeding dominates and hides the merge cost entirely. And each timed iteration must insert a distinct message id, since inserting the same id repeatedly exercises the replace branch rather than the insert branch.
 
 ## Not In Scope
 
