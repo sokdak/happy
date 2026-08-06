@@ -37,7 +37,7 @@ The cost grows with session length and is paid once per message. In the browser,
 
 ### Fix A — bound the navigation stack
 
-Introduce a pure decision function in `sources/hooks/useNavigateToSession.ts`:
+Introduce a pure decision function in a new module, `sources/hooks/sessionNavigation.ts`. It is a separate file with no imports at all, so its test needs no mocking of `expo-router`, the store, or analytics — the same separation `sources/utils/newSessionSidebarLayout.ts` uses for layout gating.
 
 ```ts
 export type SessionNavigationMode = 'push' | 'replace' | 'noop';
@@ -50,9 +50,12 @@ export function resolveSessionNavigation(
 
 Rules, in order:
 
-1. If the current pathname is exactly the target session's own chat screen (`/session/{target}` with no sub-route), return `noop`. This keeps re-selecting the already-open session from performing a pointless `replace`.
-2. If the current pathname begins with `/session/`, return `replace`.
-3. Otherwise return `push`.
+1. If the current pathname does not begin with `/session/`, return `push`.
+2. If the pathname's first segment after `/session/` is a static child route rather than a session id, return `push`. `recent` (`app/(app)/session/recent.tsx`) is the only such route, and it is a browse surface — pushing from it keeps the recent list reachable via back, exactly as it is today.
+3. If the current pathname is exactly the target session's own chat screen (`/session/{target}` with no sub-route), return `noop`. This keeps re-selecting the already-open session from performing a pointless `replace`.
+4. Otherwise return `replace`.
+
+Rule 2 exists because `/session/recent` and `/session/{id}` have the same shape. Without it, opening a session from the recent list would replace the list instead of pushing over it, silently changing that screen's back behavior — a regression unrelated to the goal.
 
 Session ids are percent-encoded in the route. The comparison in rule 1 decodes the pathname segment before comparing it to `targetSessionId`, so a session id containing reserved characters does not produce a false `push`.
 
@@ -64,6 +67,8 @@ Wiring:
 
 - `useNavigateToSession()` reads `usePathname()` internally and passes it through. This is the pattern `SessionsList.tsx:232` already uses to derive `selectedSessionId`.
 - The standalone `navigateToSession(router, sessionId, currentPathname)` gains an explicit `currentPathname` parameter rather than reaching for router internals. Its only caller, `sources/app/_layout.tsx:321`, is already inside a component's `useCallback` and can supply `usePathname()`.
+
+That call site needs one specific precaution. The enclosing `handleNotificationResponse` callback is declared with a `[router]` dependency list and is itself a dependency of the effect at `_layout.tsx:331-356`, which registers a notification listener and reads the last notification response. Adding `pathname` to the callback's dependencies would tear down and re-register that listener on every navigation. The pathname is therefore held in a ref that is updated on each render and read inside the callback, leaving the dependency list unchanged.
 
 `trackSessionSwitched` continues to fire for `push` and `replace`. It is skipped for `noop`, because no switch occurs.
 
@@ -113,16 +118,19 @@ If pathname decoding throws on malformed percent-encoding, the raw segment is co
 
 ## Testing
 
-Unit tests, in `sources/hooks/useNavigateToSession.spec.ts`, run under the existing vitest setup (`include: ['sources/**/*.{spec,test}.ts']`):
+Unit tests, in `sources/hooks/sessionNavigation.spec.ts`, run under the existing vitest setup (`include: ['sources/**/*.{spec,test}.ts']`):
 
 - home pathname yields `push`
+- `/session/recent` yields `push`, not `replace`
 - a different session's pathname yields `replace`
 - the target session's own chat pathname yields `noop`
 - a different session's sub-route (`/session/A/info`, target B) yields `replace`
 - the target's own sub-route (`/session/A/info`, target A) yields `replace`, not `noop`
 - a percent-encoded session id matching the target yields `noop`
-- a session id whose encoded and decoded forms differ does not yield a false `push`
+- a malformed percent-encoded pathname does not throw and yields `replace`
 - an unrecognised or empty pathname yields `push`
+
+The wiring is additionally guarded by the existing `hooks/useStartSessionFromDraft.test.ts`, which mocks `useNavigateToSession` and asserts it is called with a single session id. The hook's returned signature is unchanged, so that suite must keep passing untouched.
 
 Written before the implementation, per test-driven-development.
 
