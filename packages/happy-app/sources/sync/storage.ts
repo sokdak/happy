@@ -14,6 +14,7 @@ import type { GitStatusFiles } from "./gitStatusFiles";
 import type { ProjectFilesList } from "./projectFiles";
 import { createReducer, reducer, ReducerState } from "./reducer/reducer";
 import { Message } from "./typesMessage";
+import { mergeMessagesInto } from './messageList';
 import { NormalizedMessage } from "./typesRaw";
 import { isMachineOnline } from '@/utils/machineUtils';
 import { getSessionName, getSessionSubtitle, getSessionAvatarId, type SessionState } from '@/utils/sessionUtils';
@@ -61,7 +62,11 @@ export type KnownEntitlements = 'pro';
 
 interface SessionMessages {
     messages: Message[];
-    messagesMap: Record<string, Message>;
+    // A Map, and mutated in place by mergeMessagesInto. Cloning it per
+    // incoming message was the largest cost in this file; nothing depends on
+    // its identity for change detection because the reducer emits new Message
+    // objects for changed ids.
+    messagesMap: Map<string, Message>;
     reducerState: ReducerState;
     isLoaded: boolean;
     // True when the server reported more older messages exist beyond the
@@ -406,7 +411,7 @@ export const storage = create<StorageState>()((set, get) => {
             if (!toolCall) {
                 return true;
             }
-            const toolCallMessage = sessionMessages.messagesMap[toolCall];
+            const toolCallMessage = sessionMessages.messagesMap.get(toolCall);
             if (!toolCallMessage || toolCallMessage.kind !== 'tool-call') {
                 return true;
             }
@@ -566,13 +571,12 @@ export const storage = create<StorageState>()((set, get) => {
 
                     // Always update the session messages, even if no new messages were created
                     // This ensures the reducer state is updated with the new AgentState
-                    const mergedMessagesMap = { ...existingSessionMessages.messagesMap };
-                    processedMessages.forEach(message => {
-                        mergedMessagesMap[message.id] = message;
-                    });
-
-                    const messagesArray = Object.values(mergedMessagesMap)
-                        .sort((a, b) => b.createdAt - a.createdAt);
+                    const mergedMessagesMap = existingSessionMessages.messagesMap;
+                    const messagesArray = mergeMessagesInto(
+                        existingSessionMessages.messages,
+                        mergedMessagesMap,
+                        processedMessages,
+                    );
 
                     updatedSessionMessages[session.id] = {
                         messages: messagesArray,
@@ -670,7 +674,7 @@ export const storage = create<StorageState>()((set, get) => {
                 // Resolve session messages state
                 const existingSession: SessionMessages = state.sessionMessages[sessionId] || {
                     messages: [],
-                    messagesMap: {},
+                    messagesMap: new Map(),
                     reducerState: createReducer(),
                     isLoaded: false,
                     hasMoreOlder: false,
@@ -695,14 +699,12 @@ export const storage = create<StorageState>()((set, get) => {
                 }
 
                 // Merge messages
-                const mergedMessagesMap = { ...existingSession.messagesMap };
-                processedMessages.forEach(message => {
-                    mergedMessagesMap[message.id] = message;
-                });
-
-                // Convert to array and sort by createdAt
-                const messagesArray = Object.values(mergedMessagesMap)
-                    .sort((a, b) => b.createdAt - a.createdAt);
+                const mergedMessagesMap = existingSession.messagesMap;
+                const messagesArray = mergeMessagesInto(
+                    existingSession.messages,
+                    mergedMessagesMap,
+                    processedMessages,
+                );
 
                 // Update session with todos and latestUsage
                 // IMPORTANT: We extract latestUsage from the mutable reducerState and copy it to the Session object
@@ -758,19 +760,12 @@ export const storage = create<StorageState>()((set, get) => {
 
                 // Process AgentState if it exists
                 let messages: Message[] = [];
-                let messagesMap: Record<string, Message> = {};
+                const messagesMap = new Map<string, Message>();
 
                 if (agentState) {
                     // Process AgentState through reducer to get initial permission messages
                     const reducerResult = reducer(reducerState, [], agentState);
-                    const processedMessages = reducerResult.messages;
-
-                    processedMessages.forEach(message => {
-                        messagesMap[message.id] = message;
-                    });
-
-                    messages = Object.values(messagesMap)
-                        .sort((a, b) => b.createdAt - a.createdAt);
+                    messages = mergeMessagesInto(messages, messagesMap, reducerResult.messages);
                 }
 
                 // Extract latestUsage from reducerState if available and update session
@@ -1430,7 +1425,7 @@ export function useSessionMessages(sessionId: string): {
 export function useMessage(sessionId: string, messageId: string): Message | null {
     return storage(useShallow((state) => {
         const session = state.sessionMessages[sessionId];
-        return session?.messagesMap[messageId] ?? null;
+        return session?.messagesMap.get(messageId) ?? null;
     }));
 }
 

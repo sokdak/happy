@@ -2818,7 +2818,7 @@ class Sync {
         const result = storage.getState().applyMessages(sessionId, messages);
         let m: Message[] = [];
         for (let messageId of result.changed) {
-            const message = storage.getState().sessionMessages[sessionId].messagesMap[messageId];
+            const message = storage.getState().sessionMessages[sessionId].messagesMap.get(messageId);
             if (message) {
                 m.push(message);
             }

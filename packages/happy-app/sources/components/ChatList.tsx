@@ -316,7 +316,7 @@ const ChatListInternal = React.memo((props: {
                     metadata={props.metadata}
                     sessionId={props.sessionId}
                     expanded={!collapsedGroups.has(item.id)}
-                    onToggle={() => handleToggleGroup(item.id)}
+                    onToggle={handleToggleGroup}
                 />
             );
         }
@@ -327,7 +327,7 @@ const ChatListInternal = React.memo((props: {
                     metadata={props.metadata}
                     sessionId={props.sessionId}
                     expanded={!collapsedGroups.has(item.id)}
-                    onToggle={() => handleToggleGroup(item.id)}
+                    onToggle={handleToggleGroup}
                 />
             );
         }
@@ -450,6 +450,19 @@ const ChatListInternal = React.memo((props: {
                 onScrollEndDrag={handleScrollEndDrag}
                 onMomentumScrollEnd={handleMomentumScrollEnd}
                 scrollEventThrottle={16}
+                // Without these, this list inherits FlatList's windowSize of
+                // 21 — about twenty-one viewport-heights of markdown and tool
+                // cells kept mounted. It is the heaviest surface in the app,
+                // and SessionsList already tunes far lighter rows.
+                //
+                // Values are deliberately conservative. Cell heights are
+                // markdown-driven so getItemLayout cannot be supplied, and an
+                // over-tight window on an inverted list can show blank regions
+                // during fast scrolling. removeClippedSubviews is left off: it
+                // is known to break inverted lists and react-native-web.
+                windowSize={10}
+                maxToRenderPerBatch={5}
+                initialNumToRender={15}
                 onLayout={(event) => {
                     scrollMetricsRef.current.viewportHeight = event.nativeEvent.layout.height;
                     updateHeaderBackdropVisibility();
