@@ -16,6 +16,10 @@ const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
     'file-history-snapshot',
     'change',
     'queue-operation',
+    'last-prompt',
+    'ai-title',
+    'relocated',
+    'mode',
 ]);
 
 export type ScannerTranscriptEvent = ClaudeGoalStatusTranscriptEvent;
@@ -270,7 +274,16 @@ async function readSessionEntries(projectDir: string, sessionId: string): Promis
                 });
                 continue;
             }
-            
+
+            // 'attachment' lines are only a message in the RawJSONLinesSchema
+            // sense when they're a goal-status attachment (handled above).
+            // Every other attachment is a known, expected internal event —
+            // skip it silently rather than falling through to the schema
+            // check below, which would treat every one as an error.
+            if (message.type === 'attachment') {
+                continue;
+            }
+
             let parsed = RawJSONLinesSchema.safeParse(message);
             if (!parsed.success) {
                 // Unknown message types are skipped, but leave a trace: a schema

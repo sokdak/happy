@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+
+vi.mock('@/ui/logger', () => ({
+  logger: { debug: vi.fn() },
+}))
+
 import { createSessionScanner } from './sessionScanner'
 import { RawJSONLines } from '../types'
 import type { ClaudeGoalStatusTranscriptEvent } from '../claudeGoalStatus'
@@ -7,6 +12,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { getProjectPath } from './path'
+import { logger } from '@/ui/logger'
 
 describe('sessionScanner', () => {
   let testDir: string
@@ -25,6 +31,7 @@ describe('sessionScanner', () => {
 
     collectedMessages = []
     collectedTranscriptEvents = []
+    vi.mocked(logger.debug).mockClear()
   })
   
   afterEach(async () => {
@@ -380,5 +387,36 @@ describe('sessionScanner', () => {
       isApiErrorMessage: true,
       apiErrorStatus: 429,
     })
+  })
+
+  it('silently skips known non-message transcript line types instead of warning-logging each one', async () => {
+    // Reproduces the disk-filling bug: Claude Code writes several session-level
+    // bookkeeping line types (attachment, last-prompt, ai-title, relocated, mode)
+    // that RawJSONLinesSchema never modeled. Each one used to log its own
+    // "Skipping transcript line failing schema validation" warning, and at
+    // real transcript volume that grew a single log file to 93GB.
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+      onTranscriptEvent: (event) => collectedTranscriptEvents.push(event),
+    })
+
+    const sessionId = '11111111-1111-1111-1111-111111111111'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+
+    const nonMessageTypes = ['attachment', 'last-prompt', 'ai-title', 'relocated', 'mode']
+    const lines = nonMessageTypes.map((type, i) => JSON.stringify({ type, uuid: `${type}-${i}` }))
+    await writeFile(sessionFile, lines.join('\n') + '\n')
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(collectedMessages).toHaveLength(0)
+    expect(collectedTranscriptEvents).toHaveLength(0)
+
+    const schemaWarnings = vi.mocked(logger.debug).mock.calls
+      .filter(([msg]) => typeof msg === 'string' && msg.includes('Skipping transcript line failing schema validation'))
+    expect(schemaWarnings).toHaveLength(0)
   })
 })
