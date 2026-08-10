@@ -181,6 +181,13 @@ function same(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function sameWorkflowState(left: ClaudeWorkflowReducerState, right: ClaudeWorkflowReducerState): boolean {
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index] && same(left[key], right[key]))
+}
+
 function unchanged(state: ClaudeWorkflowReducerState): ClaudeWorkflowReducerResult {
   return { state, publication: 'none' }
 }
@@ -195,7 +202,7 @@ function reduceBackground(state: ClaudeWorkflowReducerState, message: RecordValu
   for (const rawTask of rawTasks) {
     const task = asRecord(rawTask)
     if (!task || taskTypeFor(task) !== 'local_workflow') continue
-    const taskId = taskIdFor(task)
+    const taskId = stringField(task, 'task_id', 'id')
     if (!taskId) continue
     const existing = state[taskId]
     next[taskId] = existing ?? {
@@ -207,7 +214,7 @@ function reduceBackground(state: ClaudeWorkflowReducerState, message: RecordValu
       phases: [],
     }
   }
-  return same(next, state) ? unchanged(state) : { state: next, publication: 'immediate' }
+  return sameWorkflowState(next, state) ? unchanged(state) : { state: next, publication: 'immediate' }
 }
 
 function reduceStarted(state: ClaudeWorkflowReducerState, message: RecordValue, now: number): ClaudeWorkflowReducerResult {

@@ -25,6 +25,8 @@ const fullProgress = system('task_progress', {
     { type: 'workflow_phase', index: 1, title: 'Read app' },
     { type: 'workflow_agent', index: 2, label: 'happy-cli', phaseIndex: 2, phaseTitle: 'Read CLI', agentId: 'agent-cli', model: 'claude-sonnet-5', state: 'start', lastToolName: 'Read', lastToolSummary: 'packages/happy-cli/package.json' },
     { type: 'workflow_agent', index: 1, label: 'happy-app', phaseIndex: 1, phaseTitle: 'Read app', agentId: 'agent-app', model: 'claude-sonnet-5', state: 'done', lastToolName: 'Read', lastToolSummary: 'packages/happy-app/package.json' },
+    { type: 'workflow_agent', index: 2, label: 'happy-app-second', phaseIndex: 1, phaseTitle: 'Read app', agentId: 'agent-second', state: 'start' },
+    { type: 'workflow_agent', index: 2, label: 'happy-app-alpha', phaseIndex: 1, phaseTitle: 'Read app', agentId: 'agent-alpha', state: 'start' },
   ],
 });
 
@@ -81,6 +83,32 @@ describe('reduceClaudeWorkflowMessage', () => {
     expect(workflow.usage).toEqual({ totalTokens: 24600, toolUses: 2, durationMs: 18000 });
     expect(workflow.phases.map((phase) => phase.index)).toEqual([1, 2]);
     expect(workflow.phases[0].agents[0]).toMatchObject({ id: 'agent-app', index: 1, state: 'done', lastToolName: 'Read' });
+    expect(workflow.phases[0].agents.map((agent) => agent.id)).toEqual(['agent-app', 'agent-alpha', 'agent-second']);
+  });
+
+  it('accepts a direct background task id for a local workflow', () => {
+    const result = reduceClaudeWorkflowMessage({}, background([
+      { id: 'workflow-direct-id', task_type: 'local_workflow', workflow_name: 'Direct id workflow' },
+    ]), 1000);
+
+    expect(result).toMatchObject({
+      publication: 'immediate',
+      state: { 'workflow-direct-id': expect.objectContaining({ taskId: 'workflow-direct-id' }) },
+    });
+  });
+
+  it('preserves the original state for reordered identical background snapshots', () => {
+    const state = reduceClaudeWorkflowMessage({}, background([
+      activeWorkflow('workflow-1'),
+      activeWorkflow('workflow-2'),
+    ]), 1000).state;
+    const result = reduceClaudeWorkflowMessage(state, background([
+      activeWorkflow('workflow-2'),
+      activeWorkflow('workflow-1'),
+    ]), 1100);
+
+    expect(result).toEqual({ state, publication: 'none' });
+    expect(result.state).toBe(state);
   });
 
   it('places an agent with an unknown phase in Other', () => {
