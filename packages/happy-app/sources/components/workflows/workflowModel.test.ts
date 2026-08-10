@@ -70,9 +70,11 @@ describe('workflowModel', () => {
 
     it('uses the context panel only for eligible wide web or mac desktop sessions', () => {
         expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'web', isMacDesktop: false })).toBe(true);
+        expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'ios', isMacDesktop: true })).toBe(true);
         expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 900, platform: 'web', isMacDesktop: false })).toBe(false);
         expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'ios', isMacDesktop: false })).toBe(false);
         expect(resolveWorkflowOpenTarget({ ready: true, hasSession: true, width: 1200, platform: 'web', isMacDesktop: false })).toBe('context-panel');
+        expect(resolveWorkflowOpenTarget({ ready: true, hasSession: true, width: 1200, platform: 'ios', isMacDesktop: true })).toBe('context-panel');
         expect(resolveWorkflowOpenTarget({ ready: true, hasSession: true, width: 900, platform: 'web', isMacDesktop: false })).toBe('route');
     });
 
