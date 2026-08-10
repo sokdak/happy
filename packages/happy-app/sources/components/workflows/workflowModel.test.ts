@@ -62,6 +62,14 @@ describe('workflowModel', () => {
         ] })).toBe('completed');
     });
 
+    it('keeps a mixed completed and in-progress phase running while preserving unknown agent states', () => {
+        expect(getPhaseVisualState({ index: 0, title: 'Mixed', agents: [
+            { id: '1', index: 0, label: 'Completed', state: 'completed' },
+            { id: '2', index: 1, label: 'In progress', state: 'in_progress' },
+        ] })).toBe('running');
+        expect(normalizeWorkflowAgentState('provider-added-state')).toBe('active');
+    });
+
     it('builds badge models only for active workflows', () => {
         expect(getWorkflowBadgeModel(0)).toBeNull();
         expect(getWorkflowBadgeModel(1)).toEqual({ count: 1, plural: false });

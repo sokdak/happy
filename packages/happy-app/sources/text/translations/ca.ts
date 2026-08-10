@@ -62,6 +62,29 @@ export const ca: TranslationStructure = {
         optional: 'Opcional',
     },
 
+    workflows: {
+        activeTitle: 'Fluxos de treball actius',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Altres',
+        states: {
+            running: 'En execució',
+            completed: 'Completat',
+            error: 'Error',
+            active: 'Actiu',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Flux de treball',
+    },
+
     profile: {
         userProfile: 'Perfil d\'usuari',
         details: 'Detalls',
