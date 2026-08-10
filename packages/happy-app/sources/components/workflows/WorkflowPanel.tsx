@@ -107,7 +107,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: theme.colors.divider,
         borderRadius: 12,
-        backgroundColor: theme.colors.surface,
+        backgroundColor: theme.colors.surfaceHigh,
         overflow: 'hidden',
     },
     workflowHeader: {
@@ -178,6 +178,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderRadius: 6,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    phaseIndexText: {
         fontSize: 11,
         lineHeight: 14,
         ...Typography.mono('semiBold'),
@@ -233,7 +235,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         marginTop: 7,
         padding: 8,
         borderRadius: 6,
-        backgroundColor: theme.colors.surfaceHigh,
+        backgroundColor: theme.colors.surface,
         color: theme.colors.textSecondary,
         fontSize: 10,
         lineHeight: 14,
@@ -348,20 +350,22 @@ export const WorkflowPanel = React.memo(function WorkflowPanel({
                                 return (
                                     <View
                                         key={`${workflow.taskId}:${phase.index}`}
-                                        accessible
-                                        accessibilityLabel={t('workflows.phaseAccessibility', {
-                                            title: phaseTitle,
-                                            state: phaseLabel,
-                                        })}
                                         style={styles.phase}
                                     >
-                                        <View style={styles.phaseTitleRow}>
-                                            <Text
-                                                style={[styles.phaseIndex, { color: phaseColor, backgroundColor: `${phaseColor}1F` }]}
-                                            >
-                                                {phase.index < 0 ? '–' : phase.index}
-                                            </Text>
-                                            <Text style={styles.phaseTitle} numberOfLines={1}>
+                                        <View
+                                            accessible
+                                            accessibilityLabel={t('workflows.phaseAccessibility', {
+                                                title: phaseTitle,
+                                                state: phaseLabel,
+                                            })}
+                                            style={styles.phaseTitleRow}
+                                        >
+                                            <View style={[styles.phaseIndex, { backgroundColor: `${phaseColor}1F` }]}>
+                                                <Text style={[styles.phaseIndexText, { color: phaseColor }]}>
+                                                    {phase.index < 0 ? '–' : phase.index}
+                                                </Text>
+                                            </View>
+                                            <Text style={styles.phaseTitle} numberOfLines={2}>
                                                 {phaseTitle}
                                             </Text>
                                             <Text style={[styles.state, { color: phaseColor }]} numberOfLines={1}>
@@ -380,14 +384,16 @@ export const WorkflowPanel = React.memo(function WorkflowPanel({
                                             return (
                                                 <View
                                                     key={agent.id}
-                                                    accessible
-                                                    accessibilityLabel={t('workflows.agentAccessibility', {
-                                                        label: agent.label,
-                                                        state: agentLabel,
-                                                    })}
                                                     style={styles.agent}
                                                 >
-                                                    <View style={styles.agentRow}>
+                                                    <View
+                                                        accessible
+                                                        accessibilityLabel={t('workflows.agentAccessibility', {
+                                                            label: agent.label,
+                                                            state: agentLabel,
+                                                        })}
+                                                        style={styles.agentRow}
+                                                    >
                                                         <View style={[styles.dot, { backgroundColor: agentColor }]} />
                                                         <Text style={styles.agentLabel} numberOfLines={1}>
                                                             {agent.label}

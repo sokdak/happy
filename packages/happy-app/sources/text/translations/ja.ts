@@ -66,7 +66,7 @@ export const ja: TranslationStructure = {
     },
 
     workflows: {
-        activeTitle: 'アクティブなワークフロー',
+        activeTitle: '実行中のワークフロー',
         workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
         runningCount: ({ count }: { count: number }) => `${count} running`,
         badgeAccessibility: ({ count }: { count: number }) => count === 1

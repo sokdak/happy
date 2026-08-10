@@ -65,7 +65,7 @@ export const zhHant: TranslationStructure = {
     },
 
     workflows: {
-        activeTitle: '使用中的工作流程',
+        activeTitle: '活動工作流程',
         workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
         runningCount: ({ count }: { count: number }) => `${count} running`,
         badgeAccessibility: ({ count }: { count: number }) => count === 1
@@ -78,7 +78,7 @@ export const zhHant: TranslationStructure = {
             running: '執行中',
             completed: '已完成',
             error: '錯誤',
-            active: '使用中',
+            active: '活動',
         },
         phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
         agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
