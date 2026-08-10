@@ -178,8 +178,12 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
         session.removeSessionFoundCallback(scannerSessionCallback);
 
         // Cleanup
-        await scanner.cleanup();
-        await scannerMessageChain;
+        try {
+            await scanner.cleanup();
+        } finally {
+            await scannerMessageChain;
+            session.client.resetClaudeWorkflows();
+        }
     }
 
     // Return

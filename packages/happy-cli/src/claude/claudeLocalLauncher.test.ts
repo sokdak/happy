@@ -263,4 +263,69 @@ describe('claudeLocalLauncher', () => {
             message: `Process exited unexpectedly: ${sdkFailure.message}`,
         });
     });
+
+    it('authoritatively resets workflows after scanner cleanup drains final transcript messages', async () => {
+        const events: string[] = [];
+        let scannerOptions: ScannerOptions | undefined;
+        mockCreateSessionScanner.mockImplementation(async (options: ScannerOptions) => {
+            scannerOptions = options;
+            return {
+                onNewSession: vi.fn(),
+                cleanup: vi.fn(async () => {
+                    events.push('cleanup');
+                    options.onMessage({
+                        type: 'system',
+                        subtype: 'task_started',
+                        task_id: 'workflow-1',
+                        task_type: 'local_workflow',
+                    });
+                }),
+            };
+        });
+        mockClaudeLocal.mockResolvedValueOnce(undefined);
+
+        const session = {
+            sessionId: 'claude-session-final-drain',
+            path: '/tmp/project',
+            client: {
+                sendClaudeSessionMessage: vi.fn(),
+                sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {
+                    events.push('send');
+                }),
+                closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(() => {
+                    events.push('reset');
+                }),
+                rpcHandlerManager: {
+                    registerHandler: vi.fn(),
+                },
+            },
+            queue: {
+                reset: vi.fn(),
+                setOnMessage: vi.fn(),
+                size: vi.fn(() => 0),
+            },
+            addSessionFoundCallback: vi.fn(),
+            removeSessionFoundCallback: vi.fn(),
+            onAbort: vi.fn(),
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            consumeOneTimeFlags: vi.fn(),
+            claudeEnvVars: undefined,
+            claudeArgs: undefined,
+            mcpServers: {},
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook-settings.json',
+            sandboxConfig: undefined,
+        };
+
+        await expect(claudeLocalLauncher(session as any)).resolves.toEqual({ type: 'exit', code: 0 });
+
+        expect(scannerOptions).toBeDefined();
+        expect(events).toContain('cleanup');
+        expect(events).toContain('send');
+        const lastReset = events.lastIndexOf('reset');
+        expect(lastReset).toBeGreaterThan(events.lastIndexOf('cleanup'));
+        expect(lastReset).toBeGreaterThan(events.lastIndexOf('send'));
+    });
 });

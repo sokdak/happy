@@ -3,6 +3,7 @@ import { ApiSessionClient } from './apiSession';
 import { decodeBase64, decrypt, decryptBlob, encodeBase64, encrypt } from './encryption';
 import type { Update } from './types';
 import { logger } from '@/ui/logger';
+import { OutgoingMessageQueue } from '@/claude/utils/OutgoingMessageQueue';
 
 const {
     mockIo,
@@ -435,6 +436,87 @@ describe('ApiSessionClient v3 messages API migration', () => {
             )).not.toHaveProperty('activeWorkflows');
             expect(mockAxiosPost).not.toHaveBeenCalled();
         } finally {
+            await client.close();
+        }
+    });
+
+    it('tracks remote queued workflow system events while harmless system events create no transcript envelopes', async () => {
+        let version = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => {
+            if (event !== 'update-state') {
+                return { result: 'error' };
+            }
+            const agentState = decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(payload.agentState),
+            );
+            return {
+                result: 'success',
+                agentState: encryptContent(session, agentState),
+                version: ++version,
+            };
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        const sendClaudeSessionMessage = vi.spyOn(client, 'sendClaudeSessionMessage');
+        const queue = new OutgoingMessageQueue((message) => client.sendClaudeSessionMessage(message));
+        try {
+            queue.enqueue({
+                type: 'system',
+                subtype: 'init',
+            });
+            queue.enqueue({
+                type: 'system',
+                subtype: 'task_started',
+                task_id: 'workflow-1',
+                task_type: 'local_workflow',
+                workflow_name: 'inspect-packages',
+            });
+            queue.enqueue({
+                type: 'system',
+                subtype: 'task_progress',
+                task_id: 'workflow-1',
+                usage: { total_tokens: 25000 },
+            });
+            await queue.flush();
+
+            expect(sendClaudeSessionMessage.mock.calls.map(([message]) => (message as any).subtype))
+                .toEqual(['init', 'task_started', 'task_progress']);
+            expect((client as any).claudeWorkflowTracker.snapshot()['workflow-1'].usage?.totalTokens).toBe(25000);
+
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+            });
+
+            queue.enqueue({
+                type: 'system',
+                subtype: 'task_notification',
+                task_id: 'workflow-1',
+            });
+            await queue.flush();
+
+            expect(sendClaudeSessionMessage.mock.calls.map(([message]) => (message as any).subtype))
+                .toEqual(['init', 'task_started', 'task_progress', 'task_notification']);
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+            });
+
+            const firstPayload = mockSocket.emitWithAck.mock.calls[0][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(firstPayload.agentState),
+            )).toHaveProperty('activeWorkflows.workflow-1');
+            const secondPayload = mockSocket.emitWithAck.mock.calls[1][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(secondPayload.agentState),
+            )).not.toHaveProperty('activeWorkflows');
+            expect(mockAxiosPost).not.toHaveBeenCalled();
+        } finally {
+            queue.destroy();
             await client.close();
         }
     });
