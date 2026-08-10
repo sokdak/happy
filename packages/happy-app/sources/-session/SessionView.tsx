@@ -164,6 +164,7 @@ export const SessionView = React.memo((props: { id: string }) => {
     const {
         showWorkflowPanel,
         showContextPanel,
+        filesSidebarInteractionEnabled,
     } = getWorkflowContextPresentation({
         openedWorkflowSessionId,
         sessionId,
@@ -609,11 +610,11 @@ export const SessionView = React.memo((props: { id: string }) => {
                 <View style={{ width: sidebarWidth, flex: 1 }}>
                     {canShowSidebar && (
                         <View
-                            pointerEvents={showFilesSidebar && !showWorkflowPanel ? 'auto' : 'none'}
-                            accessibilityElementsHidden={!showFilesSidebar || showWorkflowPanel}
-                            importantForAccessibility={!showFilesSidebar || showWorkflowPanel ? 'no-hide-descendants' : 'auto'}
-                            aria-hidden={!showFilesSidebar || showWorkflowPanel}
-                            style={{ flex: 1, opacity: showFilesSidebar && !showWorkflowPanel ? 1 : 0 }}
+                            pointerEvents={filesSidebarInteractionEnabled ? 'auto' : 'none'}
+                            accessibilityElementsHidden={!filesSidebarInteractionEnabled}
+                            importantForAccessibility={filesSidebarInteractionEnabled ? 'auto' : 'no-hide-descendants'}
+                            aria-hidden={!filesSidebarInteractionEnabled}
+                            style={{ flex: 1, opacity: filesSidebarInteractionEnabled ? 1 : 0 }}
                         >
                             <FilesSidebar
                                 sessionId={sessionId}
@@ -632,7 +633,7 @@ export const SessionView = React.memo((props: { id: string }) => {
                                 onCreateSideChat={createSideChat}
                                 canCreateSideChat={!!sideChatForkSource}
                                 creatingSideChat={creatingSideChat}
-                                visible={showFilesSidebar && !showWorkflowPanel}
+                                visible={filesSidebarInteractionEnabled}
                             />
                         </View>
                     )}
@@ -733,11 +734,13 @@ export function SessionViewLoaded({
     sessionId,
     session,
     embedded = false,
+    interactionEnabled = true,
     onHeaderBackdropVisibilityChange,
 }: {
     sessionId: string;
     session: Session;
     embedded?: boolean;
+    interactionEnabled?: boolean;
     onHeaderBackdropVisibilityChange?: (visible: boolean) => void;
 }) {
     const { theme } = useUnistyles();
@@ -1147,7 +1150,7 @@ export function SessionViewLoaded({
             selectedImages={expImageUpload && canUseAttachments ? selectedImages : undefined}
             onPickImages={expImageUpload && canUseAttachments ? pickImages : undefined}
             onRemoveImage={expImageUpload && canUseAttachments ? removeImage : undefined}
-            onAddImages={expImageUpload && canUseAttachments ? addImages : undefined}
+            onAddImages={interactionEnabled && expImageUpload && canUseAttachments ? addImages : undefined}
             autocompletePrefixes={AGENT_INPUT_AUTOCOMPLETE_PREFIXES}
             autocompleteSuggestions={handleAutocompleteSuggestions}
             usageData={usageData}

@@ -86,6 +86,7 @@ export function getWorkflowContextPresentation(
     workflowPanelOpen: boolean;
     showWorkflowPanel: boolean;
     showContextPanel: boolean;
+    filesSidebarInteractionEnabled: boolean;
 } {
     const workflowPanelOpen = options.openedWorkflowSessionId === options.sessionId
         && options.activeCount > 0;
@@ -97,6 +98,7 @@ export function getWorkflowContextPresentation(
         workflowPanelOpen,
         showWorkflowPanel,
         showContextPanel: showWorkflowPanel || options.showFilesSidebar,
+        filesSidebarInteractionEnabled: options.showFilesSidebar && !showWorkflowPanel,
     };
 }
 

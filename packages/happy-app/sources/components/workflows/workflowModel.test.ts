@@ -104,6 +104,7 @@ describe('workflowModel', () => {
             workflowPanelOpen: false,
             showWorkflowPanel: false,
             showContextPanel: true,
+            filesSidebarInteractionEnabled: true,
         });
     });
 
@@ -119,6 +120,7 @@ describe('workflowModel', () => {
             workflowPanelOpen: false,
             showWorkflowPanel: false,
             showContextPanel: true,
+            filesSidebarInteractionEnabled: true,
         });
     });
 
@@ -146,8 +148,12 @@ describe('workflowModel', () => {
             workflowPanelOpen: true,
             showWorkflowPanel: false,
             showContextPanel: false,
+            filesSidebarInteractionEnabled: false,
         });
-        expect(getWorkflowContextPresentation({ ...options, zenMode: false }).showWorkflowPanel).toBe(true);
+        expect(getWorkflowContextPresentation({ ...options, zenMode: false })).toMatchObject({
+            showWorkflowPanel: true,
+            filesSidebarInteractionEnabled: false,
+        });
     });
 
     it('normalizes route session ids without constructing invalid hrefs', () => {

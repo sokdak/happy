@@ -467,6 +467,7 @@ export const FilesSidebar = React.memo<FilesSidebarProps>(({
                     onCreateSideChat={onCreateSideChat}
                     canCreateSideChat={canCreateSideChat}
                     creatingSideChat={creatingSideChat}
+                    interactionEnabled={visible}
                 />
             ) : activePanel === 'changes' ? (
                 <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
