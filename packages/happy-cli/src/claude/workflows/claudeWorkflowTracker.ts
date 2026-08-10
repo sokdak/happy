@@ -21,6 +21,7 @@ const terminalStatuses = new Set([
   'error',
   'cancelled',
   'canceled',
+  'killed',
 ])
 
 function asRecord(value: unknown): RecordValue | undefined {
@@ -66,6 +67,7 @@ function taskStatusFor(message: RecordValue): string | undefined {
   return stringField(message, 'status')
     ?? stringField(asRecord(message.task), 'status')
     ?? stringField(asRecord(message.update), 'status')
+    ?? stringField(asRecord(message.patch), 'status')
 }
 
 function taskTypeFor(message: RecordValue): string | undefined {
@@ -315,11 +317,13 @@ export function reduceClaudeWorkflowMessage(
 export class ClaudeWorkflowTracker {
   private state: ClaudeWorkflowReducerState = {}
   private timer: ReturnType<typeof setTimeout> | null = null
+  private readonly pendingPublications = new Set<Promise<void>>()
+  private publicationErrors: unknown[] = []
   private readonly now: () => number
   private readonly coalesceMs: number
 
   constructor(
-    private readonly publish: (snapshot: ClaudeWorkflowReducerState) => void,
+    private readonly publish: (snapshot: ClaudeWorkflowReducerState) => void | Promise<void>,
     options: { now?: () => number; coalesceMs?: number } = {},
   ) {
     this.now = options.now ?? Date.now
@@ -345,24 +349,55 @@ export class ClaudeWorkflowTracker {
     }
   }
 
-  reset(): void {
+  async reset(): Promise<void> {
     this.cancelPending()
     this.state = {}
-    this.publishCurrent()
+    await this.publishCurrent()
+    // A successful authoritative empty publication supersedes any earlier
+    // publication failure that could have left remote state stale.
+    this.publicationErrors = []
   }
 
   dispose(): void {
     this.cancelPending()
   }
 
+  async drain(): Promise<void> {
+    while (this.pendingPublications.size > 0) {
+      await Promise.allSettled([...this.pendingPublications])
+    }
+
+    const errors = this.publicationErrors.splice(0)
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'Claude workflow publications failed')
+  }
+
   snapshot(): ClaudeWorkflowReducerState {
     return this.state
   }
 
-  private publishCurrent(): void {
+  private publishCurrent(): Promise<void> {
     // Object.fromEntries preserves reserved task ids such as "__proto__" as
     // own data properties, unlike assigning those ids onto a normal object.
-    this.publish(Object.fromEntries(Object.entries(this.state)) as ClaudeWorkflowReducerState)
+    const snapshot = Object.fromEntries(Object.entries(this.state)) as ClaudeWorkflowReducerState
+    let publication: Promise<void>
+    try {
+      publication = Promise.resolve(this.publish(snapshot))
+    } catch (error) {
+      publication = Promise.reject(error)
+    }
+
+    this.pendingPublications.add(publication)
+    void publication.then(
+      () => {
+        this.pendingPublications.delete(publication)
+      },
+      (error) => {
+        this.pendingPublications.delete(publication)
+        this.publicationErrors.push(error)
+      },
+    )
+    return publication
   }
 
   private cancelPending(): void {

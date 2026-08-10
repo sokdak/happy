@@ -217,6 +217,26 @@ describe('reduceClaudeWorkflowMessage', () => {
     expect(updated).toEqual({ state: {}, publication: 'immediate' });
   });
 
+  it.each(['completed', 'failed', 'killed'])('removes a workflow for exact SDK task_updated patch status %s', (status) => {
+    const state = reduceClaudeWorkflowMessage({}, started(), 1000).state;
+    const result = reduceClaudeWorkflowMessage(state, system('task_updated', {
+      task_id: 'workflow-1',
+      patch: { status },
+    }), 1100);
+
+    expect(result).toEqual({ state: {}, publication: 'immediate' });
+  });
+
+  it.each(['pending', 'running', 'paused'])('keeps a workflow for nonterminal SDK task_updated patch status %s', (status) => {
+    const state = reduceClaudeWorkflowMessage({}, started(), 1000).state;
+    const result = reduceClaudeWorkflowMessage(state, system('task_updated', {
+      task_id: 'workflow-1',
+      patch: { status },
+    }), 1100);
+
+    expect(result).toEqual({ state, publication: 'none' });
+  });
+
   it('removes active workflows absent from a complete background snapshot', () => {
     const state = reduceClaudeWorkflowMessage({}, background([activeWorkflow()]), 1000).state;
     const result = reduceClaudeWorkflowMessage(state, background([{ task_id: 'shell-1', task_type: 'shell' }]), 1100);
@@ -303,5 +323,41 @@ describe('ClaudeWorkflowTracker publisher', () => {
     } finally {
       tracker.dispose();
     }
+  });
+
+  it('drains an in-flight asynchronous publication', async () => {
+    let resolvePublication!: () => void;
+    const publication = new Promise<void>((resolve) => {
+      resolvePublication = resolve;
+    });
+    const tracker = new ClaudeWorkflowTracker(() => publication);
+
+    tracker.handle(started());
+    let drained = false;
+    const drain = tracker.drain().then(() => {
+      drained = true;
+    });
+
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    resolvePublication();
+    await drain;
+    expect(drained).toBe(true);
+  });
+
+  it('surfaces asynchronous publication failures through drain', async () => {
+    let rejectPublication!: (error: Error) => void;
+    const publication = new Promise<void>((_resolve, reject) => {
+      rejectPublication = reject;
+    });
+    const tracker = new ClaudeWorkflowTracker(() => publication);
+    const failure = new Error('state publish failed');
+
+    tracker.handle(started());
+    const drain = tracker.drain();
+    rejectPublication(failure);
+
+    await expect(drain).rejects.toBe(failure);
   });
 });

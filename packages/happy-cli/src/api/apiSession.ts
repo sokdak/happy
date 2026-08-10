@@ -271,7 +271,7 @@ export class ApiSessionClient extends EventEmitter {
             autoConnect: false
         });
         this.claudeWorkflowTracker = new ClaudeWorkflowTracker((snapshot) => {
-            this.updateAgentState((currentAgentState) => {
+            return this.updateAgentState((currentAgentState) => {
                 const next = { ...currentAgentState };
                 if (Object.keys(snapshot).length === 0) {
                     delete next.activeWorkflows;
@@ -736,8 +736,8 @@ export class ApiSessionClient extends EventEmitter {
         this.applyClaudeSessionMessageSideEffects(body);
     }
 
-    resetClaudeWorkflows(): void {
-        this.claudeWorkflowTracker.reset();
+    resetClaudeWorkflows(): Promise<void> {
+        return this.claudeWorkflowTracker.reset();
     }
 
     async sendClaudeSessionMessageFromLocalTranscript(body: RawJSONLines): Promise<void> {
@@ -965,7 +965,7 @@ export class ApiSessionClient extends EventEmitter {
      */
     updateAgentState(handler: (metadata: AgentState) => AgentState) {
         logger.debugLargeJson('Updating agent state', this.agentState);
-        this.agentStateLock.inLock(async () => {
+        return this.agentStateLock.inLock(async () => {
             await backoff(async () => {
                 let updated = handler(this.agentState || {});
                 const answer = await this.socket.emitWithAck('update-state', { sid: this.sessionId, expectedVersion: this.agentStateVersion, agentState: updated ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated)) : null });
@@ -1011,13 +1011,17 @@ export class ApiSessionClient extends EventEmitter {
     async close() {
         logger.debug('[API] socket.close() called');
         this.claudeWorkflowTracker.dispose();
-        this.sendSync.stop();
-        this.receiveSync.stop();
-        if (this.reconnectInterval) {
-            clearInterval(this.reconnectInterval);
-            this.reconnectInterval = null;
+        try {
+            await this.claudeWorkflowTracker.drain();
+        } finally {
+            this.sendSync.stop();
+            this.receiveSync.stop();
+            if (this.reconnectInterval) {
+                clearInterval(this.reconnectInterval);
+                this.reconnectInterval = null;
+            }
+            this.socket.close();
         }
-        this.socket.close();
     }
 
     private startSmartReconnect() {

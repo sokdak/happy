@@ -60,6 +60,7 @@ describe('claudeLocalLauncher', () => {
 
     it('aborts local Claude Code when an app message requests remote control', async () => {
         const localRun = createDeferred<void>();
+        const initialReset = createDeferred<void>();
         const observed: {
             queueHandler?: QueueHandler;
             localAbortSignal?: AbortSignal;
@@ -78,7 +79,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessage: vi.fn(),
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
-                resetClaudeWorkflows: vi.fn(),
+                resetClaudeWorkflows: vi.fn().mockReturnValueOnce(initialReset.promise),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -107,6 +108,12 @@ describe('claudeLocalLauncher', () => {
         };
 
         const launcher = claudeLocalLauncher(session as any);
+
+        await vi.waitFor(() => {
+            expect(session.client.resetClaudeWorkflows).toHaveBeenCalledTimes(1);
+        });
+        expect(mockClaudeLocal).not.toHaveBeenCalled();
+        initialReset.resolve();
 
         await vi.waitFor(() => {
             expect(observed.localAbortSignal).toBeDefined();
@@ -266,6 +273,9 @@ describe('claudeLocalLauncher', () => {
 
     it('authoritatively resets workflows after scanner cleanup drains final transcript messages', async () => {
         const events: string[] = [];
+        const earlyReset = createDeferred<void>();
+        const finalReset = createDeferred<void>();
+        let resetCalls = 0;
         let scannerOptions: ScannerOptions | undefined;
         mockCreateSessionScanner.mockImplementation(async (options: ScannerOptions) => {
             scannerOptions = options;
@@ -294,7 +304,11 @@ describe('claudeLocalLauncher', () => {
                 }),
                 closeClaudeSessionTurn: vi.fn(),
                 resetClaudeWorkflows: vi.fn(() => {
+                    resetCalls += 1;
                     events.push('reset');
+                    if (resetCalls === 2) return earlyReset.promise;
+                    if (resetCalls === 3) return finalReset.promise;
+                    return Promise.resolve();
                 }),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
@@ -319,7 +333,25 @@ describe('claudeLocalLauncher', () => {
             sandboxConfig: undefined,
         };
 
-        await expect(claudeLocalLauncher(session as any)).resolves.toEqual({ type: 'exit', code: 0 });
+        let launcherResolved = false;
+        const launcher = claudeLocalLauncher(session as any).then((result) => {
+            launcherResolved = true;
+            return result;
+        });
+
+        await vi.waitFor(() => {
+            expect(session.client.resetClaudeWorkflows).toHaveBeenCalledTimes(2);
+        });
+        expect(events).not.toContain('cleanup');
+
+        earlyReset.resolve();
+        await vi.waitFor(() => {
+            expect(session.client.resetClaudeWorkflows).toHaveBeenCalledTimes(3);
+        });
+        expect(launcherResolved).toBe(false);
+
+        finalReset.resolve();
+        await expect(launcher).resolves.toEqual({ type: 'exit', code: 0 });
 
         expect(scannerOptions).toBeDefined();
         expect(events).toContain('cleanup');
@@ -327,5 +359,56 @@ describe('claudeLocalLauncher', () => {
         const lastReset = events.lastIndexOf('reset');
         expect(lastReset).toBeGreaterThan(events.lastIndexOf('cleanup'));
         expect(lastReset).toBeGreaterThan(events.lastIndexOf('send'));
+    });
+
+    it('still cleans up and attempts the final reset when the early cleanup reset fails', async () => {
+        const earlyFailure = new Error('early reset failed');
+        const cleanup = vi.fn(async () => {});
+        mockCreateSessionScanner.mockResolvedValue({
+            onNewSession: vi.fn(),
+            cleanup,
+        });
+        mockClaudeLocal.mockResolvedValueOnce(undefined);
+
+        let resetCalls = 0;
+        const session = {
+            sessionId: 'claude-session-reset-failure',
+            path: '/tmp/project',
+            client: {
+                sendClaudeSessionMessage: vi.fn(),
+                sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
+                closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(() => {
+                    resetCalls += 1;
+                    if (resetCalls === 2) return Promise.reject(earlyFailure);
+                    return Promise.resolve();
+                }),
+                rpcHandlerManager: {
+                    registerHandler: vi.fn(),
+                },
+            },
+            queue: {
+                reset: vi.fn(),
+                setOnMessage: vi.fn(),
+                size: vi.fn(() => 0),
+            },
+            addSessionFoundCallback: vi.fn(),
+            removeSessionFoundCallback: vi.fn(),
+            onAbort: vi.fn(),
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            consumeOneTimeFlags: vi.fn(),
+            claudeEnvVars: undefined,
+            claudeArgs: undefined,
+            mcpServers: {},
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook-settings.json',
+            sandboxConfig: undefined,
+        };
+
+        await expect(claudeLocalLauncher(session as any)).rejects.toBe(earlyFailure);
+
+        expect(cleanup).toHaveBeenCalledOnce();
+        expect(session.client.resetClaudeWorkflows).toHaveBeenCalledTimes(3);
     });
 });

@@ -144,6 +144,16 @@ async function waitForCheck(check: () => void, timeoutMs = 2000) {
     throw lastError;
 }
 
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
 describe('ApiSessionClient v3 messages API migration', () => {
     let socketHandlers: SocketHandlers;
     let mockSocket: any;
@@ -438,6 +448,71 @@ describe('ApiSessionClient v3 messages API migration', () => {
         } finally {
             await client.close();
         }
+    });
+
+    it('awaits the authoritative workflow reset behind an in-flight agent state update', async () => {
+        const firstAck = createDeferred<any>();
+        const resetAck = createDeferred<any>();
+        let updateStateCalls = 0;
+        mockSocket.emitWithAck.mockImplementation((event: string) => {
+            if (event !== 'update-state') {
+                return Promise.resolve({ result: 'error' });
+            }
+            updateStateCalls += 1;
+            return updateStateCalls === 1 ? firstAck.promise : resetAck.promise;
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+            workflow_name: 'inspect-packages',
+        } as any);
+
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+
+        let resetResolved = false;
+        const reset = Promise.resolve(client.resetClaudeWorkflows()).then(() => {
+            resetResolved = true;
+        });
+        await Promise.resolve();
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        expect(resetResolved).toBe(false);
+
+        const firstPayload = mockSocket.emitWithAck.mock.calls[0][1];
+        firstAck.resolve({
+            result: 'success',
+            agentState: firstPayload.agentState,
+            version: 1,
+        });
+
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+        });
+        expect(resetResolved).toBe(false);
+
+        const resetPayload = mockSocket.emitWithAck.mock.calls[1][1];
+        expect(decrypt(
+            session.encryptionKey,
+            session.encryptionVariant,
+            decodeBase64(resetPayload.agentState),
+        )).not.toHaveProperty('activeWorkflows');
+
+        resetAck.resolve({
+            result: 'success',
+            agentState: resetPayload.agentState,
+            version: 2,
+        });
+        await reset;
+
+        expect(resetResolved).toBe(true);
+        expect((client as any).agentState).not.toHaveProperty('activeWorkflows');
+        await client.close();
     });
 
     it('tracks remote queued workflow system events while harmless system events create no transcript envelopes', async () => {
@@ -1299,6 +1374,45 @@ describe('ApiSessionClient v3 messages API migration', () => {
             expect(mockAxiosGet).toHaveBeenCalledTimes(1);
         });
         expect(mockAxiosGet.mock.calls[0][1].params.after_seq).toBe(0);
+    });
+
+    it('waits for an in-flight workflow publication before closing the socket', async () => {
+        const stateAck = createDeferred<any>();
+        mockSocket.emitWithAck.mockImplementation((event: string) => (
+            event === 'update-state' ? stateAck.promise : Promise.resolve({ result: 'error' })
+        ));
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+            workflow_name: 'inspect-packages',
+        } as any);
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+
+        let closeResolved = false;
+        const close = client.close().then(() => {
+            closeResolved = true;
+        });
+        await Promise.resolve();
+
+        expect(closeResolved).toBe(false);
+        expect(mockSocket.close).not.toHaveBeenCalled();
+
+        const payload = mockSocket.emitWithAck.mock.calls[0][1];
+        stateAck.resolve({
+            result: 'success',
+            agentState: payload.agentState,
+            version: 1,
+        });
+        await close;
+
+        expect(closeResolved).toBe(true);
+        expect(mockSocket.close).toHaveBeenCalledOnce();
     });
 
     it('stops send and receive sync loops on close', async () => {
