@@ -385,6 +385,43 @@ export type AgentGoalStatus = {
     }
 );
 
+export type ActiveWorkflowAgentSnapshot = {
+  id: string
+  index: number
+  label: string
+  model?: string
+  state: string
+  queuedAt?: number
+  startedAt?: number
+  lastToolName?: string
+  lastToolSummary?: string
+  lastProgressAt?: number
+  tokens?: number
+  toolCalls?: number
+  durationMs?: number
+}
+
+export type ActiveWorkflowPhaseSnapshot = {
+  index: number
+  title: string
+  agents: ActiveWorkflowAgentSnapshot[]
+}
+
+export type ActiveWorkflowSnapshot = {
+  taskId: string
+  toolUseId?: string
+  name: string
+  description?: string
+  startedAt: number
+  updatedAt: number
+  usage?: {
+    totalTokens?: number
+    toolUses?: number
+    durationMs?: number
+  }
+  phases: ActiveWorkflowPhaseSnapshot[]
+}
+
 export type AgentState = {
   controlledByUser?: boolean | null | undefined
   /**
@@ -418,4 +455,5 @@ export type AgentState = {
     }
   }
   agentGoalStatus?: AgentGoalStatus
+  activeWorkflows?: Record<string, ActiveWorkflowSnapshot>
 }
