@@ -477,8 +477,15 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
                 // Flush any remaining messages in the queue
                 logger.debug('[remote]: flushing message queue');
-                await messageQueue.flush();
-                messageQueue.destroy();
+                try {
+                    await messageQueue.flush();
+                } finally {
+                    try {
+                        messageQueue.destroy();
+                    } finally {
+                        session.client.resetClaudeWorkflows();
+                    }
+                }
                 logger.debug('[remote]: message queue flushed');
 
                 // Reset abort controller and future
