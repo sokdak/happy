@@ -189,6 +189,9 @@ async function startRemoteRunClaudeHarness(opts: {
     const runtimeSession = { thinking: false, cleanup: vi.fn() };
     loopOptions.onSessionReady(runtimeSession);
     const goalActionHandler = registerHandler.mock.calls.find(([method]) => method === 'goal-action')?.[1];
+    const happyServer = await mockStartHappyServer.mock.results.at(-1)?.value;
+    const hookServer = await mockStartHookServer.mock.results.at(-1)?.value;
+    const remoteScanner = await mockCreateSessionScanner.mock.results.at(-1)?.value;
 
     const finish = async () => {
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -209,8 +212,13 @@ async function startRemoteRunClaudeHarness(opts: {
         finish,
         finishAfterCleanup,
         goalActionHandler,
+        happyServer,
+        hookServer,
         loopOptions,
         registerHandler,
+        remoteScanner,
+        resolveLoop: (exitCode: number) => loopDeferred.resolve(exitCode),
+        runPromise,
         runtimeSession,
         scannerOptions,
         sessionClient,
@@ -931,6 +939,7 @@ describe('runClaude remote JSONL scanner', () => {
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
         const cleanup = archiveCleanup();
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
         const duplicateCleanup = archiveCleanup();
         const runAfterCleanup = harness.finishAfterCleanup();
         await Promise.resolve();
@@ -988,9 +997,53 @@ describe('runClaude remote JSONL scanner', () => {
         await harness.finish();
 
         expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        expect(resetClaudeWorkflows).toHaveBeenCalledWith({ seal: true });
         expect(resetClaudeWorkflows.mock.invocationCallOrder[0])
             .toBeLessThan(flush.mock.invocationCallOrder[0]);
         expect(flush.mock.invocationCallOrder[0])
             .toBeLessThan(close.mock.invocationCallOrder[0]);
+    });
+
+    it('keeps normal and archive cleanup single-flight when archive arrives during finalization', async () => {
+        const reset = createDeferred<void>();
+        const blockedFlush = createDeferred<void>();
+        const resetClaudeWorkflows = vi.fn(() => reset.promise);
+        const flush = vi.fn(() => blockedFlush.promise);
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+        const archiveCleanup = mockRegisterKillSessionHandler.mock.calls.at(-1)?.[1];
+        if (!archiveCleanup) throw new Error('archive cleanup handler not registered');
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        harness.resolveLoop(7);
+        await vi.waitFor(() => {
+            expect(resetClaudeWorkflows).toHaveBeenCalled();
+        });
+
+        const archiveDuringReset = archiveCleanup();
+        reset.resolve();
+        await vi.waitFor(() => {
+            expect(flush).toHaveBeenCalled();
+        });
+        const archiveDuringFlush = archiveCleanup();
+        blockedFlush.resolve();
+
+        await Promise.all([harness.runPromise, archiveDuringReset, archiveDuringFlush]);
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        expect(resetClaudeWorkflows).toHaveBeenCalledWith({ seal: true });
+        expect(flush).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(harness.runtimeSession.cleanup).toHaveBeenCalledOnce();
+        expect(harness.sessionClient.sendSessionDeath).toHaveBeenCalledOnce();
+        expect(harness.api.deactivateSession).toHaveBeenCalledOnce();
+        expect(harness.remoteScanner.cleanup).toHaveBeenCalledOnce();
+        expect(harness.happyServer.stop).toHaveBeenCalledOnce();
+        expect(harness.hookServer.stop).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(7);
+        expect(harness.sessionClient.getMetadata()).not.toHaveProperty('lifecycleState');
+
+        exitSpy.mockRestore();
     });
 });

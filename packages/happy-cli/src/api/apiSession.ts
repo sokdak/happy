@@ -746,9 +746,12 @@ export class ApiSessionClient extends EventEmitter {
         this.applyClaudeSessionMessageSideEffects(body);
     }
 
-    async resetClaudeWorkflows(): Promise<void> {
+    async resetClaudeWorkflows(options: { seal?: boolean } = {}): Promise<void> {
         if (this.closing || this.closed) {
             throw new Error('Cannot reset Claude workflows after session close has begun');
+        }
+        if (options.seal) {
+            this.claudeWorkflowTracker.seal();
         }
 
         const controller = new AbortController();
@@ -1008,13 +1011,15 @@ export class ApiSessionClient extends EventEmitter {
                 try {
                     const updated = handler(this.agentState || {});
                     const answer = await this.awaitAgentStateAck(
-                        this.socket.emitWithAck('update-state', {
-                            sid: this.sessionId,
-                            expectedVersion: this.agentStateVersion,
-                            agentState: updated
-                                ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated))
-                                : null,
-                        }),
+                        this.socket
+                            .timeout(AGENT_STATE_ACK_TIMEOUT_MS)
+                            .emitWithAck('update-state', {
+                                sid: this.sessionId,
+                                expectedVersion: this.agentStateVersion,
+                                agentState: updated
+                                    ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated))
+                                    : null,
+                            }),
                         controller.signal,
                     );
                     if (answer.result === 'success') {
@@ -1062,16 +1067,12 @@ export class ApiSessionClient extends EventEmitter {
             const finish = (handler: () => void) => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(timeout);
                 signal.removeEventListener('abort', onAbort);
                 handler();
             };
             const onAbort = () => finish(() => reject(
                 signal.reason ?? new Error('Agent state ACK aborted'),
             ));
-            const timeout = setTimeout(() => finish(() => reject(new Error(
-                `Agent state ACK timed out after ${AGENT_STATE_ACK_TIMEOUT_MS}ms`,
-            ))), AGENT_STATE_ACK_TIMEOUT_MS);
             signal.addEventListener('abort', onAbort, { once: true });
             if (signal.aborted) onAbort();
             void ack.then(

@@ -186,11 +186,13 @@ describe('ApiSessionClient v3 messages API migration', () => {
             off: vi.fn(),
             emit: vi.fn(),
             emitWithAck: vi.fn(async () => ({ result: 'error' })),
+            timeout: vi.fn(),
             volatile: {
                 emit: vi.fn()
             },
             close: vi.fn()
         };
+        mockSocket.timeout.mockReturnValue(mockSocket);
 
         mockIo.mockReturnValue(mockSocket);
     });
@@ -539,6 +541,42 @@ describe('ApiSessionClient v3 messages API migration', () => {
 
         expect(resetResolved).toBe(true);
         expect((client as any).agentState).not.toHaveProperty('activeWorkflows');
+        await client.close();
+    });
+
+    it('seals workflow ingestion before the final authoritative reset', async () => {
+        let version = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => (
+            event === 'update-state'
+                ? { result: 'success', agentState: payload.agentState, version: ++version }
+                : { result: 'error' }
+        ));
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-before-seal',
+            task_type: 'local_workflow',
+        } as any);
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+
+        await client.resetClaudeWorkflows({ seal: true });
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+        expect((client as any).claudeWorkflowTracker.snapshot()).toEqual({});
+
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-after-seal',
+            task_type: 'local_workflow',
+        } as any);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+        expect((client as any).claudeWorkflowTracker.snapshot()).toEqual({});
         await client.close();
     });
 
@@ -1505,6 +1543,8 @@ describe('ApiSessionClient v3 messages API migration', () => {
         await update;
 
         expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(3);
+        expect(mockSocket.timeout).toHaveBeenCalledTimes(3);
+        expect(mockSocket.timeout).toHaveBeenCalledWith(AGENT_STATE_ACK_TIMEOUT_MS);
         expect((client as any).agentState).toEqual({ serverValue: true, localValue: true });
         await client.close();
         expect(vi.getTimerCount()).toBe(0);

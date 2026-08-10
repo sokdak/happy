@@ -319,6 +319,7 @@ export class ClaudeWorkflowTracker {
   private timer: ReturnType<typeof setTimeout> | null = null
   private readonly pendingPublications = new Map<Promise<void>, AbortController>()
   private publicationErrors: unknown[] = []
+  private sealed = false
   private disposed = false
   private readonly now: () => number
   private readonly coalesceMs: number
@@ -332,7 +333,7 @@ export class ClaudeWorkflowTracker {
   }
 
   handle(message: unknown): void {
-    if (this.disposed) return
+    if (this.sealed || this.disposed) return
     const result = reduceClaudeWorkflowMessage(this.state, message, this.now())
     if (result.publication === 'none') return
 
@@ -367,10 +368,16 @@ export class ClaudeWorkflowTracker {
     }
   }
 
+  seal(): void {
+    if (this.sealed) return
+    this.sealed = true
+    this.cancelPending()
+  }
+
   dispose(): void {
     if (this.disposed) return
+    this.seal()
     this.disposed = true
-    this.cancelPending()
     this.abortPublications(new Error('Claude workflow tracker disposed'))
   }
 

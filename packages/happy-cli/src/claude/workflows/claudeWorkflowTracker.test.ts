@@ -389,6 +389,29 @@ describe('ClaudeWorkflowTracker publisher', () => {
     expect(tracker.snapshot()).toEqual({});
   });
 
+  it('seals future ingestion while still allowing one authoritative reset', async () => {
+    const publish = vi.fn();
+    const tracker = new ClaudeWorkflowTracker(publish);
+
+    tracker.handle(started());
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    tracker.seal();
+    tracker.handle(system('task_started', {
+      task_id: 'workflow-after-seal',
+      task_type: 'local_workflow',
+    }));
+    await tracker.reset();
+
+    expect(tracker.snapshot()).toEqual({});
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(publish.mock.calls[1]?.[0]).toEqual({});
+
+    tracker.handle(started());
+    expect(publish).toHaveBeenCalledTimes(2);
+    tracker.dispose();
+  });
+
   it('bounds drain even when a publisher ignores cancellation', async () => {
     vi.useFakeTimers();
     const publish = vi.fn((_snapshot: ClaudeWorkflowReducerState, _signal: AbortSignal) => (
