@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Animated, Pressable, Text, View } from 'react-native';
+import { AccessibilityInfo, Animated, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
@@ -45,11 +45,46 @@ export const WorkflowActivityBadge = React.memo(function WorkflowActivityBadge({
     const model = getWorkflowBadgeModel(count);
     const pulseOpacity = React.useRef(new Animated.Value(0.45)).current;
     const activeCount = model?.count ?? 0;
+    const [reduceMotionEnabled, setReduceMotionEnabled] = React.useState<boolean | null>(null);
+
+    React.useEffect(() => {
+        let mounted = true;
+        let receivedPreferenceEvent = false;
+        const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (enabled) => {
+            receivedPreferenceEvent = true;
+            if (mounted) {
+                setReduceMotionEnabled(enabled);
+            }
+        });
+
+        void AccessibilityInfo.isReduceMotionEnabled()
+            .then((enabled) => {
+                if (mounted && !receivedPreferenceEvent) {
+                    setReduceMotionEnabled(enabled);
+                }
+            })
+            .catch(() => {
+                if (mounted) {
+                    setReduceMotionEnabled(false);
+                }
+            });
+
+        return () => {
+            mounted = false;
+            subscription.remove();
+        };
+    }, []);
 
     React.useEffect(() => {
         if (activeCount <= 0) {
             pulseOpacity.stopAnimation();
             pulseOpacity.setValue(0.45);
+            return;
+        }
+
+        if (reduceMotionEnabled !== false) {
+            pulseOpacity.stopAnimation();
+            pulseOpacity.setValue(1);
             return;
         }
 
@@ -70,7 +105,7 @@ export const WorkflowActivityBadge = React.memo(function WorkflowActivityBadge({
 
         pulse.start();
         return () => pulse.stop();
-    }, [activeCount, pulseOpacity]);
+    }, [activeCount, pulseOpacity, reduceMotionEnabled]);
 
     if (!model) {
         return null;
