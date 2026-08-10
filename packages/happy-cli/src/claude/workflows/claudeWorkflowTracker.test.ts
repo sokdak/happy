@@ -305,18 +305,18 @@ describe('ClaudeWorkflowTracker publisher', () => {
     }
   });
 
-  it('force-publishes an empty snapshot when reset', () => {
+  it('force-publishes an empty snapshot when reset', async () => {
     const publish = vi.fn();
     const tracker = new ClaudeWorkflowTracker(publish);
 
     try {
-      tracker.reset();
-      expect(publish).toHaveBeenCalledWith({});
+      await tracker.reset();
+      expect(publish).toHaveBeenCalledWith({}, expect.any(AbortSignal));
 
       tracker.handle(started());
       expect(tracker.snapshot()).toHaveProperty('workflow-1');
 
-      tracker.reset();
+      await tracker.reset();
 
       expect(tracker.snapshot()).toEqual({});
       expect(publish.mock.calls.at(-1)?.[0]).toEqual({});
@@ -359,5 +359,59 @@ describe('ClaudeWorkflowTracker publisher', () => {
     rejectPublication(failure);
 
     await expect(drain).rejects.toBe(failure);
+  });
+
+  it('aborts in-flight publications on dispose and drains them', async () => {
+    const publish = vi.fn((_snapshot: ClaudeWorkflowReducerState, signal?: AbortSignal) => (
+      new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      })
+    ));
+    const tracker = new ClaudeWorkflowTracker(publish);
+
+    tracker.handle(started());
+    const publicationSignal = publish.mock.calls[0]?.[1];
+    expect(publicationSignal).toBeInstanceOf(AbortSignal);
+
+    tracker.dispose();
+    await expect(tracker.drain()).resolves.toBeUndefined();
+    expect(publicationSignal?.aborted).toBe(true);
+  });
+
+  it('ignores messages after dispose', () => {
+    const publish = vi.fn();
+    const tracker = new ClaudeWorkflowTracker(publish);
+
+    tracker.dispose();
+    tracker.handle(started());
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(tracker.snapshot()).toEqual({});
+  });
+
+  it('bounds drain even when a publisher ignores cancellation', async () => {
+    vi.useFakeTimers();
+    const publish = vi.fn((_snapshot: ClaudeWorkflowReducerState, _signal: AbortSignal) => (
+      new Promise<void>(() => {})
+    ));
+    const tracker = new ClaudeWorkflowTracker(publish);
+
+    tracker.handle(started());
+    const drain = tracker.drain({ timeoutMs: 25 });
+    const result = drain.then(
+      () => ({ ok: true as const, error: undefined }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(await result).toMatchObject({
+      ok: false,
+      error: expect.objectContaining({ message: expect.stringMatching(/drain timed out/i) }),
+    });
+    expect(publish.mock.calls[0]?.[1].aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    tracker.dispose();
+    vi.useRealTimers();
   });
 });

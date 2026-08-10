@@ -113,6 +113,9 @@ async function startRemoteRunClaudeHarness(opts: {
     metadata?: Record<string, unknown>;
     updateAgentState?: ReturnType<typeof vi.fn>;
     registerHandler?: ReturnType<typeof vi.fn>;
+    resetClaudeWorkflows?: ReturnType<typeof vi.fn>;
+    flush?: ReturnType<typeof vi.fn>;
+    close?: ReturnType<typeof vi.fn>;
 } = {}) {
     let metadata = opts.metadata ?? {
         claudeSessionId: 'claude-session-1',
@@ -141,8 +144,9 @@ async function startRemoteRunClaudeHarness(opts: {
             registerHandler,
         },
         sendSessionDeath: vi.fn(),
-        flush: vi.fn(async () => {}),
-        close: vi.fn(async () => {}),
+        resetClaudeWorkflows: opts.resetClaudeWorkflows ?? vi.fn(async () => {}),
+        flush: opts.flush ?? vi.fn(async () => {}),
+        close: opts.close ?? vi.fn(async () => {}),
     };
     const api = {
         getOrCreateMachine: vi.fn(async () => ({})),
@@ -195,9 +199,15 @@ async function startRemoteRunClaudeHarness(opts: {
         exitSpy.mockRestore();
     };
 
+    const finishAfterCleanup = async () => {
+        loopDeferred.resolve(0);
+        await expect(runPromise).resolves.toBeUndefined();
+    };
+
     return {
         api,
         finish,
+        finishAfterCleanup,
         goalActionHandler,
         loopOptions,
         registerHandler,
@@ -908,5 +918,79 @@ describe('runClaude remote JSONL scanner', () => {
         ]);
 
         await harness.finish();
+    });
+
+    it('awaits one authoritative workflow reset before archive cleanup flushes and closes', async () => {
+        const reset = createDeferred<void>();
+        const resetClaudeWorkflows = vi.fn(() => reset.promise);
+        const flush = vi.fn(async () => {});
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+        const archiveCleanup = mockRegisterKillSessionHandler.mock.calls.at(-1)?.[1];
+        if (!archiveCleanup) throw new Error('archive cleanup handler not registered');
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        const cleanup = archiveCleanup();
+        const duplicateCleanup = archiveCleanup();
+        const runAfterCleanup = harness.finishAfterCleanup();
+        await Promise.resolve();
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledTimes(1);
+        expect(flush).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        expect(exitSpy).not.toHaveBeenCalled();
+
+        reset.resolve();
+        await Promise.all([cleanup, duplicateCleanup, runAfterCleanup]);
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledTimes(1);
+        expect(flush).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(0);
+        expect(resetClaudeWorkflows.mock.invocationCallOrder[0])
+            .toBeLessThan(flush.mock.invocationCallOrder[0]);
+        expect(flush.mock.invocationCallOrder[0])
+            .toBeLessThan(close.mock.invocationCallOrder[0]);
+        expect(close.mock.invocationCallOrder[0])
+            .toBeLessThan(exitSpy.mock.invocationCallOrder[0]);
+
+        exitSpy.mockRestore();
+    });
+
+    it('continues archive cleanup when the authoritative workflow reset fails', async () => {
+        const resetFailure = new Error('workflow reset timed out');
+        const resetClaudeWorkflows = vi.fn(async () => { throw resetFailure; });
+        const flush = vi.fn(async () => {});
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+        const archiveCleanup = mockRegisterKillSessionHandler.mock.calls.at(-1)?.[1];
+        if (!archiveCleanup) throw new Error('archive cleanup handler not registered');
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        await archiveCleanup();
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        expect(flush).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(0);
+
+        exitSpy.mockRestore();
+        await harness.finishAfterCleanup();
+    });
+
+    it('resets workflows before flush and close on normal loop exit', async () => {
+        const resetClaudeWorkflows = vi.fn(async () => {});
+        const flush = vi.fn(async () => {});
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+
+        await harness.finish();
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        expect(resetClaudeWorkflows.mock.invocationCallOrder[0])
+            .toBeLessThan(flush.mock.invocationCallOrder[0]);
+        expect(flush.mock.invocationCallOrder[0])
+            .toBeLessThan(close.mock.invocationCallOrder[0]);
     });
 });

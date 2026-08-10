@@ -317,13 +317,14 @@ export function reduceClaudeWorkflowMessage(
 export class ClaudeWorkflowTracker {
   private state: ClaudeWorkflowReducerState = {}
   private timer: ReturnType<typeof setTimeout> | null = null
-  private readonly pendingPublications = new Set<Promise<void>>()
+  private readonly pendingPublications = new Map<Promise<void>, AbortController>()
   private publicationErrors: unknown[] = []
+  private disposed = false
   private readonly now: () => number
   private readonly coalesceMs: number
 
   constructor(
-    private readonly publish: (snapshot: ClaudeWorkflowReducerState) => void | Promise<void>,
+    private readonly publish: (snapshot: ClaudeWorkflowReducerState, signal: AbortSignal) => void | Promise<void>,
     options: { now?: () => number; coalesceMs?: number } = {},
   ) {
     this.now = options.now ?? Date.now
@@ -331,6 +332,7 @@ export class ClaudeWorkflowTracker {
   }
 
   handle(message: unknown): void {
+    if (this.disposed) return
     const result = reduceClaudeWorkflowMessage(this.state, message, this.now())
     if (result.publication === 'none') return
 
@@ -349,22 +351,53 @@ export class ClaudeWorkflowTracker {
     }
   }
 
-  async reset(): Promise<void> {
+  async reset(signal?: AbortSignal): Promise<void> {
+    if (this.disposed) throw new Error('Claude workflow tracker is disposed')
     this.cancelPending()
     this.state = {}
-    await this.publishCurrent()
-    // A successful authoritative empty publication supersedes any earlier
-    // publication failure that could have left remote state stale.
-    this.publicationErrors = []
+    const abortAll = () => this.abortPublications(signal?.reason)
+    signal?.addEventListener('abort', abortAll, { once: true })
+    try {
+      await this.publishCurrent(signal)
+      // A successful authoritative empty publication supersedes any earlier
+      // publication failure that could have left remote state stale.
+      this.publicationErrors = []
+    } finally {
+      signal?.removeEventListener('abort', abortAll)
+    }
   }
 
   dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
     this.cancelPending()
+    this.abortPublications(new Error('Claude workflow tracker disposed'))
   }
 
-  async drain(): Promise<void> {
-    while (this.pendingPublications.size > 0) {
-      await Promise.allSettled([...this.pendingPublications])
+  async drain(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<void> {
+    const drainController = new AbortController()
+    const forwardAbort = () => drainController.abort(options.signal?.reason)
+    options.signal?.addEventListener('abort', forwardAbort, { once: true })
+    const timeout = options.timeoutMs === undefined
+      ? null
+      : setTimeout(() => {
+        drainController.abort(new Error(`Claude workflow drain timed out after ${options.timeoutMs}ms`))
+      }, options.timeoutMs)
+    const abortPending = () => this.abortPublications(drainController.signal.reason)
+    drainController.signal.addEventListener('abort', abortPending, { once: true })
+
+    try {
+      if (options.signal?.aborted) forwardAbort()
+      while (this.pendingPublications.size > 0) {
+        await Promise.allSettled([...this.pendingPublications.keys()])
+      }
+      if (drainController.signal.aborted) {
+        throw drainController.signal.reason ?? new Error('Claude workflow drain aborted')
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout)
+      options.signal?.removeEventListener('abort', forwardAbort)
+      drainController.signal.removeEventListener('abort', abortPending)
     }
 
     const errors = this.publicationErrors.splice(0)
@@ -376,28 +409,60 @@ export class ClaudeWorkflowTracker {
     return this.state
   }
 
-  private publishCurrent(): Promise<void> {
+  private publishCurrent(signal?: AbortSignal): Promise<void> {
     // Object.fromEntries preserves reserved task ids such as "__proto__" as
     // own data properties, unlike assigning those ids onto a normal object.
     const snapshot = Object.fromEntries(Object.entries(this.state)) as ClaudeWorkflowReducerState
-    let publication: Promise<void>
+    const controller = new AbortController()
+    const forwardAbort = () => controller.abort(signal?.reason)
+    signal?.addEventListener('abort', forwardAbort, { once: true })
+    if (signal?.aborted) forwardAbort()
+
+    let rawPublication: Promise<void>
     try {
-      publication = Promise.resolve(this.publish(snapshot))
+      rawPublication = Promise.resolve(this.publish(snapshot, controller.signal))
     } catch (error) {
-      publication = Promise.reject(error)
+      rawPublication = Promise.reject(error)
     }
 
-    this.pendingPublications.add(publication)
+    const publication = new Promise<void>((resolve, reject) => {
+      let settled = false
+      const settle = (handler: () => void) => {
+        if (settled) return
+        settled = true
+        controller.signal.removeEventListener('abort', onAbort)
+        handler()
+      }
+      const onAbort = () => settle(() => reject(
+        controller.signal.reason ?? new Error('Claude workflow publication aborted'),
+      ))
+      controller.signal.addEventListener('abort', onAbort, { once: true })
+      if (controller.signal.aborted) onAbort()
+      void rawPublication.then(
+        () => settle(resolve),
+        (error) => settle(() => reject(error)),
+      )
+    })
+
+    this.pendingPublications.set(publication, controller)
     void publication.then(
       () => {
         this.pendingPublications.delete(publication)
+        signal?.removeEventListener('abort', forwardAbort)
       },
       (error) => {
         this.pendingPublications.delete(publication)
-        this.publicationErrors.push(error)
+        signal?.removeEventListener('abort', forwardAbort)
+        if (!controller.signal.aborted) this.publicationErrors.push(error)
       },
     )
     return publication
+  }
+
+  private abortPublications(reason?: unknown): void {
+    for (const controller of this.pendingPublications.values()) {
+      if (!controller.signal.aborted) controller.abort(reason)
+    }
   }
 
   private cancelPending(): void {
