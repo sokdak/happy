@@ -1,0 +1,98 @@
+import type {
+    ActiveWorkflowPhaseSnapshot,
+    ActiveWorkflowSnapshot,
+} from '../../sync/storageTypes';
+
+export type WorkflowVisualState = 'running' | 'completed' | 'error' | 'active';
+export type WorkflowOpenTarget = 'context-panel' | 'route';
+export type WorkflowPanelEvent = 'open' | 'close' | 'active-count';
+
+export interface WorkflowContextPanelOptions {
+    ready: boolean;
+    hasSession: boolean;
+    width: number;
+    platform: string;
+    isMacDesktop: boolean;
+}
+
+export function selectActiveWorkflows(
+    workflows: Record<string, ActiveWorkflowSnapshot> | null | undefined,
+): ActiveWorkflowSnapshot[] {
+    return Object.values(workflows ?? {}).sort((left, right) =>
+        left.startedAt - right.startedAt || left.taskId.localeCompare(right.taskId),
+    );
+}
+
+export function normalizeWorkflowAgentState(state: string): WorkflowVisualState {
+    switch (state.toLowerCase()) {
+        case 'start':
+        case 'running':
+        case 'in_progress':
+            return 'running';
+        case 'done':
+        case 'completed':
+        case 'success':
+            return 'completed';
+        case 'error':
+        case 'failed':
+            return 'error';
+        default:
+            return 'active';
+    }
+}
+
+export function getPhaseVisualState(phase: ActiveWorkflowPhaseSnapshot): WorkflowVisualState {
+    const states = phase.agents.map((agent) => normalizeWorkflowAgentState(agent.state));
+
+    if (states.includes('running')) return 'running';
+    if (states.includes('error')) return 'error';
+    if (states.length > 0 && states.every((state) => state === 'completed')) return 'completed';
+    return 'active';
+}
+
+export function getWorkflowBadgeModel(count: number): { count: number; plural: boolean } | null {
+    return count > 0 ? { count, plural: count !== 1 } : null;
+}
+
+export function canUseWorkflowContextPanel(options: WorkflowContextPanelOptions): boolean {
+    return options.ready
+        && options.hasSession
+        && options.width >= 1100
+        && (options.platform === 'web' || options.isMacDesktop);
+}
+
+export function resolveWorkflowOpenTarget(options: WorkflowContextPanelOptions): WorkflowOpenTarget {
+    return canUseWorkflowContextPanel(options) ? 'context-panel' : 'route';
+}
+
+export function reduceWorkflowPanelOpen(
+    isOpen: boolean,
+    event: WorkflowPanelEvent,
+    activeCount: number,
+): boolean {
+    if (event === 'open') return true;
+    if (event === 'close') return false;
+    return activeCount === 0 ? false : isOpen;
+}
+
+export function shouldDismissWorkflowRoute(activeCount: number): boolean {
+    return activeCount === 0;
+}
+
+export function formatWorkflowElapsed(startedAt: number, now: number): string {
+    const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    const paddedMinutes = String(minutes).padStart(2, '0');
+    const paddedSeconds = String(remainingSeconds).padStart(2, '0');
+
+    return hours > 0 ? `${hours}:${paddedMinutes}:${paddedSeconds}` : `${paddedMinutes}:${paddedSeconds}`;
+}
+
+export function formatWorkflowTokens(tokens: number): string {
+    if (tokens < 1000) return String(Math.round(tokens));
+
+    const thousands = Math.round((tokens / 1000) * 10) / 10;
+    return `${Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}k`;
+}

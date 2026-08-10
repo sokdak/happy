@@ -224,11 +224,72 @@ const UsageLimitsSchema = z.object({
     }).passthrough()),
 }).passthrough().optional().catch(undefined);
 
+export const ActiveWorkflowAgentSnapshotSchema = z.object({
+    id: z.string().trim().min(1),
+    index: z.number().int(),
+    label: z.string().trim().min(1),
+    state: z.string().trim().min(1),
+    model: z.string().optional(),
+    queuedAt: z.number().optional(),
+    startedAt: z.number().optional(),
+    lastProgressAt: z.number().optional(),
+    tokens: z.number().optional(),
+    toolCalls: z.number().optional(),
+    durationMs: z.number().optional(),
+    lastToolName: z.string().optional(),
+    lastToolSummary: z.string().optional(),
+}).passthrough();
+
+export type ActiveWorkflowAgentSnapshot = z.infer<typeof ActiveWorkflowAgentSnapshotSchema>;
+
+export const ActiveWorkflowPhaseSnapshotSchema = z.object({
+    index: z.number().int(),
+    title: z.string().trim().min(1),
+    agents: z.array(ActiveWorkflowAgentSnapshotSchema),
+}).passthrough();
+
+export type ActiveWorkflowPhaseSnapshot = z.infer<typeof ActiveWorkflowPhaseSnapshotSchema>;
+
+export const ActiveWorkflowSnapshotSchema = z.object({
+    taskId: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    startedAt: z.number(),
+    updatedAt: z.number(),
+    phases: z.array(ActiveWorkflowPhaseSnapshotSchema),
+    toolUseId: z.string().optional(),
+    description: z.string().optional(),
+    usage: z.object({
+        totalTokens: z.number().optional(),
+        toolUses: z.number().optional(),
+        durationMs: z.number().optional(),
+    }).passthrough().optional(),
+}).passthrough();
+
+export type ActiveWorkflowSnapshot = z.infer<typeof ActiveWorkflowSnapshotSchema>;
+
+export const ActiveWorkflowsSchema = z.preprocess((value) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+
+    // Preserve keys that Zod would otherwise assign onto a normal object
+    // while parsing. Prefixing every key is reversible and keeps reserved
+    // keys such as "__proto__" and "constructor" as ordinary data.
+    return Object.fromEntries(Object.entries(value).map(([id, workflow]) => [`\0${id}`, workflow]));
+}, z.record(z.string(), z.unknown()).transform((workflows) =>
+    // Object.fromEntries retains reserved task ids as own data properties.
+    Object.fromEntries(
+        Object.entries(workflows).flatMap(([encodedId, workflow]) => {
+            const parsed = ActiveWorkflowSnapshotSchema.safeParse(workflow);
+            return parsed.success ? [[encodedId.slice(1), parsed.data]] : [];
+        }),
+    ) as Record<string, ActiveWorkflowSnapshot>,
+)).optional().catch(undefined);
+
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
     // Ephemeral runtime state. A malformed snapshot must not invalidate
     // permission requests or the rest of the agent state.
     usageLimits: UsageLimitsSchema,
+    activeWorkflows: ActiveWorkflowsSchema,
     requests: z.record(z.string(), z.object({
         tool: z.string(),
         arguments: z.any(),
