@@ -311,3 +311,62 @@ export function reduceClaudeWorkflowMessage(
   }
   return unchanged(state)
 }
+
+export class ClaudeWorkflowTracker {
+  private state: ClaudeWorkflowReducerState = {}
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private readonly now: () => number
+  private readonly coalesceMs: number
+
+  constructor(
+    private readonly publish: (snapshot: ClaudeWorkflowReducerState) => void,
+    options: { now?: () => number; coalesceMs?: number } = {},
+  ) {
+    this.now = options.now ?? Date.now
+    this.coalesceMs = options.coalesceMs ?? 250
+  }
+
+  handle(message: unknown): void {
+    const result = reduceClaudeWorkflowMessage(this.state, message, this.now())
+    if (result.publication === 'none') return
+
+    this.state = result.state
+    if (result.publication === 'immediate') {
+      this.cancelPending()
+      this.publishCurrent()
+      return
+    }
+
+    if (!this.timer) {
+      this.timer = setTimeout(() => {
+        this.timer = null
+        this.publishCurrent()
+      }, this.coalesceMs)
+    }
+  }
+
+  reset(): void {
+    this.cancelPending()
+    this.state = {}
+    this.publishCurrent()
+  }
+
+  dispose(): void {
+    this.cancelPending()
+  }
+
+  snapshot(): ClaudeWorkflowReducerState {
+    return this.state
+  }
+
+  private publishCurrent(): void {
+    // Object.fromEntries preserves reserved task ids such as "__proto__" as
+    // own data properties, unlike assigning those ids onto a normal object.
+    this.publish(Object.fromEntries(Object.entries(this.state)) as ClaudeWorkflowReducerState)
+  }
+
+  private cancelPending(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = null
+  }
+}

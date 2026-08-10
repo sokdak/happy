@@ -109,6 +109,7 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
 
             // Launch
             logger.debug('[local]: launch');
+            session.client.resetClaudeWorkflows();
             try {
                 await claudeLocal({
                     path: session.path,
@@ -162,6 +163,8 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
             logger.debug('[local]: launch done');
         }
     } finally {
+
+        session.client.resetClaudeWorkflows();
 
         // Resolve future
         exutFuture.resolve(undefined);

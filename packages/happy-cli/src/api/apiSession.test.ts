@@ -374,6 +374,71 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(typeof (sessionUser as any).content.time).toBe('number');
     });
 
+    it('publishes active Claude workflows through encrypted agent state without chat envelopes', async () => {
+        let version = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => {
+            if (event !== 'update-state') {
+                return { result: 'error' };
+            }
+            const agentState = decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(payload.agentState),
+            );
+            return {
+                result: 'success',
+                agentState: encryptContent(session, agentState),
+                version: ++version,
+            };
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        try {
+            client.sendClaudeSessionMessage({
+                type: 'system',
+                subtype: 'task_started',
+                task_id: 'workflow-1',
+                task_type: 'local_workflow',
+                workflow_name: 'inspect-packages',
+            } as any);
+
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+            });
+
+            const firstPayload = mockSocket.emitWithAck.mock.calls[0][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(firstPayload.agentState),
+            )).toMatchObject({
+                activeWorkflows: {
+                    'workflow-1': { taskId: 'workflow-1', name: 'inspect-packages' },
+                },
+            });
+
+            client.sendClaudeSessionMessage({
+                type: 'system',
+                subtype: 'task_notification',
+                task_id: 'workflow-1',
+            } as any);
+
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+            });
+
+            const secondPayload = mockSocket.emitWithAck.mock.calls[1][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(secondPayload.agentState),
+            )).not.toHaveProperty('activeWorkflows');
+            expect(mockAxiosPost).not.toHaveBeenCalled();
+        } finally {
+            await client.close();
+        }
+    });
+
     it('uploads local Claude transcript image blocks and sends file before user text', async () => {
         const client = new ApiSessionClient('fake-token', session);
         const pngBytes = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x01, 0x02, 0x03]);

@@ -310,6 +310,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             let modeHash: string | null = null;
             let mode: EnhancedMode | null = null;
             try {
+                session.client.resetClaudeWorkflows();
                 const remoteResult = await claudeRemote({
                     sessionId: session.sessionId,
                     path: session.path,
@@ -459,6 +460,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     continue;
                 }
             } finally {
+
+                session.client.resetClaudeWorkflows();
 
                 logger.debug('[remote]: launch finally');
 

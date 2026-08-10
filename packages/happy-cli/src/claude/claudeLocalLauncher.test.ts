@@ -78,6 +78,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessage: vi.fn(),
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -111,6 +112,9 @@ describe('claudeLocalLauncher', () => {
             expect(observed.localAbortSignal).toBeDefined();
             expect(observed.queueHandler).toBeDefined();
         });
+        expect(session.client.resetClaudeWorkflows).toHaveBeenCalled();
+        expect(Math.min(...session.client.resetClaudeWorkflows.mock.invocationCallOrder))
+            .toBeLessThan(Math.min(...mockClaudeLocal.mock.invocationCallOrder));
 
         queuedMessages = 1;
         const handler = observed.queueHandler;
@@ -129,6 +133,7 @@ describe('claudeLocalLauncher', () => {
 
         await expect(launcher).resolves.toEqual({ type: 'switch' });
         expect(session.client.closeClaudeSessionTurn).toHaveBeenCalledWith('completed');
+        expect(session.client.resetClaudeWorkflows.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     it('routes scanner messages through local transcript replay so attachments can be uploaded', async () => {
@@ -153,6 +158,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessage: vi.fn(),
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -225,6 +231,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
                 sendSessionEvent: vi.fn(),
+                resetClaudeWorkflows: vi.fn(),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },

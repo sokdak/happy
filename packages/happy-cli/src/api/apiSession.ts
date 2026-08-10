@@ -21,6 +21,7 @@ import {
 } from '@/claude/utils/sessionProtocolMapper';
 import { InvalidateSync } from '@/utils/sync';
 import axios from 'axios';
+import { ClaudeWorkflowTracker } from '@/claude/workflows/claudeWorkflowTracker';
 
 /**
  * ACP (Agent Communication Protocol) message data types.
@@ -228,6 +229,7 @@ export class ApiSessionClient extends EventEmitter {
     private pendingOutbox: Array<{ content: string; localId: string }> = [];
     private readonly sendSync: InvalidateSync;
     private readonly receiveSync: InvalidateSync;
+    private readonly claudeWorkflowTracker: ClaudeWorkflowTracker;
 
     constructor(token: string, session: Session) {
         super()
@@ -267,6 +269,17 @@ export class ApiSessionClient extends EventEmitter {
             transports: ['websocket'],
             withCredentials: true,
             autoConnect: false
+        });
+        this.claudeWorkflowTracker = new ClaudeWorkflowTracker((snapshot) => {
+            this.updateAgentState((currentAgentState) => {
+                const next = { ...currentAgentState };
+                if (Object.keys(snapshot).length === 0) {
+                    delete next.activeWorkflows;
+                } else {
+                    next.activeWorkflows = snapshot;
+                }
+                return next;
+            });
         });
 
         //
@@ -716,10 +729,15 @@ export class ApiSessionClient extends EventEmitter {
      * @param body - Message body (can be MessageContent or raw content for agent messages)
      */
     sendClaudeSessionMessage(body: RawJSONLines) {
+        this.claudeWorkflowTracker.handle(body);
         const mapped = mapClaudeLogMessageToSessionEnvelopes(body, this.claudeSessionProtocolState);
         this.claudeSessionProtocolState.currentTurnId = mapped.currentTurnId;
         this.enqueueSessionProtocolEnvelopes(mapped.envelopes);
         this.applyClaudeSessionMessageSideEffects(body);
+    }
+
+    resetClaudeWorkflows(): void {
+        this.claudeWorkflowTracker.reset();
     }
 
     async sendClaudeSessionMessageFromLocalTranscript(body: RawJSONLines): Promise<void> {
@@ -992,6 +1010,7 @@ export class ApiSessionClient extends EventEmitter {
 
     async close() {
         logger.debug('[API] socket.close() called');
+        this.claudeWorkflowTracker.dispose();
         this.sendSync.stop();
         this.receiveSync.stop();
         if (this.reconnectInterval) {

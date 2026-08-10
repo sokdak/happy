@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { reduceClaudeWorkflowMessage, type ClaudeWorkflowReducerState } from './claudeWorkflowTracker';
+import { describe, expect, it, vi } from 'vitest';
+import { ClaudeWorkflowTracker, reduceClaudeWorkflowMessage, type ClaudeWorkflowReducerState } from './claudeWorkflowTracker';
 
 const system = (subtype: string, fields: Record<string, unknown>) => ({
   type: 'system',
@@ -233,5 +233,75 @@ describe('reduceClaudeWorkflowMessage', () => {
     expect(assistant.state).toBe(state);
     expect(malformed).toEqual({ state, publication: 'none' });
     expect(malformed.state).toBe(state);
+  });
+});
+
+describe('ClaudeWorkflowTracker publisher', () => {
+  it('publishes starts immediately and coalesces progress updates', () => {
+    vi.useFakeTimers();
+    const publish = vi.fn();
+    const tracker = new ClaudeWorkflowTracker(publish);
+
+    try {
+      tracker.handle(started());
+      tracker.handle(fullProgress);
+      tracker.handle(system('task_progress', {
+        task_id: 'workflow-1',
+        usage: { total_tokens: 25000 },
+      }));
+
+      expect(publish).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(249);
+      expect(publish).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(1);
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish.mock.calls[1][0]['workflow-1'].usage?.totalTokens).toBe(25000);
+    } finally {
+      tracker.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels pending progress publication and publishes terminal state immediately', () => {
+    vi.useFakeTimers();
+    const publish = vi.fn();
+    const tracker = new ClaudeWorkflowTracker(publish);
+
+    try {
+      tracker.handle(started());
+      tracker.handle(fullProgress);
+      tracker.handle(system('task_notification', { task_id: 'workflow-1' }));
+
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish.mock.calls[1][0]).toEqual({});
+
+      vi.advanceTimersByTime(300);
+      expect(publish).toHaveBeenCalledTimes(2);
+    } finally {
+      tracker.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('force-publishes an empty snapshot when reset', () => {
+    const publish = vi.fn();
+    const tracker = new ClaudeWorkflowTracker(publish);
+
+    try {
+      tracker.reset();
+      expect(publish).toHaveBeenCalledWith({});
+
+      tracker.handle(started());
+      expect(tracker.snapshot()).toHaveProperty('workflow-1');
+
+      tracker.reset();
+
+      expect(tracker.snapshot()).toEqual({});
+      expect(publish.mock.calls.at(-1)?.[0]).toEqual({});
+    } finally {
+      tracker.dispose();
+    }
   });
 });
