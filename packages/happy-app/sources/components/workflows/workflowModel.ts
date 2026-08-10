@@ -5,7 +5,10 @@ import type {
 
 export type WorkflowVisualState = 'running' | 'completed' | 'error' | 'active';
 export type WorkflowOpenTarget = 'context-panel' | 'route';
-export type WorkflowPanelEvent = 'open' | 'close' | 'active-count';
+export type WorkflowPanelEvent =
+    | { type: 'open' }
+    | { type: 'close' }
+    | { type: 'active-count'; count: number };
 
 export interface WorkflowContextPanelOptions {
     ready: boolean;
@@ -61,18 +64,17 @@ export function canUseWorkflowContextPanel(options: WorkflowContextPanelOptions)
         && (options.platform === 'web' || options.isMacDesktop);
 }
 
-export function resolveWorkflowOpenTarget(options: WorkflowContextPanelOptions): WorkflowOpenTarget {
-    return canUseWorkflowContextPanel(options) ? 'context-panel' : 'route';
+export function resolveWorkflowOpenTarget(canUseContextPanel: boolean): WorkflowOpenTarget {
+    return canUseContextPanel ? 'context-panel' : 'route';
 }
 
 export function reduceWorkflowPanelOpen(
-    isOpen: boolean,
+    open: boolean,
     event: WorkflowPanelEvent,
-    activeCount: number,
 ): boolean {
-    if (event === 'open') return true;
-    if (event === 'close') return false;
-    return activeCount === 0 ? false : isOpen;
+    if (event.type === 'open') return true;
+    if (event.type === 'close') return false;
+    return event.count === 0 ? false : open;
 }
 
 export function shouldDismissWorkflowRoute(activeCount: number): boolean {

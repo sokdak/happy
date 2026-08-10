@@ -69,21 +69,24 @@ describe('workflowModel', () => {
     });
 
     it('uses the context panel only for eligible wide web or mac desktop sessions', () => {
-        expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'web', isMacDesktop: false })).toBe(true);
-        expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'ios', isMacDesktop: true })).toBe(true);
+        const webWide = canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'web', isMacDesktop: false });
+        const macDesktopWide = canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'ios', isMacDesktop: true });
+
+        expect(webWide).toBe(true);
+        expect(macDesktopWide).toBe(true);
         expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 900, platform: 'web', isMacDesktop: false })).toBe(false);
         expect(canUseWorkflowContextPanel({ ready: true, hasSession: true, width: 1200, platform: 'ios', isMacDesktop: false })).toBe(false);
-        expect(resolveWorkflowOpenTarget({ ready: true, hasSession: true, width: 1200, platform: 'web', isMacDesktop: false })).toBe('context-panel');
-        expect(resolveWorkflowOpenTarget({ ready: true, hasSession: true, width: 1200, platform: 'ios', isMacDesktop: true })).toBe('context-panel');
-        expect(resolveWorkflowOpenTarget({ ready: true, hasSession: true, width: 900, platform: 'web', isMacDesktop: false })).toBe('route');
+        expect(resolveWorkflowOpenTarget(webWide)).toBe('context-panel');
+        expect(resolveWorkflowOpenTarget(macDesktopWide)).toBe('context-panel');
+        expect(resolveWorkflowOpenTarget(false)).toBe('route');
     });
 
     it('opens and closes the panel only from explicit events or zero active workflows', () => {
-        expect(reduceWorkflowPanelOpen(false, 'active-count', 3)).toBe(false);
-        expect(reduceWorkflowPanelOpen(true, 'active-count', 3)).toBe(true);
-        expect(reduceWorkflowPanelOpen(false, 'open', 3)).toBe(true);
-        expect(reduceWorkflowPanelOpen(true, 'close', 3)).toBe(false);
-        expect(reduceWorkflowPanelOpen(true, 'active-count', 0)).toBe(false);
+        expect(reduceWorkflowPanelOpen(false, { type: 'active-count', count: 3 })).toBe(false);
+        expect(reduceWorkflowPanelOpen(true, { type: 'active-count', count: 3 })).toBe(true);
+        expect(reduceWorkflowPanelOpen(false, { type: 'open' })).toBe(true);
+        expect(reduceWorkflowPanelOpen(true, { type: 'close' })).toBe(false);
+        expect(reduceWorkflowPanelOpen(true, { type: 'active-count', count: 0 })).toBe(false);
         expect(shouldDismissWorkflowRoute(0)).toBe(true);
         expect(shouldDismissWorkflowRoute(1)).toBe(false);
     });
