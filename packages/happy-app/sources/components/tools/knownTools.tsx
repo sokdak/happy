@@ -57,6 +57,14 @@ const taskLikeTool = {
 export const knownTools = {
     'Task': taskLikeTool,
     'Agent': taskLikeTool,
+    'Workflow': {
+        title: t('workflows.toolTitle'),
+        icon: ICON_TASK,
+        minimal: true,
+        input: z.object({
+            script: z.string().optional()
+        }).passthrough(),
+    },
     'Bash': {
         title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
             if (opts.tool.description) {
