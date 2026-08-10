@@ -78,6 +78,14 @@ import {
     rigCanUseShell,
 } from '@/sync/rig';
 import { RigActivityBar } from '@/components/RigActivityBar';
+import { WorkflowActivityBadge } from '@/components/workflows/WorkflowActivityBadge';
+import { WorkflowPanel } from '@/components/workflows/WorkflowPanel';
+import {
+    canUseWorkflowContextPanel,
+    getWorkflowContextPresentation,
+    resolveWorkflowOpenTarget,
+    selectActiveWorkflows,
+} from '@/components/workflows/workflowModel';
 
 export const SessionView = React.memo((props: { id: string }) => {
     const sessionId = props.id;
@@ -98,9 +106,48 @@ export const SessionView = React.memo((props: { id: string }) => {
     const realtimeStatus = useRealtimeStatus();
     const isTablet = useIsTablet();
     const { width: windowWidth } = useWindowDimensions();
+    const activeWorkflows = React.useMemo(
+        () => selectActiveWorkflows(session?.agentState?.activeWorkflows),
+        [session?.agentState?.activeWorkflows],
+    );
+    const [openedWorkflowSessionId, setOpenedWorkflowSessionId] = React.useState<string | null>(null);
+    const canShowWorkflowContextPanel = canUseWorkflowContextPanel({
+        platform: Platform.OS,
+        isMacDesktop: isRunningOnMac(),
+        width: windowWidth,
+        ready: isDataReady,
+        hasSession: !!session,
+    });
     const fileDiffsSidebarEnabled = useSetting('fileDiffsSidebar');
     const zenMode = useLocalSetting('zenMode');
     const [headerBackdropVisible, setHeaderBackdropVisible] = React.useState(false);
+
+    React.useEffect(() => {
+        if (activeWorkflows.length === 0) {
+            setOpenedWorkflowSessionId(null);
+        }
+    }, [activeWorkflows.length]);
+
+    React.useEffect(() => {
+        setOpenedWorkflowSessionId(null);
+    }, [sessionId]);
+
+    React.useEffect(() => {
+        if (!canShowWorkflowContextPanel) {
+            setOpenedWorkflowSessionId(null);
+        }
+    }, [canShowWorkflowContextPanel]);
+
+    const openWorkflowMonitor = React.useCallback(() => {
+        if (resolveWorkflowOpenTarget(canShowWorkflowContextPanel, zenMode) === 'context-panel') {
+            setOpenedWorkflowSessionId(sessionId);
+        } else {
+            router.push(`/session/${sessionId}/workflows`);
+        }
+    }, [canShowWorkflowContextPanel, router, sessionId, zenMode]);
+    const closeWorkflowMonitor = React.useCallback(() => {
+        setOpenedWorkflowSessionId(null);
+    }, []);
 
     React.useEffect(() => {
         setHeaderBackdropVisible(false);
@@ -113,7 +160,20 @@ export const SessionView = React.memo((props: { id: string }) => {
         && (!session || (rigCanBrowseFiles(session.metadata) && rigCanUseShell(session.metadata)))
         && isDataReady && !!session;
 
-    const showSidebar = canShowSidebar && !zenMode;
+    const showFilesSidebar = canShowSidebar && !zenMode;
+    const {
+        showWorkflowPanel,
+        showContextPanel,
+        filesSidebarInteractionEnabled,
+    } = getWorkflowContextPresentation({
+        openedWorkflowSessionId,
+        sessionId,
+        activeCount: activeWorkflows.length,
+        canUseContextPanel: canShowWorkflowContextPanel,
+        showFilesSidebar,
+        zenMode,
+    });
+    const hasDesktopContextArea = canShowSidebar || canShowWorkflowContextPanel;
 
     // Match left sidebar width: 30% of window, clamped to 250–360px
     const sidebarWidth = Math.min(Math.max(Math.floor(windowWidth * 0.3), 250), 360);
@@ -126,13 +186,13 @@ export const SessionView = React.memo((props: { id: string }) => {
     // grinds to ~15fps on dev builds. Snapping skips the layout thrash —
     // the chat reflows once instead of 60 times. Native keeps the smooth
     // animation because it runs on Reanimated's UI thread.
-    const sidebarAnim = useSharedValue(showSidebar ? 1 : 0);
+    const sidebarAnim = useSharedValue(showContextPanel ? 1 : 0);
     React.useEffect(() => {
-        sidebarAnim.value = withTiming(showSidebar ? 1 : 0, {
+        sidebarAnim.value = withTiming(showContextPanel ? 1 : 0, {
             duration: Platform.OS === 'web' ? 0 : 250,
             easing: Easing.out(Easing.cubic),
         });
-    }, [showSidebar]);
+    }, [showContextPanel]);
     const animatedSidebarStyle = useAnimatedStyle(() => ({
         width: sidebarAnim.value * sidebarWidth,
         opacity: sidebarAnim.value,
@@ -360,7 +420,7 @@ export const SessionView = React.memo((props: { id: string }) => {
                 : undefined,
         };
     }, [session, isDataReady]);
-    const headerRight = session && deviceType === 'phone' && Platform.OS !== 'web'
+    const avatarHeaderRight = session && deviceType === 'phone' && Platform.OS !== 'web'
         ? (
             <Pressable
                 onPress={() => router.push(`/session/${sessionId}/info`)}
@@ -374,6 +434,24 @@ export const SessionView = React.memo((props: { id: string }) => {
                     clientId={session.metadata?.client?.id}
                 />
             </Pressable>
+        )
+        : null;
+    const workflowBadge = activeWorkflows.length > 0
+        ? <WorkflowActivityBadge count={activeWorkflows.length} onPress={openWorkflowMonitor} />
+        : null;
+    const contextualHeaderRight = (diffViewOpen || !!fileViewPath) ? headerRightSlot : avatarHeaderRight;
+    const composedHeaderRight = workflowBadge || contextualHeaderRight
+        ? (
+            <View
+                style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: deviceType === 'phone' && Platform.OS !== 'web' ? 20 : 8,
+                }}
+            >
+                {workflowBadge}
+                {contextualHeaderRight}
+            </View>
         )
         : null;
 
@@ -450,7 +528,7 @@ export const SessionView = React.memo((props: { id: string }) => {
                         backdropVisible={headerBackdropVisible}
                         identityLine={headerProps.identityLine}
                         extraPathSegment={fileViewPath ?? undefined}
-                        rightSlot={(diffViewOpen || !!fileViewPath) ? headerRightSlot : headerRight}
+                        rightSlot={composedHeaderRight}
                         onTitlePress={session ? () => router.push(`/session/${sessionId}/info`) : undefined}
                         onBackPress={() => router.back()}
                     />
@@ -460,10 +538,15 @@ export const SessionView = React.memo((props: { id: string }) => {
                     )}
                 </View>
             )}
+            {isLandscape && deviceType === 'phone' && Platform.OS !== 'web' && workflowBadge && (
+                <View style={{ position: 'absolute', top: safeArea.top + 8, right: 12, zIndex: 1001 }}>
+                    {workflowBadge}
+                </View>
+            )}
         </>
     );
 
-    if (!canShowSidebar) {
+    if (!hasDesktopContextArea) {
         return mainContent;
     }
 
@@ -525,24 +608,52 @@ export const SessionView = React.memo((props: { id: string }) => {
             </View>
             <Animated.View style={[{ minWidth: 0, alignSelf: 'stretch' }, animatedSidebarStyle]}>
                 <View style={{ width: sidebarWidth, flex: 1 }}>
-                    <FilesSidebar
-                        sessionId={sessionId}
-                        selectedPath={sidebarPanelActive === 'changes' ? scrollToFile : sidebarPanelActive === 'allFiles' ? fileViewPath : null}
-                        onFilePress={handleSidebarFilePress}
-                        openPanels={sidebarPanelsOpen}
-                        activePanel={sidebarPanelActive}
-                        onOpenPanel={openSidebarPanel}
-                        onSelectPanel={selectSidebarPanel}
-                        onClosePanel={closeSidebarPanel}
-                        onAllFilesFilePress={handleAllFilesFilePress}
-                        sideChats={sideChats}
-                        activeSideChatId={activeSideChatId}
-                        onSelectSideChat={setActiveSideChatId}
-                        onCloseSideChat={closeSideChat}
-                        onCreateSideChat={createSideChat}
-                        canCreateSideChat={!!sideChatForkSource}
-                        creatingSideChat={creatingSideChat}
-                    />
+                    {canShowSidebar && (
+                        <View
+                            pointerEvents={filesSidebarInteractionEnabled ? 'auto' : 'none'}
+                            accessibilityElementsHidden={!filesSidebarInteractionEnabled}
+                            importantForAccessibility={filesSidebarInteractionEnabled ? 'auto' : 'no-hide-descendants'}
+                            aria-hidden={!filesSidebarInteractionEnabled}
+                            style={{ flex: 1, opacity: filesSidebarInteractionEnabled ? 1 : 0 }}
+                        >
+                            <FilesSidebar
+                                sessionId={sessionId}
+                                selectedPath={sidebarPanelActive === 'changes' ? scrollToFile : sidebarPanelActive === 'allFiles' ? fileViewPath : null}
+                                onFilePress={handleSidebarFilePress}
+                                openPanels={sidebarPanelsOpen}
+                                activePanel={sidebarPanelActive}
+                                onOpenPanel={openSidebarPanel}
+                                onSelectPanel={selectSidebarPanel}
+                                onClosePanel={closeSidebarPanel}
+                                onAllFilesFilePress={handleAllFilesFilePress}
+                                sideChats={sideChats}
+                                activeSideChatId={activeSideChatId}
+                                onSelectSideChat={setActiveSideChatId}
+                                onCloseSideChat={closeSideChat}
+                                onCreateSideChat={createSideChat}
+                                canCreateSideChat={!!sideChatForkSource}
+                                creatingSideChat={creatingSideChat}
+                                visible={filesSidebarInteractionEnabled}
+                            />
+                        </View>
+                    )}
+                    {showWorkflowPanel && (
+                        <View
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                right: 0,
+                                bottom: 0,
+                                left: 0,
+                                zIndex: 1,
+                            }}
+                        >
+                            <WorkflowPanel
+                                workflows={activeWorkflows}
+                                onClose={closeWorkflowMonitor}
+                            />
+                        </View>
+                    )}
                 </View>
             </Animated.View>
         </View>
@@ -623,11 +734,13 @@ export function SessionViewLoaded({
     sessionId,
     session,
     embedded = false,
+    interactionEnabled = true,
     onHeaderBackdropVisibilityChange,
 }: {
     sessionId: string;
     session: Session;
     embedded?: boolean;
+    interactionEnabled?: boolean;
     onHeaderBackdropVisibilityChange?: (visible: boolean) => void;
 }) {
     const { theme } = useUnistyles();
@@ -1037,7 +1150,7 @@ export function SessionViewLoaded({
             selectedImages={expImageUpload && canUseAttachments ? selectedImages : undefined}
             onPickImages={expImageUpload && canUseAttachments ? pickImages : undefined}
             onRemoveImage={expImageUpload && canUseAttachments ? removeImage : undefined}
-            onAddImages={expImageUpload && canUseAttachments ? addImages : undefined}
+            onAddImages={interactionEnabled && expImageUpload && canUseAttachments ? addImages : undefined}
             autocompletePrefixes={AGENT_INPUT_AUTOCOMPLETE_PREFIXES}
             autocompleteSuggestions={handleAutocompleteSuggestions}
             usageData={usageData}

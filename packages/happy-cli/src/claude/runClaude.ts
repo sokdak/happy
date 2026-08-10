@@ -616,7 +616,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Exit when session is archived from web/mobile
     session.on('archived', () => {
         logger.debug('[loop] Session archived from web/mobile, cleaning up...');
-        cleanup();
+        void cleanup({ archive: true, exitCode: 0 });
     });
 
     // Handle file events — each download promise resolves to its own decoded
@@ -841,89 +841,127 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     //
     // Crashes (uncaughtException / unhandledRejection) keep archiving
     // because the session is genuinely toast at that point.
-    const cleanup = async (opts: { archive?: boolean } = { archive: true }) => {
-        logger.debug(`[START] Received termination signal, cleaning up (archive=${opts.archive ?? true})...`);
-
+    const resetClaudeWorkflowsForShutdown = async () => {
         try {
-            // Update lifecycle state to archived before closing — only
-            // when explicitly archiving. On Ctrl-C / SIGTERM we leave
-            // lifecycleState alone so the server treats this exactly
-            // like a network blip: active=false via missed keepalives,
-            // but the session stays visible and resumable in the app.
-            if (session) {
-                if (opts.archive ?? true) {
-                    session.updateMetadata((currentMetadata) => ({
-                        ...currentMetadata,
-                        lifecycleState: 'archived',
-                        lifecycleStateSince: Date.now(),
-                        archivedBy: 'cli',
-                        archiveReason: 'User terminated'
-                    }));
+            await session.resetClaudeWorkflows({ seal: true });
+        } catch (error) {
+            logger.debug('[START] Failed to reset Claude workflows during cleanup:', error);
+        }
+    };
+
+    const flushAndCloseSession = async () => {
+        try {
+            await session.flush();
+        } catch (error) {
+            logger.debug('[START] Failed to flush session during cleanup:', error);
+        }
+        try {
+            await session.close();
+        } catch (error) {
+            logger.debug('[START] Failed to close session during cleanup:', error);
+        }
+    };
+
+    let cleanupPromise: Promise<void> | null = null;
+    const cleanup = (request: { archive: boolean; exitCode: number }): Promise<void> => {
+        if (cleanupPromise) return cleanupPromise;
+        let resolveCleanup!: () => void;
+        let rejectCleanup!: (reason?: unknown) => void;
+        cleanupPromise = new Promise<void>((resolve, reject) => {
+            resolveCleanup = resolve;
+            rejectCleanup = reject;
+        });
+
+        void (async () => {
+            logger.debug(`[START] Cleaning up (archive=${request.archive}, exitCode=${request.exitCode})...`);
+
+            try {
+                // Update lifecycle state to archived before closing — only
+                // when explicitly archiving. On Ctrl-C / SIGTERM we leave
+                // lifecycleState alone so the server treats this exactly
+                // like a network blip: active=false via missed keepalives,
+                // but the session stays visible and resumable in the app.
+                if (session) {
+                    if (request.archive) {
+                        session.updateMetadata((currentMetadata) => ({
+                            ...currentMetadata,
+                            lifecycleState: 'archived',
+                            lifecycleStateSince: Date.now(),
+                            archivedBy: 'cli',
+                            archiveReason: 'User terminated'
+                        }));
+                    }
+
+                    // Seal ingestion synchronously and publish the final empty
+                    // workflow snapshot before any other shutdown work.
+                    await resetClaudeWorkflowsForShutdown();
+
+                    // Cleanup session resources (intervals, callbacks)
+                    currentSession?.cleanup();
+
+                    // Send session death message
+                    session.sendSessionDeath();
+
+                    // Belt-and-braces: also POST /v1/sessions/<id>/archive so
+                    // the server flips active=false even if the socket emit
+                    // didn't drain before close. The HTTP endpoint touches
+                    // only `active` and `lastActiveAt` — it doesn't write
+                    // archive metadata — so this is safe in the archive=false
+                    // case too, and matches the "session goes inactive but
+                    // stays resumable" semantics we want for Ctrl-C.
+                    try {
+                        await api.deactivateSession(session.sessionId);
+                    } catch (err) {
+                        logger.debug('[START] deactivateSession during cleanup failed:', err);
+                    }
+
+                    await flushAndCloseSession();
                 }
 
-                // Cleanup session resources (intervals, callbacks)
-                currentSession?.cleanup();
+                // Stop Happy MCP server
+                happyServer.stop();
 
-                // Send session death message
-                session.sendSessionDeath();
+                // Stop Hook server and cleanup settings file
+                hookServer.stop();
+                cleanupHookSettingsFile(hookSettingsPath);
 
-                // Belt-and-braces: also POST /v1/sessions/<id>/archive so
-                // the server flips active=false even if the socket emit
-                // didn't drain before close. The HTTP endpoint touches
-                // only `active` and `lastActiveAt` — it doesn't write
-                // archive metadata — so this is safe in the archive=false
-                // case too, and matches the "session goes inactive but
-                // stays resumable" semantics we want for Ctrl-C.
-                try {
-                    await api.deactivateSession(session.sessionId);
-                } catch (err) {
-                    logger.debug('[START] deactivateSession during cleanup failed:', err);
-                }
+                // Stop the remote JSONL scanner (file watchers + intervals).
+                await remoteScanner.cleanup();
 
-                await session.flush();
-                await session.close();
+                logger.debug('[START] Cleanup complete, exiting');
+            } catch (error) {
+                logger.debug('[START] Error during cleanup:', error);
             }
 
-            // Stop Happy MCP server
-            happyServer.stop();
-
-            // Stop Hook server and cleanup settings file
-            hookServer.stop();
-            cleanupHookSettingsFile(hookSettingsPath);
-
-            // Stop the remote JSONL scanner (file watchers + intervals).
-            await remoteScanner.cleanup();
-
-            logger.debug('[START] Cleanup complete, exiting');
-            process.exit(0);
-        } catch (error) {
-            logger.debug('[START] Error during cleanup:', error);
-            process.exit(1);
-        }
+            // Keep exit outside the cleanup try/catch so a mocked or throwing
+            // process.exit cannot trigger a second exit attempt.
+            process.exit(request.exitCode);
+        })().then(resolveCleanup, rejectCleanup);
+        return cleanupPromise;
     };
 
     // Handle termination signals — Ctrl-C / SIGTERM are user-initiated
     // exits, treat as "I'll come back to this session later" rather than
     // "archive forever".
-    process.on('SIGTERM', () => { void cleanup({ archive: false }); });
-    process.on('SIGINT', () => { void cleanup({ archive: false }); });
+    process.on('SIGTERM', () => { void cleanup({ archive: false, exitCode: 0 }); });
+    process.on('SIGINT', () => { void cleanup({ archive: false, exitCode: 0 }); });
 
     // Crashes archive on the way out so the session shows up correctly
     // in the app rather than masquerading as live.
     process.on('uncaughtException', (error) => {
         logger.debug('[START] Uncaught exception:', error);
-        void cleanup({ archive: true });
+        void cleanup({ archive: true, exitCode: 0 });
     });
 
     process.on('unhandledRejection', (reason) => {
         logger.debug('[START] Unhandled rejection:', reason);
-        void cleanup({ archive: true });
+        void cleanup({ archive: true, exitCode: 0 });
     });
 
     // Browser-side "Archive" button routes through this RPC and DOES
     // want the metadata stamped — it's the user explicitly choosing to
     // retire the session, not just disconnecting.
-    registerKillSessionHandler(session.rpcHandlerManager, () => cleanup({ archive: true }));
+    registerKillSessionHandler(session.rpcHandlerManager, () => cleanup({ archive: true, exitCode: 0 }));
 
     // Create claude loop
     const exitCode = await loop({
@@ -961,30 +999,5 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         jsRuntime: options.jsRuntime
     });
 
-    // Cleanup session resources (intervals, callbacks) - prevents memory leak
-    // Note: currentSession is set by onSessionReady callback during loop()
-    (currentSession as Session | null)?.cleanup();
-
-    // Send session death message
-    session.sendSessionDeath();
-
-    // Wait for socket to flush
-    logger.debug('Waiting for socket to flush...');
-    await session.flush();
-
-    // Close session
-    logger.debug('Closing session...');
-    await session.close();
-
-    // Stop Happy MCP server
-    happyServer.stop();
-    logger.debug('Stopped Happy MCP server');
-
-    // Stop Hook server and cleanup settings file
-    hookServer.stop();
-    cleanupHookSettingsFile(hookSettingsPath);
-    logger.debug('Stopped Hook server and cleaned up settings file');
-
-    // Exit with the code from Claude
-    process.exit(exitCode);
+    await cleanup({ archive: false, exitCode });
 }

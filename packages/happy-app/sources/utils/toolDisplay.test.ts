@@ -104,4 +104,13 @@ describe('terminal tool display helpers', () => {
         expect(getToolActivityLabel(tool('mcp__linear__create_issue', {})))
             .toBe('MCP: Linear Create Issue');
     });
+
+    it('uses the localized launch title for compact Workflow activity', () => {
+        const workflow = tool('Workflow', {
+            script: 'export default workflow({ phases: [{ name: "build" }] })',
+        });
+        workflow.description = 'Launch the full build workflow';
+
+        expect(getToolActivityLabel(workflow)).toBe('workflows.toolTitle:');
+    });
 });

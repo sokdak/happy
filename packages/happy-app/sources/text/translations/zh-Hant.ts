@@ -64,6 +64,29 @@ export const zhHant: TranslationStructure = {
         optional: '選填',
     },
 
+    workflows: {
+        activeTitle: '活動工作流程',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: '其他',
+        states: {
+            running: '執行中',
+            completed: '已完成',
+            error: '錯誤',
+            active: '活動',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: '工作流程',
+    },
+
     profile: {
         userProfile: '使用者資料',
         details: '詳情',

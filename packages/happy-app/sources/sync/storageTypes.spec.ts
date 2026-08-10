@@ -187,4 +187,98 @@ describe('AgentGoalStatusSchema', () => {
         expect(malformed.controlledByUser).toBe(true);
         expect(malformed.usageLimits).toBeUndefined();
     });
+
+    it('preserves valid active workflow snapshots while dropping malformed siblings', () => {
+        const state = AgentStateSchema.parse({
+            controlledByUser: true,
+            requests: {
+                permission: {
+                    tool: 'Bash',
+                    arguments: { command: 'pwd' },
+                    createdAt: 1710000000000,
+                },
+            },
+            activeWorkflows: {
+                good: {
+                    taskId: 'task-1',
+                    name: 'Ship the feature',
+                    startedAt: 1710000000000,
+                    updatedAt: 1710000001000,
+                    phases: [{
+                        index: 0,
+                        title: 'Implement',
+                        agents: [{
+                            id: 'agent-1',
+                            index: 0,
+                            label: 'Builder',
+                            state: 'running',
+                            lastToolName: 'Edit',
+                            lastToolSummary: 'Updating storage types',
+                        }],
+                    }],
+                },
+                bad: {
+                    taskId: 'task-2',
+                    name: 'Malformed',
+                    startedAt: 'not-a-number',
+                    updatedAt: 1710000001000,
+                    phases: [],
+                },
+            },
+        });
+
+        expect(state.controlledByUser).toBe(true);
+        expect(state.requests?.permission.tool).toBe('Bash');
+        expect(state.activeWorkflows).toEqual({
+            good: expect.objectContaining({
+                taskId: 'task-1',
+                name: 'Ship the feature',
+                startedAt: 1710000000000,
+                updatedAt: 1710000001000,
+                phases: [expect.objectContaining({
+                    agents: [expect.objectContaining({
+                        lastToolName: 'Edit',
+                        lastToolSummary: 'Updating storage types',
+                    })],
+                })],
+            }),
+        });
+    });
+
+    it('drops a malformed active workflow record without invalidating permission state', () => {
+        const state = AgentStateSchema.parse({
+            controlledByUser: true,
+            requests: {
+                permission: {
+                    tool: 'Bash',
+                    arguments: {},
+                },
+            },
+            activeWorkflows: 'not-a-record',
+        });
+
+        expect(state.controlledByUser).toBe(true);
+        expect(state.requests?.permission.tool).toBe('Bash');
+        expect(state.activeWorkflows).toBeUndefined();
+    });
+
+    it('preserves reserved workflow record keys as own entries', () => {
+        const snapshot = {
+            taskId: 'reserved-task',
+            name: 'Reserved task',
+            startedAt: 1710000000000,
+            updatedAt: 1710000001000,
+            phases: [],
+        };
+        const activeWorkflows = Object.fromEntries([
+            ['__proto__', snapshot],
+            ['constructor', { ...snapshot, taskId: 'constructor-task' }],
+        ]);
+
+        const state = AgentStateSchema.parse({ activeWorkflows });
+
+        expect(Object.hasOwn(state.activeWorkflows ?? {}, '__proto__')).toBe(true);
+        expect(Object.hasOwn(state.activeWorkflows ?? {}, 'constructor')).toBe(true);
+        expect(state.activeWorkflows?.__proto__.taskId).toBe('reserved-task');
+    });
 });

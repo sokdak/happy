@@ -109,6 +109,7 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
 
             // Launch
             logger.debug('[local]: launch');
+            await session.client.resetClaudeWorkflows();
             try {
                 await claudeLocal({
                     path: session.path,
@@ -162,21 +163,28 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
             logger.debug('[local]: launch done');
         }
     } finally {
+        try {
+            await session.client.resetClaudeWorkflows();
+        } finally {
+            // Resolve future
+            exutFuture.resolve(undefined);
 
-        // Resolve future
-        exutFuture.resolve(undefined);
+            // Set handlers to no-op
+            session.client.rpcHandlerManager.registerHandler('abort', async () => { });
+            session.client.rpcHandlerManager.registerHandler('switch', async () => { });
+            session.queue.setOnMessage(null);
 
-        // Set handlers to no-op
-        session.client.rpcHandlerManager.registerHandler('abort', async () => { });
-        session.client.rpcHandlerManager.registerHandler('switch', async () => { });
-        session.queue.setOnMessage(null);
-        
-        // Remove session found callback
-        session.removeSessionFoundCallback(scannerSessionCallback);
+            // Remove session found callback
+            session.removeSessionFoundCallback(scannerSessionCallback);
 
-        // Cleanup
-        await scanner.cleanup();
-        await scannerMessageChain;
+            // Cleanup
+            try {
+                await scanner.cleanup();
+            } finally {
+                await scannerMessageChain;
+                await session.client.resetClaudeWorkflows();
+            }
+        }
     }
 
     // Return

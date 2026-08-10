@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Animated, View, Text, Platform, Pressable } from 'react-native';
+import { Animated, View, Text, Platform, Pressable, type LayoutChangeEvent } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Typography } from '@/constants/Typography';
@@ -19,6 +19,7 @@ import {
     MOBILE_STRONG_HEADER_SCRIM_RESTING_OPACITY,
     MOBILE_STRONG_HEADER_SCRIM_UNDERLAP_OPACITY,
 } from './navigation/MobileHeaderScrim';
+import { resolveNativeHeaderTitleInset } from './chatHeaderLayout';
 
 interface ChatHeaderViewProps {
     title: string;
@@ -67,6 +68,16 @@ export const ChatHeaderView: React.FC<ChatHeaderViewProps> = ({
         backdropVisible ? MOBILE_STRONG_HEADER_SCRIM_UNDERLAP_OPACITY : MOBILE_STRONG_HEADER_SCRIM_RESTING_OPACITY,
     )).current;
     const [backdropMounted, setBackdropMounted] = React.useState(glassEnabled);
+    const [nativeRightSlotWidth, setNativeRightSlotWidth] = React.useState(0);
+    const hasRightSlot = !!rightSlot;
+    const nativeTitleInset = resolveNativeHeaderTitleInset(
+        showBackButton ? MOBILE_GLASS_CONTROL_SIZE : 0,
+        nativeRightSlotWidth,
+        8,
+    );
+    const handleNativeRightSlotLayout = React.useCallback((event: LayoutChangeEvent) => {
+        setNativeRightSlotWidth(Math.ceil(event.nativeEvent.layout.width));
+    }, []);
 
     React.useEffect(() => {
         if (!glassEnabled) {
@@ -81,6 +92,12 @@ export const ChatHeaderView: React.FC<ChatHeaderViewProps> = ({
             useNativeDriver: true,
         }).start();
     }, [backdropOpacity, backdropVisible, glassEnabled]);
+
+    React.useEffect(() => {
+        if (!hasRightSlot) {
+            setNativeRightSlotWidth(0);
+        }
+    }, [hasRightSlot]);
 
     if (Platform.OS === 'web') {
         return (
@@ -267,7 +284,10 @@ export const ChatHeaderView: React.FC<ChatHeaderViewProps> = ({
                     {glassEnabled ? (
                         <>
                             <View pointerEvents="none" style={styles.mobileTitleSpacer} />
-                            <View pointerEvents="box-none" style={styles.mobileTitleOverlay}>
+                            <View
+                                pointerEvents="box-none"
+                                style={[styles.mobileTitleOverlay, { left: nativeTitleInset, right: nativeTitleInset }]}
+                            >
                                 {nativeTitle}
                             </View>
                         </>
@@ -278,6 +298,7 @@ export const ChatHeaderView: React.FC<ChatHeaderViewProps> = ({
                     )}
                     {rightSlot ? (
                         <MobileGlassSurface
+                            onLayout={handleNativeRightSlotLayout}
                             enabled={glassEnabled}
                             nativeEffect
                             material="static"

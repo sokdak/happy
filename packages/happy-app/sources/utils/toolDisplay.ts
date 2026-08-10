@@ -125,6 +125,10 @@ export function getToolSummaryDetail(tool: Pick<ToolCall, 'name' | 'input' | 'de
  * command/path, then fall back to a localized action and its detail.
  */
 export function getToolActivityLabel(tool: Pick<ToolCall, 'name' | 'input' | 'description'>): string {
+    if (tool.name === 'Workflow') {
+        return t('workflows.toolTitle');
+    }
+
     const detail = getToolSummaryDetail(tool);
     const providerDescription = getProviderActivityDescription(tool, detail);
     if (providerDescription) {
