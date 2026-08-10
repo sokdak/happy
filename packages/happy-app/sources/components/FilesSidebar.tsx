@@ -81,6 +81,7 @@ interface FilesSidebarProps {
     onCreateSideChat: () => void;
     canCreateSideChat: boolean;
     creatingSideChat: boolean;
+    visible?: boolean;
 }
 
 type FileNode<T = GitFileStatus> = {
@@ -218,6 +219,7 @@ export const FilesSidebar = React.memo<FilesSidebarProps>(({
     onCreateSideChat,
     canCreateSideChat,
     creatingSideChat,
+    visible = true,
 }) => {
     const router = useRouter();
     const { theme } = useUnistyles();
@@ -279,6 +281,12 @@ export const FilesSidebar = React.memo<FilesSidebarProps>(({
         setAddMenuOpen(false);
     }, [activePanel, openPanels.length]);
 
+    React.useEffect(() => {
+        if (!visible) {
+            setAddMenuOpen(false);
+        }
+    }, [visible]);
+
     const availablePanels = React.useMemo(
         () => PICKABLE_PANELS.filter((panel) => !openPanels.includes(panel.key)),
         [openPanels],
@@ -307,7 +315,7 @@ export const FilesSidebar = React.memo<FilesSidebarProps>(({
     }, [availablePanels, canCreateSideChat, creatingSideChat, onCreateSideChat, onOpenPanel]);
 
     React.useEffect(() => {
-        const shortcutsActive = activePanel === null || addMenuOpen;
+        const shortcutsActive = visible && (activePanel === null || addMenuOpen);
         if (Platform.OS !== 'web' || typeof window === 'undefined' || !shortcutsActive) {
             return;
         }
@@ -327,7 +335,7 @@ export const FilesSidebar = React.memo<FilesSidebarProps>(({
 
         window.addEventListener('keydown', handleKeyDown, true);
         return () => window.removeEventListener('keydown', handleKeyDown, true);
-    }, [activePanel, addMenuOpen, availablePickerActionIds, preferredModifier, runPickerAction]);
+    }, [activePanel, addMenuOpen, availablePickerActionIds, preferredModifier, runPickerAction, visible]);
 
     // Empty sidebar: vertically-centered picker of panels to open (no header).
     if (activePanel === null) {

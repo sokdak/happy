@@ -18,6 +18,15 @@ export interface WorkflowContextPanelOptions {
     isMacDesktop: boolean;
 }
 
+export interface WorkflowContextPresentationOptions {
+    openedWorkflowSessionId: string | null;
+    sessionId: string;
+    activeCount: number;
+    canUseContextPanel: boolean;
+    showFilesSidebar: boolean;
+    zenMode: boolean;
+}
+
 export function selectActiveWorkflows(
     workflows: Record<string, ActiveWorkflowSnapshot> | null | undefined,
 ): ActiveWorkflowSnapshot[] {
@@ -64,8 +73,38 @@ export function canUseWorkflowContextPanel(options: WorkflowContextPanelOptions)
         && (options.platform === 'web' || options.isMacDesktop);
 }
 
-export function resolveWorkflowOpenTarget(canUseContextPanel: boolean): WorkflowOpenTarget {
-    return canUseContextPanel ? 'context-panel' : 'route';
+export function resolveWorkflowOpenTarget(
+    canUseContextPanel: boolean,
+    zenMode = false,
+): WorkflowOpenTarget {
+    return canUseContextPanel && !zenMode ? 'context-panel' : 'route';
+}
+
+export function getWorkflowContextPresentation(
+    options: WorkflowContextPresentationOptions,
+): {
+    workflowPanelOpen: boolean;
+    showWorkflowPanel: boolean;
+    showContextPanel: boolean;
+} {
+    const workflowPanelOpen = options.openedWorkflowSessionId === options.sessionId
+        && options.activeCount > 0;
+    const showWorkflowPanel = options.canUseContextPanel
+        && workflowPanelOpen
+        && !options.zenMode;
+
+    return {
+        workflowPanelOpen,
+        showWorkflowPanel,
+        showContextPanel: showWorkflowPanel || options.showFilesSidebar,
+    };
+}
+
+export function normalizeWorkflowSessionId(
+    id: string | string[] | undefined,
+): string | null {
+    const value = Array.isArray(id) ? id[0] : id;
+    return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 export function reduceWorkflowPanelOpen(

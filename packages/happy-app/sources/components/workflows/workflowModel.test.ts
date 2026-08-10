@@ -5,7 +5,9 @@ import {
     formatWorkflowElapsed,
     formatWorkflowTokens,
     getPhaseVisualState,
+    getWorkflowContextPresentation,
     getWorkflowBadgeModel,
+    normalizeWorkflowSessionId,
     normalizeWorkflowAgentState,
     reduceWorkflowPanelOpen,
     resolveWorkflowOpenTarget,
@@ -87,6 +89,73 @@ describe('workflowModel', () => {
         expect(resolveWorkflowOpenTarget(webWide)).toBe('context-panel');
         expect(resolveWorkflowOpenTarget(macDesktopWide)).toBe('context-panel');
         expect(resolveWorkflowOpenTarget(false)).toBe('route');
+        expect(resolveWorkflowOpenTarget(webWide, true)).toBe('route');
+    });
+
+    it('binds an open workflow monitor to the session where it was opened', () => {
+        expect(getWorkflowContextPresentation({
+            openedWorkflowSessionId: 'session-a',
+            sessionId: 'session-b',
+            activeCount: 1,
+            canUseContextPanel: true,
+            showFilesSidebar: true,
+            zenMode: false,
+        })).toEqual({
+            workflowPanelOpen: false,
+            showWorkflowPanel: false,
+            showContextPanel: true,
+        });
+    });
+
+    it('restores Files immediately when the final workflow is removed', () => {
+        expect(getWorkflowContextPresentation({
+            openedWorkflowSessionId: 'session-a',
+            sessionId: 'session-a',
+            activeCount: 0,
+            canUseContextPanel: true,
+            showFilesSidebar: true,
+            zenMode: false,
+        })).toEqual({
+            workflowPanelOpen: false,
+            showWorkflowPanel: false,
+            showContextPanel: true,
+        });
+    });
+
+    it('does not auto-open a later workflow run', () => {
+        expect(getWorkflowContextPresentation({
+            openedWorkflowSessionId: null,
+            sessionId: 'session-a',
+            activeCount: 1,
+            canUseContextPanel: true,
+            showFilesSidebar: true,
+            zenMode: false,
+        }).showWorkflowPanel).toBe(false);
+    });
+
+    it('resumes an already-open context panel after temporary zen mode', () => {
+        const options = {
+            openedWorkflowSessionId: 'session-a',
+            sessionId: 'session-a',
+            activeCount: 1,
+            canUseContextPanel: true,
+            showFilesSidebar: false,
+        };
+
+        expect(getWorkflowContextPresentation({ ...options, zenMode: true })).toEqual({
+            workflowPanelOpen: true,
+            showWorkflowPanel: false,
+            showContextPanel: false,
+        });
+        expect(getWorkflowContextPresentation({ ...options, zenMode: false }).showWorkflowPanel).toBe(true);
+    });
+
+    it('normalizes route session ids without constructing invalid hrefs', () => {
+        expect(normalizeWorkflowSessionId('session-a')).toBe('session-a');
+        expect(normalizeWorkflowSessionId(['session-a', 'session-b'])).toBe('session-a');
+        expect(normalizeWorkflowSessionId([])).toBeNull();
+        expect(normalizeWorkflowSessionId('')).toBeNull();
+        expect(normalizeWorkflowSessionId(undefined)).toBeNull();
     });
 
     it('opens and closes the panel only from explicit events or zero active workflows', () => {
