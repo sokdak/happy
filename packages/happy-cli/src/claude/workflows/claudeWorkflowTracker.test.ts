@@ -111,6 +111,48 @@ describe('reduceClaudeWorkflowMessage', () => {
     expect(result.state).toBe(state);
   });
 
+  it('tracks reserved task ids as own entries through reconciliation, progress, and removal', () => {
+    const taskIds = ['constructor', '__proto__'];
+    let state = reduceClaudeWorkflowMessage({}, background(taskIds.map((taskId) => activeWorkflow(taskId))), 1000).state;
+
+    for (const taskId of taskIds) {
+      expect(Object.hasOwn(state, taskId)).toBe(true);
+      expect(state[taskId]).toMatchObject({ taskId, startedAt: 1000 });
+    }
+
+    const reconciled = reduceClaudeWorkflowMessage(state, background([...taskIds].reverse().map((taskId) => activeWorkflow(taskId))), 1100);
+    expect(reconciled).toEqual({ state, publication: 'none' });
+    state = reconciled.state;
+
+    state = reduceClaudeWorkflowMessage(state, system('task_progress', {
+      task_id: 'constructor', usage: { total_tokens: 42 },
+    }), 1200).state;
+    expect(state['constructor'].usage).toEqual({ totalTokens: 42, toolUses: undefined, durationMs: undefined });
+
+    state = reduceClaudeWorkflowMessage(state, system('task_notification', { task_id: '__proto__' }), 1300).state;
+    state = reduceClaudeWorkflowMessage(state, system('task_notification', { task_id: 'constructor' }), 1400).state;
+    expect(Object.hasOwn(state, '__proto__')).toBe(false);
+    expect(Object.hasOwn(state, 'constructor')).toBe(false);
+  });
+
+  it('rejects whitespace-padded control discriminators', () => {
+    const empty: ClaudeWorkflowReducerState = {};
+    expect(reduceClaudeWorkflowMessage(empty, background([
+      { task_id: 'workflow-padded', task_type: ' local_workflow ' },
+    ]), 1000)).toEqual({ state: empty, publication: 'none' });
+    expect(reduceClaudeWorkflowMessage(empty, { type: ' system ', subtype: 'task_started', task_id: 'workflow-padded', task_type: 'local_workflow' }, 1000))
+      .toEqual({ state: empty, publication: 'none' });
+    expect(reduceClaudeWorkflowMessage(empty, system(' task_started ', { task_id: 'workflow-padded', task_type: 'local_workflow' }), 1000))
+      .toEqual({ state: empty, publication: 'none' });
+
+    const state = reduceClaudeWorkflowMessage({}, started(), 1000).state;
+    const result = reduceClaudeWorkflowMessage(state, system('task_progress', {
+      task_id: 'workflow-1',
+      workflow_progress: [{ type: ' workflow_agent ', index: 1, label: 'padded', agentId: 'agent-padded', phaseIndex: 1, state: 'start' }],
+    }), 1100);
+    expect(result.state['workflow-1'].phases).toBe(state['workflow-1'].phases);
+  });
+
   it('places an agent with an unknown phase in Other', () => {
     const state = reduceClaudeWorkflowMessage({}, started(), 1000).state;
     const result = reduceClaudeWorkflowMessage(state, system('task_progress', {

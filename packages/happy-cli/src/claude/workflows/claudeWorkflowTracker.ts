@@ -33,6 +33,10 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
+function exactString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
@@ -65,7 +69,7 @@ function taskStatusFor(message: RecordValue): string | undefined {
 }
 
 function taskTypeFor(message: RecordValue): string | undefined {
-  return stringField(message, 'task_type') ?? stringField(asRecord(message.task), 'task_type')
+  return exactString(message.task_type) ?? exactString(asRecord(message.task)?.task_type)
 }
 
 function workflowNameFor(message: RecordValue): string | undefined {
@@ -88,7 +92,7 @@ function optionalNumber(target: Record<string, unknown>, key: string, value: unk
 
 function parseAgent(value: unknown): { agent: ActiveWorkflowAgentSnapshot; phaseIndex: number; phaseTitle?: string } | undefined {
   const entry = asRecord(value)
-  if (!entry || stringField(entry, 'type') !== 'workflow_agent') return undefined
+  if (!entry || entry.type !== 'workflow_agent') return undefined
 
   const id = stringField(entry, 'agentId')
   const index = numberField(entry, 'index')
@@ -121,7 +125,7 @@ function parseHierarchy(value: unknown): ActiveWorkflowPhaseSnapshot[] | undefin
   for (const valueEntry of value) {
     const entry = asRecord(valueEntry)
     if (!entry) continue
-    if (stringField(entry, 'type') === 'workflow_phase') {
+    if (entry.type === 'workflow_phase') {
       const index = numberField(entry, 'index')
       const title = stringField(entry, 'title')
       if (index !== undefined && title) phaseTitles.set(index, title)
@@ -192,28 +196,48 @@ function unchanged(state: ClaudeWorkflowReducerState): ClaudeWorkflowReducerResu
   return { state, publication: 'none' }
 }
 
+function workflowFor(state: ClaudeWorkflowReducerState, taskId: string): ActiveWorkflowSnapshot | undefined {
+  return Object.hasOwn(state, taskId) ? state[taskId] : undefined
+}
+
+function withWorkflow(
+  state: ClaudeWorkflowReducerState,
+  taskId: string,
+  workflow: ActiveWorkflowSnapshot,
+): ClaudeWorkflowReducerState {
+  return Object.fromEntries([
+    ...Object.entries(state).filter(([id]) => id !== taskId),
+    [taskId, workflow],
+  ])
+}
+
+function withoutWorkflow(state: ClaudeWorkflowReducerState, taskId: string): ClaudeWorkflowReducerState {
+  return Object.fromEntries(Object.entries(state).filter(([id]) => id !== taskId))
+}
+
 function reduceBackground(state: ClaudeWorkflowReducerState, message: RecordValue, now: number): ClaudeWorkflowReducerResult {
   const rawTasks = Array.isArray(message.background_tasks) ? message.background_tasks
     : Array.isArray(message.tasks) ? message.tasks
       : undefined
   if (!rawTasks) return unchanged(state)
 
-  const next: ClaudeWorkflowReducerState = {}
+  const entries: Array<[string, ActiveWorkflowSnapshot]> = []
   for (const rawTask of rawTasks) {
     const task = asRecord(rawTask)
     if (!task || taskTypeFor(task) !== 'local_workflow') continue
     const taskId = stringField(task, 'task_id', 'id')
     if (!taskId) continue
-    const existing = state[taskId]
-    next[taskId] = existing ?? {
+    const existing = workflowFor(state, taskId)
+    entries.push([taskId, existing ?? {
       taskId,
       name: workflowNameFor(task) ?? descriptionFor(task) ?? 'Workflow',
       ...(descriptionFor(task) ? { description: descriptionFor(task) } : {}),
       startedAt: now,
       updatedAt: now,
       phases: [],
-    }
+    }])
   }
+  const next = Object.fromEntries(entries) as ClaudeWorkflowReducerState
   return sameWorkflowState(next, state) ? unchanged(state) : { state: next, publication: 'immediate' }
 }
 
@@ -222,7 +246,7 @@ function reduceStarted(state: ClaudeWorkflowReducerState, message: RecordValue, 
   const taskId = taskIdFor(message)
   if (!taskId) return unchanged(state)
 
-  const previous = state[taskId]
+  const previous = workflowFor(state, taskId)
   const name = workflowNameFor(message) ?? descriptionFor(message) ?? previous?.name ?? 'Workflow'
   const description = descriptionFor(message) ?? previous?.description
   const nextWorkflow: ActiveWorkflowSnapshot = {
@@ -236,14 +260,14 @@ function reduceStarted(state: ClaudeWorkflowReducerState, message: RecordValue, 
     phases: previous?.phases ?? [],
   }
   if (previous && same(nextWorkflow, previous)) return unchanged(state)
-  return { state: { ...state, [taskId]: nextWorkflow }, publication: 'immediate' }
+  return { state: withWorkflow(state, taskId, nextWorkflow), publication: 'immediate' }
 }
 
 function reduceProgress(state: ClaudeWorkflowReducerState, message: RecordValue, now: number): ClaudeWorkflowReducerResult {
   const taskId = taskIdFor(message)
-  if (!taskId || !state[taskId]) return unchanged(state)
+  const previous = taskId ? workflowFor(state, taskId) : undefined
+  if (!taskId || !previous) return unchanged(state)
 
-  const previous = state[taskId]
   const progress = asRecord(message.progress)
   const description = stringField(message, 'summary') ?? stringField(message, 'description') ?? stringField(progress, 'summary') ?? stringField(progress, 'description') ?? previous.description
   const phases = parseHierarchy(workflowProgressFor(message)) ?? previous.phases
@@ -256,13 +280,12 @@ function reduceProgress(state: ClaudeWorkflowReducerState, message: RecordValue,
     phases,
   }
   if (same(nextWorkflow, previous)) return unchanged(state)
-  return { state: { ...state, [taskId]: nextWorkflow }, publication: 'progress' }
+  return { state: withWorkflow(state, taskId, nextWorkflow), publication: 'progress' }
 }
 
 function removeWorkflow(state: ClaudeWorkflowReducerState, taskId: string): ClaudeWorkflowReducerResult {
-  if (!state[taskId]) return unchanged(state)
-  const { [taskId]: _removed, ...next } = state
-  return { state: next, publication: 'immediate' }
+  if (!workflowFor(state, taskId)) return unchanged(state)
+  return { state: withoutWorkflow(state, taskId), publication: 'immediate' }
 }
 
 export function reduceClaudeWorkflowMessage(
@@ -271,9 +294,9 @@ export function reduceClaudeWorkflowMessage(
   now = Date.now(),
 ): ClaudeWorkflowReducerResult {
   const message = asRecord(rawMessage)
-  if (!message || stringField(message, 'type') !== 'system') return unchanged(state)
+  if (!message || message.type !== 'system') return unchanged(state)
 
-  const subtype = stringField(message, 'subtype')
+  const subtype = exactString(message.subtype)
   if (subtype === 'background_tasks_changed') return reduceBackground(state, message, now)
   if (subtype === 'task_started') return reduceStarted(state, message, now)
   if (subtype === 'task_progress') return reduceProgress(state, message, now)
