@@ -471,6 +471,7 @@ export const ru: TranslationStructure = {
         newChat: 'Новый чат',
         statusBarContext: 'Контекст',
         statusBarPathTitle: 'Рабочая директория',
+        headerActionsAccessibility: 'Действия сессии',
         forkAction: 'Форкнуть сессию',
         forkSubtitle: 'Продолжить в новой сессии с тем же контекстом',
         duplicateAction: 'Откатиться к сообщению…',

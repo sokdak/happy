@@ -344,6 +344,7 @@ export const zhHans: TranslationStructure = {
         newChat: '新对话',
         statusBarContext: '上下文',
         statusBarPathTitle: '工作目录',
+        headerActionsAccessibility: '会话操作',
         forkAction: '分叉会话',
         forkSubtitle: '在相同上下文中开启新会话继续',
         duplicateAction: '从消息处复制…',

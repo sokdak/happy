@@ -343,6 +343,7 @@ export const ca: TranslationStructure = {
         newChat: 'Nou xat',
         statusBarContext: 'Context',
         statusBarPathTitle: 'Directori de treball',
+        headerActionsAccessibility: 'Accions de la sessió',
         forkAction: 'Bifurca la sessió',
         forkSubtitle: 'Continua en una nova sessió amb el mateix context',
         duplicateAction: 'Duplica des d\'un missatge…',

@@ -344,6 +344,7 @@ export const ja: TranslationStructure = {
         newChat: '新規チャット',
         statusBarContext: 'コンテキスト',
         statusBarPathTitle: '作業ディレクトリ',
+        headerActionsAccessibility: 'セッション操作',
         forkAction: 'セッションをフォーク',
         forkSubtitle: '同じコンテキストで新しいセッションを続行',
         duplicateAction: 'メッセージから複製…',

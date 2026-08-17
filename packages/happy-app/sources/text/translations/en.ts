@@ -357,6 +357,7 @@ export const en: TranslationStructure = {
         newChat: 'New chat',
         statusBarContext: 'Context',
         statusBarPathTitle: 'Working directory',
+        headerActionsAccessibility: 'Session actions',
         forkAction: 'Fork session',
         forkSubtitle: 'Continue in a new session with the same context',
         duplicateAction: 'Duplicate from message…',

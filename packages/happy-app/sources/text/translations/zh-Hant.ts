@@ -343,6 +343,7 @@ export const zhHant: TranslationStructure = {
         newChat: '新對話',
         statusBarContext: '上下文',
         statusBarPathTitle: '工作目錄',
+        headerActionsAccessibility: '會話操作',
         forkAction: '分叉會話',
         forkSubtitle: '在相同上下文中開啟新會話繼續',
         duplicateAction: '從訊息處複製…',
