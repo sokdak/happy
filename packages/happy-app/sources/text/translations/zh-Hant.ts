@@ -85,6 +85,10 @@ export const zhHant: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: '工作流程',
+        rowTitle: '工作流程',
+        rowSubtitle: '查看多代理工作流程進度',
+        emptyTitle: '目前沒有工作流程活動',
+        emptyDescription: 'Claude 執行多代理工作流程時，進度會顯示在這裡。',
     },
 
     profile: {

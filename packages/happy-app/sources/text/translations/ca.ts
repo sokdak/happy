@@ -83,6 +83,10 @@ export const ca: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: 'Flux de treball',
+        rowTitle: 'Fluxos de treball',
+        rowSubtitle: 'Segueix el progrés dels fluxos de treball multiagent',
+        emptyTitle: 'Cap activitat de fluxos de treball',
+        emptyDescription: 'El progrés apareixerà aquí mentre Claude executa fluxos de treball multiagent.',
     },
 
     profile: {

@@ -94,6 +94,10 @@ export const pl: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: 'Przepływ pracy',
+        rowTitle: 'Przepływy pracy',
+        rowSubtitle: 'Śledź postęp wieloagentowych przepływów pracy',
+        emptyTitle: 'Brak aktywności przepływów pracy',
+        emptyDescription: 'Postęp pojawi się tutaj, gdy Claude uruchomi wieloagentowe przepływy pracy.',
     },
 
     profile: {

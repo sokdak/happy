@@ -1,44 +1,100 @@
+import { Ionicons } from '@expo/vector-icons';
 import * as React from 'react';
-import { ActivityIndicator, View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useUnistyles } from 'react-native-unistyles';
+import { ActivityIndicator, Text, View } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Typography } from '@/constants/Typography';
 import { WorkflowPanel } from '@/components/workflows/WorkflowPanel';
-import { normalizeWorkflowSessionId, selectActiveWorkflows } from '@/components/workflows/workflowModel';
+import {
+    getWorkflowRouteContent,
+    normalizeWorkflowSessionId,
+    selectActiveWorkflows,
+} from '@/components/workflows/workflowModel';
+import { t } from '@/text';
 import { useIsDataReady, useSession } from '@/sync/storage';
+
+const stylesheet = StyleSheet.create((theme) => ({
+    centered: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    empty: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 32,
+        gap: 8,
+    },
+    emptyIcon: {
+        marginBottom: 4,
+    },
+    emptyTitle: {
+        color: theme.colors.text,
+        fontSize: 16,
+        lineHeight: 21,
+        textAlign: 'center',
+        ...Typography.default('semiBold'),
+    },
+    emptyDescription: {
+        color: theme.colors.textSecondary,
+        fontSize: 13,
+        lineHeight: 18,
+        textAlign: 'center',
+        ...Typography.default(),
+    },
+}));
 
 export default React.memo(function WorkflowsScreen() {
     const { id } = useLocalSearchParams<{ id?: string | string[] }>();
     const sessionId = normalizeWorkflowSessionId(id);
-    const router = useRouter();
     const isDataReady = useIsDataReady();
     const session = useSession(sessionId ?? '');
     const { theme } = useUnistyles();
-    const sessionHref = sessionId ? `/session/${sessionId}` as const : null;
+    const styles = stylesheet;
     const workflows = React.useMemo(
         () => selectActiveWorkflows(session?.agentState?.activeWorkflows),
         [session?.agentState?.activeWorkflows],
     );
 
-    React.useEffect(() => {
-        if (isDataReady && sessionHref && workflows.length === 0) {
-            router.dismissTo(sessionHref);
-        }
-    }, [isDataReady, router, sessionHref, workflows.length]);
-
     if (!sessionId) {
         return null;
     }
 
-    if (!isDataReady) {
+    const content = getWorkflowRouteContent({
+        isDataReady,
+        hasSession: Boolean(session),
+        activeCount: workflows.length,
+    });
+
+    if (content === 'loading') {
         return (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <View style={styles.centered}>
                 <ActivityIndicator color={theme.colors.textSecondary} />
             </View>
         );
     }
 
-    if (!session || workflows.length === 0) {
+    if (content === 'missing-session') {
         return null;
+    }
+
+    // The route stays reachable from session info at any time, so an empty
+    // workflow list is a normal state that has to explain itself instead of
+    // bouncing the user back to chat.
+    if (content === 'empty') {
+        return (
+            <View style={styles.empty}>
+                <Ionicons
+                    name="git-network-outline"
+                    size={48}
+                    color={theme.colors.textSecondary}
+                    style={styles.emptyIcon}
+                />
+                <Text style={styles.emptyTitle}>{t('workflows.emptyTitle')}</Text>
+                <Text style={styles.emptyDescription}>{t('workflows.emptyDescription')}</Text>
+            </View>
+        );
     }
 
     return <WorkflowPanel workflows={workflows} showHeader={false} />;
