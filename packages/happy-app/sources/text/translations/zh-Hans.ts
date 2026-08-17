@@ -85,6 +85,10 @@ export const zhHans: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: '工作流',
+        rowTitle: '工作流',
+        rowSubtitle: '查看多智能体工作流进度',
+        emptyTitle: '暂无工作流活动',
+        emptyDescription: 'Claude 运行多智能体工作流时，进度会显示在这里。',
     },
 
     profile: {

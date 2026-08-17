@@ -83,6 +83,10 @@ export const es: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: 'Flujo de trabajo',
+        rowTitle: 'Flujos de trabajo',
+        rowSubtitle: 'Sigue el progreso de los flujos de trabajo multiagente',
+        emptyTitle: 'Sin actividad de flujos de trabajo',
+        emptyDescription: 'El progreso aparecerá aquí mientras Claude ejecuta flujos de trabajo multiagente.',
     },
 
     profile: {
