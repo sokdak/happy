@@ -508,4 +508,68 @@ describe('sessionScanner', () => {
     expect(processingDiagnostics).toHaveLength(0)
     expect(collectedMessages).toHaveLength(0)
   })
+
+  it('silently skips the newer bookkeeping line types Claude Code has since added', async () => {
+    // The first disk-filling fix enumerated the bookkeeping types seen at the
+    // time, but Claude Code has since added more (pr-link, permission-mode,
+    // worktree-state, file-history-delta — all observed in real transcripts),
+    // and each unlisted one re-opened the per-line warning flood.
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+      onTranscriptEvent: (event) => collectedTranscriptEvents.push(event),
+    })
+
+    const sessionId = '22222222-2222-2222-2222-222222222222'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+
+    const newerTypes = ['pr-link', 'permission-mode', 'worktree-state', 'file-history-delta']
+    const lines = newerTypes.map((type, i) => JSON.stringify({ type, uuid: `${type}-${i}` }))
+    await writeFile(sessionFile, lines.join('\n') + '\n')
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(collectedMessages).toHaveLength(0)
+    expect(collectedTranscriptEvents).toHaveLength(0)
+
+    const schemaWarnings = vi.mocked(logger.debug).mock.calls
+      .filter(([msg]) => typeof msg === 'string' && msg.includes('Skipping transcript lines failing schema validation'))
+    expect(schemaWarnings).toHaveLength(0)
+  })
+
+  it('logs a truly unknown line type once per session file, not once per line per rescan', async () => {
+    // Structural guard for the same disk-filling bug: whatever type Claude
+    // Code invents next, the warning volume must stay O(distinct types), not
+    // O(lines x rescans). Every rescan re-parses the whole file, so per-line
+    // logging multiplies transcript size by scan count (93GB in the wild).
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+    })
+
+    const sessionId = '33333333-3333-3333-3333-333333333333'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+
+    const unknownLine = (i: number) => JSON.stringify({ type: 'not-a-real-type', uuid: `unknown-${i}` })
+    await writeFile(sessionFile, unknownLine(0) + '\n' + unknownLine(1) + '\n')
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    // Appends trigger rescans that re-read the earlier lines too.
+    await appendFile(sessionFile, unknownLine(2) + '\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await appendFile(sessionFile, unknownLine(3) + '\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(collectedMessages).toHaveLength(0)
+
+    const schemaWarnings = vi.mocked(logger.debug).mock.calls
+      .filter(([msg]) => typeof msg === 'string' && msg.includes('Skipping transcript lines failing schema validation'))
+    expect(schemaWarnings).toHaveLength(1)
+    expect(schemaWarnings[0][0]).toContain('type=not-a-real-type')
+  })
 })
