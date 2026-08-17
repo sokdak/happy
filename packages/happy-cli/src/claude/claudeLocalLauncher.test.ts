@@ -295,7 +295,7 @@ describe('claudeLocalLauncher', () => {
                     // RawJSONLinesSchema, so a fixture the schema would reject
                     // proves nothing about production behavior.
                     expect(RawJSONLinesSchema.safeParse(finalDrainMessage).success).toBe(true);
-                    options.onMessage(finalDrainMessage as any);
+                    options.onMessage(finalDrainMessage);
                 }),
             };
         });
