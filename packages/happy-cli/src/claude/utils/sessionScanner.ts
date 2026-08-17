@@ -14,13 +14,25 @@ import { getProjectPath } from "./path";
  */
 const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
     'file-history-snapshot',
+    'file-history-delta',
     'change',
     'queue-operation',
     'last-prompt',
     'ai-title',
     'relocated',
     'mode',
+    'permission-mode',
+    'pr-link',
+    'worktree-state',
 ]);
+
+/**
+ * (session file):(line type) pairs whose schema-validation failure was already
+ * logged. Every rescan re-parses the whole transcript, so logging per line
+ * multiplies transcript size by scan count — this set caps the volume at one
+ * line per unknown type per session file for the life of the process.
+ */
+const loggedUnknownLineTypes = new Set<string>();
 
 export type ScannerTranscriptEvent = ClaudeGoalStatusTranscriptEvent;
 
@@ -289,7 +301,13 @@ async function readSessionEntries(projectDir: string, sessionId: string): Promis
                 // Unknown message types are skipped, but leave a trace: a schema
                 // mismatch here drops transcript content from the app with no
                 // other signal anywhere (see #1553 for a shipped example).
-                logger.debug(`[SESSION_SCANNER] Skipping transcript line failing schema validation: type=${message?.type ?? 'unknown'} — ${parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).slice(0, 3).join('; ')}`);
+                // Only once per type per file, though — per-line logging across
+                // rescans has twice grown this log to disk-filling size.
+                const loggedKey = `${expectedSessionFile}:${message?.type ?? 'unknown'}`;
+                if (!loggedUnknownLineTypes.has(loggedKey)) {
+                    loggedUnknownLineTypes.add(loggedKey);
+                    logger.debug(`[SESSION_SCANNER] Skipping transcript line failing schema validation (further lines of this type in this file skipped silently): type=${message?.type ?? 'unknown'} — ${parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).slice(0, 3).join('; ')}`);
+                }
                 continue;
             }
             entries.push({
