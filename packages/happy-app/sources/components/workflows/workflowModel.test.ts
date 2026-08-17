@@ -7,12 +7,12 @@ import {
     getPhaseVisualState,
     getWorkflowContextPresentation,
     getWorkflowBadgeModel,
+    getWorkflowRouteContent,
     normalizeWorkflowSessionId,
     normalizeWorkflowAgentState,
     reduceWorkflowPanelOpen,
     resolveWorkflowOpenTarget,
     selectActiveWorkflows,
-    shouldDismissWorkflowRoute,
 } from './workflowModel';
 
 function workflow(taskId: string, startedAt: number): ActiveWorkflowSnapshot {
@@ -170,8 +170,22 @@ describe('workflowModel', () => {
         expect(reduceWorkflowPanelOpen(false, { type: 'open' })).toBe(true);
         expect(reduceWorkflowPanelOpen(true, { type: 'close' })).toBe(false);
         expect(reduceWorkflowPanelOpen(true, { type: 'active-count', count: 0 })).toBe(false);
-        expect(shouldDismissWorkflowRoute(0)).toBe(true);
-        expect(shouldDismissWorkflowRoute(1)).toBe(false);
+    });
+
+    it('keeps the workflows route mounted with an empty state instead of dismissing it', () => {
+        // The route is reachable from session info at any time, so an empty
+        // workflow list must render an explanatory empty state rather than
+        // bouncing the user back to chat.
+        expect(getWorkflowRouteContent({ isDataReady: false, hasSession: false, activeCount: 0 }))
+            .toBe('loading');
+        expect(getWorkflowRouteContent({ isDataReady: false, hasSession: true, activeCount: 2 }))
+            .toBe('loading');
+        expect(getWorkflowRouteContent({ isDataReady: true, hasSession: false, activeCount: 0 }))
+            .toBe('missing-session');
+        expect(getWorkflowRouteContent({ isDataReady: true, hasSession: true, activeCount: 0 }))
+            .toBe('empty');
+        expect(getWorkflowRouteContent({ isDataReady: true, hasSession: true, activeCount: 1 }))
+            .toBe('list');
     });
 
     it('formats elapsed time and tokens deterministically', () => {

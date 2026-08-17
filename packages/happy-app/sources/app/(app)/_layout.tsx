@@ -125,7 +125,9 @@ export default function RootLayout() {
                 name="session/[id]/workflows"
                 options={{
                     headerShown: true,
-                    headerTitle: t('workflows.activeTitle'),
+                    // The route is reachable with no workflows running, so the
+                    // header cannot claim activity it may not have.
+                    headerTitle: t('workflows.rowTitle'),
                     headerBackTitle: t('common.back'),
                 }}
             />

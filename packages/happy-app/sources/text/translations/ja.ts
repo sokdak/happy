@@ -93,6 +93,10 @@ export const ja: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: 'ワークフロー',
+        rowTitle: 'ワークフロー',
+        rowSubtitle: 'マルチエージェントワークフローの進捗を確認',
+        emptyTitle: 'ワークフローの活動はありません',
+        emptyDescription: 'Claude がマルチエージェントワークフローを実行すると、ここに進捗が表示されます。',
     },
 
     profile: {

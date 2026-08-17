@@ -26,6 +26,7 @@ import { HappyError } from '@/utils/errors';
 import { MobileGlassSurface } from '@/components/MobileGlass';
 import { getRigIdentity, isRigMetadata } from '@/sync/rig';
 import { MOBILE_GLASS_HEADER_HEIGHT } from '@/components/navigation/headerMetrics';
+import { getWorkflowBadgeModel, selectActiveWorkflows } from '@/components/workflows/workflowModel';
 
 // Animated status dot component
 function StatusDot({ color, isPulsing, size = 8 }: { color: string; isPulsing?: boolean; size?: number }) {
@@ -142,6 +143,12 @@ function SessionInfoContent({ session }: { session: Session }) {
         resumeSession,
         resumeSessionSubtitle,
     } = useSessionQuickActions(session);
+
+    // Workflow count for the always-visible Workflows row (null when idle).
+    const activeWorkflowBadge = React.useMemo(
+        () => getWorkflowBadgeModel(selectActiveWorkflows(session.agentState?.activeWorkflows).length),
+        [session.agentState?.activeWorkflows],
+    );
 
     // Check if CLI version is outdated
     const isCliOutdated = session.metadata?.version && !isVersionSupported(session.metadata.version, MINIMUM_CLI_VERSION);
@@ -387,6 +394,18 @@ function SessionInfoContent({ session }: { session: Session }) {
                             onPress={() => router.push(`/machine/${session.metadata?.machineId}`)}
                         />
                     )}
+                    {/* Always present: the workflow monitor is otherwise only
+                        reachable from a badge that exists while workflows run,
+                        which leaves users with no way to find the feature. */}
+                    <Item
+                        title={t('workflows.rowTitle')}
+                        subtitle={t('workflows.rowSubtitle')}
+                        detail={activeWorkflowBadge
+                            ? t('workflows.workflowCount', { count: activeWorkflowBadge.count })
+                            : undefined}
+                        icon={<Ionicons name="git-network-outline" size={29} color="#007AFF" />}
+                        onPress={() => router.push(`/session/${session.id}/workflows`)}
+                    />
                     {canShowResume && (
                         <Item
                             title={t('sessionInfo.resumeSession')}

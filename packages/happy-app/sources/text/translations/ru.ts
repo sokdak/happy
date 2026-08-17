@@ -418,6 +418,10 @@ export const ru: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: 'Рабочий процесс',
+        rowTitle: 'Рабочие процессы',
+        rowSubtitle: 'Следите за ходом мультиагентных рабочих процессов',
+        emptyTitle: 'Нет активных рабочих процессов',
+        emptyDescription: 'Здесь появится ход выполнения, когда Claude запустит мультиагентные рабочие процессы.',
     },
 
     profile: {

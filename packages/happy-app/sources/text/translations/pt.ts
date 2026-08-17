@@ -90,6 +90,10 @@ export const pt: TranslationStructure = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: 'Fluxo de trabalho',
+        rowTitle: 'Fluxos de trabalho',
+        rowSubtitle: 'Acompanhe o progresso dos fluxos de trabalho multiagente',
+        emptyTitle: 'Sem atividade de fluxos de trabalho',
+        emptyDescription: 'O progresso aparecerá aqui enquanto o Claude executa fluxos de trabalho multiagente.',
     },
 
     profile: {

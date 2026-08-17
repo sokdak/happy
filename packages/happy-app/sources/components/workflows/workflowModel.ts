@@ -5,6 +5,7 @@ import type {
 
 export type WorkflowVisualState = 'running' | 'completed' | 'error' | 'active';
 export type WorkflowOpenTarget = 'context-panel' | 'route';
+export type WorkflowRouteContent = 'loading' | 'missing-session' | 'empty' | 'list';
 export type WorkflowPanelEvent =
     | { type: 'open' }
     | { type: 'close' }
@@ -16,6 +17,12 @@ export interface WorkflowContextPanelOptions {
     width: number;
     platform: string;
     isMacDesktop: boolean;
+}
+
+export interface WorkflowRouteContentOptions {
+    isDataReady: boolean;
+    hasSession: boolean;
+    activeCount: number;
 }
 
 export interface WorkflowContextPresentationOptions {
@@ -118,8 +125,19 @@ export function reduceWorkflowPanelOpen(
     return event.count === 0 ? false : open;
 }
 
-export function shouldDismissWorkflowRoute(activeCount: number): boolean {
-    return activeCount === 0;
+/**
+ * Decide what the dedicated workflows route renders.
+ *
+ * The route is reachable from session info regardless of workflow activity, so
+ * an empty list is a normal, explainable state — never a reason to navigate the
+ * user away.
+ */
+export function getWorkflowRouteContent(
+    options: WorkflowRouteContentOptions,
+): WorkflowRouteContent {
+    if (!options.isDataReady) return 'loading';
+    if (!options.hasSession) return 'missing-session';
+    return options.activeCount > 0 ? 'list' : 'empty';
 }
 
 export function formatWorkflowElapsed(startedAt: number, now: number): string {

@@ -90,6 +90,10 @@ export const en = {
         tokens: ({ count }: { count: string }) => `${count} tokens`,
         toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
         toolTitle: 'Workflow',
+        rowTitle: 'Workflows',
+        rowSubtitle: 'Track multi-agent workflow progress',
+        emptyTitle: 'No workflow activity',
+        emptyDescription: 'Workflow progress appears here while Claude runs multi-agent workflows.',
     },
 
     profile: {
