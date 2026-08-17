@@ -353,6 +353,7 @@ export const en = {
         statusBarContext: 'Context',
         statusBarPathTitle: 'Working directory',
         // Fork / duplicate / rewind flow (Claude only)
+        headerActionsAccessibility: 'Session actions',
         forkAction: 'Fork session',
         forkSubtitle: 'Continue in a new session with the same context',
         duplicateAction: 'Duplicate from message…',

@@ -356,6 +356,7 @@ export const pl: TranslationStructure = {
         newChat: 'Nowy czat',
         statusBarContext: 'Kontekst',
         statusBarPathTitle: 'Katalog roboczy',
+        headerActionsAccessibility: 'Akcje sesji',
         forkAction: 'Rozwidl sesję',
         forkSubtitle: 'Kontynuuj w nowej sesji z tym samym kontekstem',
         duplicateAction: 'Duplikuj od wiadomości…',
