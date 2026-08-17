@@ -72,6 +72,13 @@ export function createClaudeAiTitleApplier(
     opts: ClaudeAiTitleApplierOptions,
 ): (event: ClaudeAiTitleTranscriptEvent) => void {
     const observedRevisions = new Set<string>();
+    // The title write is not visible to `getCurrentTitle` right away: sending
+    // the synthetic summary only queues a metadata update, which apiSession
+    // applies locally after the server acks it. A cold scan emits every
+    // ai-title line in the transcript back to back, well inside that window,
+    // so remember what we sent — otherwise a later line would read "no title"
+    // and clobber the one we just set.
+    let titleInFlight: string | null = null;
 
     return (event: ClaudeAiTitleTranscriptEvent) => {
         if (observedRevisions.has(event.sourceRevision)) {
@@ -86,12 +93,13 @@ export function createClaudeAiTitleApplier(
         }
 
         // Precedence: the session keeps whatever title it already has.
-        const currentTitle = opts.getCurrentTitle();
-        if (typeof currentTitle === 'string' && currentTitle.trim().length > 0) {
+        const currentTitle = nonEmptyString(opts.getCurrentTitle()) ?? titleInFlight;
+        if (currentTitle) {
             return;
         }
 
         observedRevisions.add(event.sourceRevision);
+        titleInFlight = event.aiTitle;
         opts.applyTitle(event.aiTitle);
     };
 }

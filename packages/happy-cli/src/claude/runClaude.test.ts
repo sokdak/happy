@@ -606,6 +606,23 @@ describe('runClaude remote JSONL scanner', () => {
         await harness.finish();
     });
 
+    it('applies only the first of two ai-title events seen in one scan', async () => {
+        // A cold scan replays every ai-title line in the transcript back to
+        // back, long before the metadata write for the first one lands, so
+        // the "only title an untitled session" rule cannot rely on metadata
+        // alone.
+        const harness = await startRemoteRunClaudeHarness();
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'First title' });
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Second title' });
+
+        expect(summaryMessages(harness.sessionClient)).toEqual([
+            { type: 'summary', summary: 'First title', leafUuid: expect.any(String) },
+        ]);
+
+        await harness.finish();
+    });
+
     it('applies a repeated ai-title event only once', async () => {
         const harness = await startRemoteRunClaudeHarness();
 

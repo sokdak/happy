@@ -61,9 +61,12 @@ describe('createClaudeAiTitleApplier', () => {
     function setup(opts: { claudeSessionId?: string | null; title?: string | null } = {}) {
         let claudeSessionId = opts.claudeSessionId === undefined ? 'claude-session-1' : opts.claudeSessionId;
         let title = opts.title === undefined ? null : opts.title;
-        // Mirrors the real side effect: sending the synthetic summary writes
-        // metadata.summary.text, so the session has a title from then on.
-        const applyTitle = vi.fn((next: string) => { title = next; });
+        // The real side effect lags: sending the synthetic summary only queues
+        // a metadata update, and apiSession refreshes its local metadata after
+        // the server acks it. So getCurrentTitle() keeps reporting the OLD
+        // title for a while after a send — the stub reproduces that instead of
+        // writing back, and `landMetadataWrite` plays the ack.
+        const applyTitle = vi.fn();
         const apply = createClaudeAiTitleApplier({
             getClaudeSessionId: () => claudeSessionId,
             getCurrentTitle: () => title,
@@ -72,8 +75,11 @@ describe('createClaudeAiTitleApplier', () => {
         return {
             apply,
             applyTitle,
+            landMetadataWrite: () => {
+                const lastApplied = applyTitle.mock.calls.at(-1)?.[0];
+                if (typeof lastApplied === 'string') title = lastApplied;
+            },
             setClaudeSessionId: (value: string | null) => { claudeSessionId = value; },
-            setTitle: (value: string | null) => { title = value; },
         };
     }
 
@@ -102,7 +108,10 @@ describe('createClaudeAiTitleApplier', () => {
         expect(applyTitle).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps the first applied title when Claude later renames the conversation', () => {
+    it('keeps the first applied title when a rename arrives before the metadata write lands', () => {
+        // Both lines are already in the transcript on a cold scan, so the
+        // scanner emits them back to back — far faster than the metadata
+        // round trip. Precedence must still hold on the second one.
         const { apply, applyTitle } = setup();
 
         apply(event);
@@ -112,17 +121,15 @@ describe('createClaudeAiTitleApplier', () => {
         expect(applyTitle).toHaveBeenCalledWith('Generated title');
     });
 
-    it('treats a changed title as a new revision rather than a duplicate', () => {
-        const { apply, applyTitle, setTitle } = setup();
+    it('keeps the first applied title once the metadata write has landed', () => {
+        const { apply, applyTitle, landMetadataWrite } = setup();
 
         apply(event);
-        // Title cleared out of band — the renamed observation must not be
-        // swallowed by revision dedupe.
-        setTitle(null);
+        landMetadataWrite();
         apply({ ...event, aiTitle: 'Second title', sourceRevision: 'claude-session-1:Second title' });
 
-        expect(applyTitle).toHaveBeenCalledTimes(2);
-        expect(applyTitle).toHaveBeenLastCalledWith('Second title');
+        expect(applyTitle).toHaveBeenCalledTimes(1);
+        expect(applyTitle).toHaveBeenCalledWith('Generated title');
     });
 
     it('drops events whose source session does not match the live Claude session', () => {
