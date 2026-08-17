@@ -4,9 +4,8 @@ vi.mock('@/ui/logger', () => ({
   logger: { debug: vi.fn() },
 }))
 
-import { createSessionScanner } from './sessionScanner'
+import { createSessionScanner, type ScannerTranscriptEvent } from './sessionScanner'
 import { RawJSONLines } from '../types'
-import type { ClaudeGoalStatusTranscriptEvent } from '../claudeGoalStatus'
 import { mkdir, writeFile, appendFile, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -18,7 +17,7 @@ describe('sessionScanner', () => {
   let testDir: string
   let projectDir: string
   let collectedMessages: RawJSONLines[]
-  let collectedTranscriptEvents: ClaudeGoalStatusTranscriptEvent[]
+  let collectedTranscriptEvents: ScannerTranscriptEvent[]
   let scanner: Awaited<ReturnType<typeof createSessionScanner>> | null = null
   
   beforeEach(async () => {
@@ -391,7 +390,7 @@ describe('sessionScanner', () => {
 
   it('silently skips known non-message transcript line types instead of warning-logging each one', async () => {
     // Reproduces the disk-filling bug: Claude Code writes several session-level
-    // bookkeeping line types (attachment, last-prompt, ai-title, relocated, mode)
+    // bookkeeping line types (attachment, last-prompt, relocated, mode)
     // that RawJSONLinesSchema never modeled. Each one used to log its own
     // "Skipping transcript line failing schema validation" warning, and at
     // real transcript volume that grew a single log file to 93GB.
@@ -405,7 +404,7 @@ describe('sessionScanner', () => {
     const sessionId = '11111111-1111-1111-1111-111111111111'
     const sessionFile = join(projectDir, `${sessionId}.jsonl`)
 
-    const nonMessageTypes = ['attachment', 'last-prompt', 'ai-title', 'relocated', 'mode']
+    const nonMessageTypes = ['attachment', 'last-prompt', 'relocated', 'mode']
     const lines = nonMessageTypes.map((type, i) => JSON.stringify({ type, uuid: `${type}-${i}` }))
     await writeFile(sessionFile, lines.join('\n') + '\n')
 
@@ -438,6 +437,118 @@ describe('sessionScanner', () => {
     const newerTypes = ['pr-link', 'permission-mode', 'worktree-state', 'file-history-delta']
     const lines = newerTypes.map((type, i) => JSON.stringify({ type, uuid: `${type}-${i}` }))
     await writeFile(sessionFile, lines.join('\n') + '\n')
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(collectedMessages).toHaveLength(0)
+    expect(collectedTranscriptEvents).toHaveLength(0)
+
+    const schemaWarnings = vi.mocked(logger.debug).mock.calls
+      .filter(([msg]) => typeof msg === 'string' && msg.includes('Skipping transcript line failing schema validation'))
+    expect(schemaWarnings).toHaveLength(0)
+  })
+
+  it('emits an ai-title line as a transcript event', async () => {
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+      onTranscriptEvent: (event) => collectedTranscriptEvents.push(event),
+    })
+
+    const sessionId = '44444444-4444-4444-4444-444444444444'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+
+    await writeFile(sessionFile, JSON.stringify({
+      type: 'ai-title',
+      aiTitle: 'Wire ai-title into session titles',
+      sessionId,
+    }) + '\n')
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(collectedMessages).toHaveLength(0)
+    expect(collectedTranscriptEvents).toEqual([{
+      type: 'ai_title',
+      aiTitle: 'Wire ai-title into session titles',
+      sourceSessionId: sessionId,
+      sourceRevision: `${sessionId}:Wire ai-title into session titles`,
+    }])
+
+    const schemaWarnings = vi.mocked(logger.debug).mock.calls
+      .filter(([msg]) => typeof msg === 'string' && msg.includes('Skipping transcript line failing schema validation'))
+    expect(schemaWarnings).toHaveLength(0)
+  })
+
+  it('does not re-emit an unchanged ai-title line when the transcript is rescanned', async () => {
+    // ai-title lines carry no uuid, so without a content-derived key every
+    // rescan would replay the same title forever.
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+      onTranscriptEvent: (event) => collectedTranscriptEvents.push(event),
+    })
+
+    const sessionId = '55555555-5555-5555-5555-555555555555'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+    const line = JSON.stringify({ type: 'ai-title', aiTitle: 'Stable title', sessionId }) + '\n'
+
+    await writeFile(sessionFile, line)
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(collectedTranscriptEvents).toHaveLength(1)
+
+    await appendFile(sessionFile, line)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(collectedTranscriptEvents).toHaveLength(1)
+  })
+
+  it('emits again when Claude renames the conversation', async () => {
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+      onTranscriptEvent: (event) => collectedTranscriptEvents.push(event),
+    })
+
+    const sessionId = '66666666-6666-6666-6666-666666666666'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+
+    await writeFile(sessionFile, JSON.stringify({ type: 'ai-title', aiTitle: 'First title', sessionId }) + '\n')
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(collectedTranscriptEvents).toHaveLength(1)
+
+    await appendFile(sessionFile, JSON.stringify({ type: 'ai-title', aiTitle: 'Second title', sessionId }) + '\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(collectedTranscriptEvents.map((e) => e.type === 'ai_title' ? e.aiTitle : null))
+      .toEqual(['First title', 'Second title'])
+  })
+
+  it('silently skips malformed ai-title lines', async () => {
+    // A modeled type must not re-open the per-line warning flood when a line
+    // of that type lacks the fields we need.
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+      onTranscriptEvent: (event) => collectedTranscriptEvents.push(event),
+    })
+
+    const sessionId = '77777777-7777-7777-7777-777777777777'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+
+    const malformed = [
+      { type: 'ai-title', uuid: 'ai-title-0' },
+      { type: 'ai-title', aiTitle: '', sessionId },
+      { type: 'ai-title', aiTitle: 'No session id' },
+    ].map((line) => JSON.stringify(line))
+    await writeFile(sessionFile, malformed.join('\n') + '\n')
 
     scanner.onNewSession(sessionId)
     await new Promise((resolve) => setTimeout(resolve, 100))
