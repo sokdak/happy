@@ -31,6 +31,7 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import { claudeLocalLauncher } from './claudeLocalLauncher';
+import { RawJSONLinesSchema } from './types';
 
 type QueueHandler = (message: string, mode: { permissionMode: 'default' }) => void;
 type ScannerOptions = {
@@ -273,6 +274,13 @@ describe('claudeLocalLauncher', () => {
 
     it('authoritatively resets workflows after scanner cleanup drains final transcript messages', async () => {
         const events: string[] = [];
+        // A system transcript line carrying the uuid RawJSONLinesSchema
+        // requires — i.e. something the real scanner would actually forward.
+        const finalDrainMessage = {
+            type: 'system',
+            uuid: 'f0c1d9e4-0f5a-4a1b-9d21-7c3f8b2a6e10',
+            content: 'final drained transcript line',
+        };
         const earlyReset = createDeferred<void>();
         const finalReset = createDeferred<void>();
         let resetCalls = 0;
@@ -283,12 +291,11 @@ describe('claudeLocalLauncher', () => {
                 onNewSession: vi.fn(),
                 cleanup: vi.fn(async () => {
                     events.push('cleanup');
-                    options.onMessage({
-                        type: 'system',
-                        subtype: 'task_started',
-                        task_id: 'workflow-1',
-                        task_type: 'local_workflow',
-                    });
+                    // The real scanner only forwards lines that survive
+                    // RawJSONLinesSchema, so a fixture the schema would reject
+                    // proves nothing about production behavior.
+                    expect(RawJSONLinesSchema.safeParse(finalDrainMessage).success).toBe(true);
+                    options.onMessage(finalDrainMessage as any);
                 }),
             };
         });
@@ -410,5 +417,35 @@ describe('claudeLocalLauncher', () => {
 
         expect(cleanup).toHaveBeenCalledOnce();
         expect(session.client.resetClaudeWorkflows).toHaveBeenCalledTimes(3);
+    });
+
+    // Documents why local mode publishes no workflow state today, so nobody
+    // reads the mocked scanner above as evidence that it does.
+    //
+    // Two independent reasons, both verified:
+    //  1. Claude Code does not write task_* system lines into transcript JSONL
+    //     files at all, so there is nothing for the scanner to pick up.
+    //  2. Even if such a line appeared, the shape the workflow tracker expects
+    //     ({ type: 'system', subtype: 'task_started', task_id, task_type })
+    //     carries no uuid, and the system variant of RawJSONLinesSchema
+    //     requires one — the scanner drops it before onMessage ever runs.
+    //
+    // Workflow progress therefore reaches the app only from remote mode, where
+    // claudeRemote.ts reads task_* events off the SDK stream instead of the
+    // transcript. Deleting this test without changing that pipeline would just
+    // restore the false confidence it exists to prevent.
+    it('documents that transcript task_* events cannot feed local-mode workflow state', () => {
+        const transcriptTaskEvent = {
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+        };
+
+        const parsed = RawJSONLinesSchema.safeParse(transcriptTaskEvent);
+
+        expect(parsed.success).toBe(false);
+        expect(parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join('.')))
+            .toContain('uuid');
     });
 });
