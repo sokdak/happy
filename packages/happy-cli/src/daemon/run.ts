@@ -25,6 +25,7 @@ import { projectPath } from '@/projectPath';
 import { getTmuxUtilities, isTmuxAvailable, parseTmuxSessionIdentifier, formatTmuxSessionIdentifier } from '@/utils/tmux';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { detectCLIAvailability } from '@/utils/detectCLI';
+import { resolveSpawnAgent } from '@/utils/agentPolicy';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
@@ -326,13 +327,28 @@ export async function startDaemon(): Promise<void> {
 
       try {
 
+        // One place decides which agent actually runs. An operator can pin this
+        // machine to a subset (HAPPY_ENABLED_AGENTS / HAPPY_DISABLED_AGENTS) while
+        // a stale web client still asks for a disabled one. This has to happen
+        // before the auth token below is staged, otherwise we would write a
+        // Claude token and then launch Codex.
+        const agentResolution = resolveSpawnAgent(options.agent, detectCLIAvailability);
+        if (agentResolution.type === 'error') {
+          logger.debug(`[DAEMON RUN] Refusing to spawn: ${agentResolution.errorMessage}`);
+          return { type: 'error', errorMessage: agentResolution.errorMessage };
+        }
+        const resolvedAgent = agentResolution.agent;
+        if (agentResolution.coercedFrom) {
+          logger.debug(`[DAEMON RUN] Agent '${agentResolution.coercedFrom}' is not enabled on this machine; spawning '${resolvedAgent}' instead`);
+        }
+
         // Build environment variables for session spawning
         // Authentication tokens are resolved here
 
         // Resolve authentication token if provided
         const authEnv: Record<string, string> = {};
         if (options.token) {
-          if (options.agent === 'codex') {
+          if (resolvedAgent === 'codex') {
 
             // Create a temporary directory for Codex
             const codexHomeDir = tmp.dirSync();
@@ -435,8 +451,7 @@ export async function startDaemon(): Promise<void> {
 
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
-          // Determine agent command - support claude, codex, gemini, openclaw, and agy
-          const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : (options.agent === 'openclaw' ? 'openclaw' : (options.agent === 'agy' ? 'agy' : 'claude')));
+          const agent = resolvedAgent;
           const resumeId = agent === 'claude'
             ? options.resumeClaudeSessionId
             : (agent === 'codex' ? options.resumeCodexThreadId : undefined);
@@ -531,31 +546,9 @@ export async function startDaemon(): Promise<void> {
         if (!useTmux) {
           logger.debug(`[DAEMON RUN] Using regular process spawning`);
 
-          // Construct arguments for the CLI - support claude, codex, and gemini
-          let agentCommand: string;
-          switch (options.agent) {
-            case 'claude':
-            case undefined:
-              agentCommand = 'claude';
-              break;
-            case 'codex':
-              agentCommand = 'codex';
-              break;
-            case 'gemini':
-              agentCommand = 'gemini';
-              break;
-            case 'openclaw':
-              agentCommand = 'openclaw';
-              break;
-            case 'agy':
-              agentCommand = 'agy';
-              break;
-            default:
-              return {
-                type: 'error',
-                errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
-              };
-          }
+          // The agent name is the CLI subcommand; resolveSpawnAgent already
+          // rejected anything this CLI cannot launch.
+          const agentCommand: string = resolvedAgent;
           const args = [
             agentCommand,
             '--happy-starting-mode', 'remote',

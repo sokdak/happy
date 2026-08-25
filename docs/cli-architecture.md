@@ -96,6 +96,8 @@ graph LR
         E4[HAPPY_VARIANT]
         E5[HAPPY_EXPERIMENTAL]
         E6[HAPPY_DISABLE_CAFFEINATE]
+        E7[HAPPY_ENABLED_AGENTS]
+        E8[HAPPY_DISABLED_AGENTS]
     end
 
     E1 -.-> settings & access & daemon & logs
@@ -110,6 +112,8 @@ Local state lives under `~/.happy` (or `HAPPY_HOME_DIR`):
 Configuration lives in `src/configuration.ts`:
 - `HAPPY_SERVER_URL` and `HAPPY_WEBAPP_URL` override defaults.
 - `HAPPY_VARIANT`, `HAPPY_EXPERIMENTAL`, `HAPPY_DISABLE_CAFFEINATE` control behavior.
+- `HAPPY_ENABLED_AGENTS` / `HAPPY_DISABLED_AGENTS` restrict which agent CLIs this
+  machine will run — see [Restricting which agents a machine will run](#restricting-which-agents-a-machine-will-run).
 
 ## API client architecture
 
@@ -305,6 +309,47 @@ Sessions can be started by:
 - Remote requests over RPC (from mobile/web via machine connection).
 
 Daemon session spawning uses `registerCommonHandlers` to expose a controlled RPC surface (shell commands, file operations, search/diff helpers).
+
+#### Restricting which agents a machine will run
+
+`detectCLIAvailability()` reports which agent CLIs a machine can launch, and the
+app uses it to build the agent picker. By default it reports whatever is on
+`PATH`, which is not always what a deployment wants: an image can ship an agent
+CLI that is deliberately unauthenticated, and launching it only produces auth
+errors.
+
+Two environment variables on the daemon narrow that set (`src/utils/agentPolicy.ts`):
+
+| Variable | Effect |
+| --- | --- |
+| `HAPPY_ENABLED_AGENTS` | Allowlist. Only these agents are offered. Takes precedence over the denylist. |
+| `HAPPY_DISABLED_AGENTS` | Denylist. These agents are never offered. |
+
+Both accept a comma- or space-separated list of `claude`, `codex`, `gemini`,
+`openclaw`, `agy`; unknown names are ignored. Neither can make a missing CLI
+usable — `PATH` still has the final say on availability.
+
+A Codex-only deployment sets either of:
+
+```bash
+HAPPY_ENABLED_AGENTS=codex
+HAPPY_DISABLED_AGENTS=claude
+```
+
+With a policy in effect, the daemon resolves the agent once per spawn before it
+stages any credentials:
+
+- An unspecified agent runs the first enabled one, rather than defaulting to Claude.
+- A request naming a disabled agent is coerced to the first enabled one. This is
+  what keeps a browser holding a stale `agent: "claude"` draft working instead of
+  failing against an unauthenticated CLI.
+- A request naming an agent this CLI cannot launch is rejected.
+- If the policy leaves nothing enabled, the spawn fails with that explanation
+  instead of launching an arbitrary agent.
+
+Without either variable set, spawning behaves exactly as before: an unspecified
+agent means Claude, and an agent missing from `PATH` is still launched so the
+failure surfaces where it always has.
 
 ### Machine state
 
