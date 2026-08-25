@@ -115,6 +115,36 @@ Configuration lives in `src/configuration.ts`:
 - `HAPPY_ENABLED_AGENTS` / `HAPPY_DISABLED_AGENTS` restrict which agent CLIs this
   machine will run — see [Restricting which agents a machine will run](#restricting-which-agents-a-machine-will-run).
 
+### Pointing the CLI at a self-hosted relay
+
+Both URLs resolve through the same chain, highest precedence first:
+
+1. `HAPPY_SERVER_URL` / `HAPPY_WEBAPP_URL` environment variables
+2. `serverUrl` / `webappUrl` in `~/.happy/settings.json`
+3. The built-in public defaults
+
+Environment variables only reach the daemon if they are set in the environment
+that starts it. A daemon outlives the shell that spawned it, so anything that
+starts one from a different context — a login shell that never sourced your
+profile, a supervisor, a restart triggered by another process — gets the
+defaults instead. Prefer `settings.json` for self-hosting: it is read by every
+process on every start, so it survives daemon restarts and CLI upgrades alike.
+
+```json
+{
+  "serverUrl": "https://api.example.com",
+  "webappUrl": "https://app.example.com"
+}
+```
+
+Verify which value actually won with `happy doctor` — it prints the environment
+variables, the full contents of `settings.json`, and the effective `Server URL`.
+
+Credentials are per-server. Tokens minted against the public server are
+rejected by a self-hosted API with `401 Invalid token`, and `happy auth login`
+will still report `Already authenticated` because a credential exists. Re-run
+authentication after switching relays.
+
 ## API client architecture
 
 ```mermaid
