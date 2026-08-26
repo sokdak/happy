@@ -301,7 +301,7 @@ export async function runOpenClaw(opts: RunOpenClawOptions): Promise<void> {
   session.rpcHandlerManager.registerHandler('openclaw-retry-pairing', async () => {
     backend.retryConnect();
   });
-  registerKillSessionHandler(session.rpcHandlerManager, async () => {
+  registerKillSessionHandler(session, async () => {
     shouldExit = true;
     messageQueue.close();
     clearPendingTurn(new Error('Session terminated'));
