@@ -98,6 +98,7 @@ graph LR
         E6[HAPPY_DISABLE_CAFFEINATE]
         E7[HAPPY_ENABLED_AGENTS]
         E8[HAPPY_DISABLED_AGENTS]
+        E9[HAPPY_LOG_RETENTION_DAYS]
     end
 
     E1 -.-> settings & access & daemon & logs
@@ -107,11 +108,15 @@ Local state lives under `~/.happy` (or `HAPPY_HOME_DIR`):
 - `settings.json`: onboarding and profile settings (validated/migrated).
 - `access.key`: local key material for encryption/auth.
 - `daemon.state.json`: daemon PID + control port + version.
-- `logs/`: CLI/daemon logs.
+- `logs/`: CLI/daemon logs. One file per process start, pruned on start after
+  14 days (`HAPPY_LOG_RETENTION_DAYS`; `0` keeps everything).
 
 Configuration lives in `src/configuration.ts`:
 - `HAPPY_SERVER_URL` and `HAPPY_WEBAPP_URL` override defaults.
 - `HAPPY_VARIANT`, `HAPPY_EXPERIMENTAL`, `HAPPY_DISABLE_CAFFEINATE` control behavior.
+- `HAPPY_LOG_RETENTION_DAYS` sets how long `logs/` is kept (default 14, `0` disables
+  pruning). Each start deletes a bounded batch of the oldest expired files, so a
+  large backlog clears over several runs rather than stalling one.
 - `HAPPY_ENABLED_AGENTS` / `HAPPY_DISABLED_AGENTS` restrict which agent CLIs this
   machine will run — see [Restricting which agents a machine will run](#restricting-which-agents-a-machine-will-run).
 

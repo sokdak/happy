@@ -7,6 +7,7 @@
 
 import chalk from 'chalk'
 import { configuration } from '@/configuration'
+import { resolveRetentionDays } from './logRetention'
 import { readSettings, readCredentials } from '@/persistence'
 import { checkIfDaemonRunningAndCleanupStaleState } from '@/daemon/controlClient'
 import { findAllHappyProcesses } from '@/daemon/doctor'
@@ -45,7 +46,7 @@ export function getEnvironmentInfo(): Record<string, any> {
     };
 }
 
-function getLogFiles(logDir: string): { file: string, path: string, modified: Date }[] {
+function getLogFiles(logDir: string): { file: string, path: string, modified: Date, size: number }[] {
     if (!existsSync(logDir)) {
         return [];
     }
@@ -56,12 +57,42 @@ function getLogFiles(logDir: string): { file: string, path: string, modified: Da
             .map(file => {
                 const path = join(logDir, file);
                 const stats = statSync(path);
-                return { file, path, modified: stats.mtime };
+                return { file, path, modified: stats.mtime, size: stats.size };
             })
             .sort((a, b) => b.modified.getTime() - a.modified.getTime());
     } catch {
         return [];
     }
+}
+
+// A log directory grows by one file per CLI/daemon start and used to grow
+// without bound - one reported host reached 204k files / 924MB. Retention is
+// automatic now, but the totals are the first thing worth seeing when someone
+// runs doctor because the disk filled up.
+function printLogFootprint(logs: { size: number }[]): void {
+    const totalBytes = logs.reduce((sum, { size }) => sum + size, 0);
+    const retentionDays = resolveRetentionDays();
+    const retention = retentionDays > 0
+        ? `pruned after ${retentionDays} day${retentionDays === 1 ? '' : 's'}`
+        : 'retention disabled (HAPPY_LOG_RETENTION_DAYS=0)';
+
+    const summary = `${logs.length.toLocaleString()} files, ${formatBytes(totalBytes)} — ${retention}`;
+    const looksUnbounded = logs.length > 5_000 || totalBytes > 512 * 1024 * 1024;
+    console.log(looksUnbounded ? chalk.yellow(`⚠️  ${summary}`) : chalk.gray(summary));
+    if (looksUnbounded) {
+        console.log(chalk.gray('    Pruning removes a bounded batch per start, so a large backlog clears over several runs.'));
+    }
+}
+
+function formatBytes(bytes: number): string {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+    }
+    return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
 /**
@@ -157,6 +188,8 @@ export async function runDoctorCommand(): Promise<void> {
     console.log(chalk.bold('\n📝 Log Files'));
     const allLogs = getLogFiles(configuration.logsDir);
     if (allLogs.length > 0) {
+        printLogFootprint(allLogs);
+
         const daemonLogs = allLogs.filter(({ file }) => file.includes('daemon'));
         const regularLogs = allLogs.filter(({ file }) => !file.includes('daemon'));
 
