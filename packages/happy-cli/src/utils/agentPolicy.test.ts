@@ -170,7 +170,7 @@ describe('stripSourceAgentRequest', () => {
             resumeCodexThreadId: 'codex-thread',
         };
 
-        const result = stripSourceAgentRequest(request);
+        const result = stripSourceAgentRequest(request, 'codex');
 
         expect(result.token).toBeUndefined();
         expect(result.modelMode).toBeUndefined();
@@ -188,7 +188,7 @@ describe('stripSourceAgentRequest', () => {
             modelMode: 'claude-opus-5',
         };
 
-        const result = stripSourceAgentRequest(request);
+        const result = stripSourceAgentRequest(request, 'codex');
 
         expect(result.directory).toBe('/work');
         expect(result.effortLevel).toBe('medium');
@@ -199,9 +199,35 @@ describe('stripSourceAgentRequest', () => {
     it('does not mutate the request it was given', () => {
         const original = { directory: '/work', token: 'secret', modelMode: 'claude-opus-5' };
 
-        stripSourceAgentRequest(original);
+        stripSourceAgentRequest(original, 'codex');
 
         expect(original.token).toBe('secret');
         expect(original.modelMode).toBe('claude-opus-5');
+    });
+
+    it('keeps an effort level the target agent understands', () => {
+        const request = { token: 'secret', effortLevel: 'medium' };
+
+        expect(stripSourceAgentRequest(request, 'codex').effortLevel).toBe('medium');
+    });
+
+    it('drops an effort level the target agent does not have', () => {
+        // A Claude draft can ask for `max`, which Codex has no equivalent for.
+        // Forwarding it launches Codex with a level its own validation rejects.
+        const request = { token: 'secret', effortLevel: 'max' };
+
+        expect(stripSourceAgentRequest(request, 'codex').effortLevel).toBeUndefined();
+    });
+
+    it('drops a Codex-only effort level when coercing towards Claude', () => {
+        const request = { token: 'secret', effortLevel: 'minimal' };
+
+        expect(stripSourceAgentRequest(request, 'claude').effortLevel).toBeUndefined();
+    });
+
+    it('drops the effort level for an agent that takes none', () => {
+        const request = { token: 'secret', effortLevel: 'medium' };
+
+        expect(stripSourceAgentRequest(request, 'gemini').effortLevel).toBeUndefined();
     });
 });

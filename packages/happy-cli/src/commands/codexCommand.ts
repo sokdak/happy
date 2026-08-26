@@ -7,6 +7,8 @@ import { extractNoSandboxFlag } from '@/utils/sandboxFlags'
 import { ensureDaemonRunning } from '@/daemon/ensureDaemonRunning'
 import type { PermissionMode } from '@/api/types'
 import type { ReasoningEffort } from '@/codex/codexAppServerTypes'
+import { CODEX_EFFORT_LEVELS } from '@/utils/effortLevels'
+import packageJson from '../../package.json'
 
 /**
  * `happy codex --help` used to fall straight through the flag loop below and
@@ -23,7 +25,7 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Happy options:')}
   --model <name>            Model to run
-  --effort <level>          Reasoning effort: low, medium, high, xhigh, max
+  --effort <level>          Reasoning effort: ${CODEX_EFFORT_LEVELS.join(', ')}
   --permission-mode <mode>  Codex permission mode
   --yolo                    Shortcut for --permission-mode yolo
   --resume <thread-id>      Attach to an existing Codex thread
@@ -48,9 +50,33 @@ ${chalk.bold.cyan('Codex Options (from `codex --help`):')}
   }
 }
 
+/**
+ * `happy --version` no longer starts a session, but the top level dispatches on
+ * the `codex` subcommand before it parses that flag - so `happy codex --version`
+ * kept going through auth, the daemon and a real session. Answer it here too.
+ */
+function printCodexVersion(): void {
+  console.log(`happy version: ${packageJson.version}`)
+
+  try {
+    process.stdout.write(execFileSync('codex', ['--version'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }))
+  } catch {
+    console.log(chalk.yellow('Could not retrieve codex version. Make sure codex is installed.'))
+  }
+}
+
 export async function handleCodexCommand(args: string[]): Promise<void> {
   if (args.some((arg) => arg === '-h' || arg === '--help')) {
     printCodexHelp()
+    return
+  }
+
+  if (args.some((arg) => arg === '-v' || arg === '--version')) {
+    printCodexVersion()
     return
   }
 

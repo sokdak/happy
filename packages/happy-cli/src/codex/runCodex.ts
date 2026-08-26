@@ -1,3 +1,4 @@
+import { CODEX_EFFORT_LEVELS } from '@/utils/effortLevels';
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
@@ -307,9 +308,7 @@ export async function runCodex(opts: {
         'yolo',
     ];
 
-    const VALID_REMOTE_EFFORTS: readonly ReasoningEffort[] = [
-        'none', 'minimal', 'low', 'medium', 'high', 'xhigh',
-    ];
+    const VALID_REMOTE_EFFORTS: readonly ReasoningEffort[] = CODEX_EFFORT_LEVELS;
 
     const handleUserMessage = createSerialAsyncHandler<UserMessage>(async (message) => {
         const attachmentsForThisMessage = await session.drainAttachmentsForUserMessage();
