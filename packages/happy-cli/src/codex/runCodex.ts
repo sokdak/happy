@@ -1,3 +1,4 @@
+import { resolveCodexModel } from './codexModel';
 import { CODEX_EFFORT_LEVELS } from '@/utils/effortLevels';
 import { render } from "ink";
 import React from "react";
@@ -81,7 +82,6 @@ function hasCodexSubagentReference(message: Record<string, unknown>): boolean {
     return false;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_CODEX_EFFORT: ReasoningEffort = 'medium';
 const DEFAULT_CODEX_PERMISSION_MODE: PermissionMode = 'yolo';
 
@@ -273,7 +273,7 @@ export async function runCodex(opts: {
     // default for plain codex is yolo, and it must not wave through a
     // straggler approval after an abort.
     let currentPermissionModeExplicitlySet = false;
-    let currentModel: string | undefined = opts.model ?? DEFAULT_CODEX_MODEL;
+    let currentModel: string | undefined = resolveCodexModel(opts.model);
     let currentEffort: ReasoningEffort | undefined = opts.effort ?? DEFAULT_CODEX_EFFORT;
     let currentAppendSystemPrompt: string | undefined = undefined;
 
