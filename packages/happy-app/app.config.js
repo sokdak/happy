@@ -208,7 +208,18 @@ export default {
                 }
             ]
         ],
+        // OTA self-update is off in this fork.
+        //
+        // The url/projectId below belong to the upstream Expo account
+        // ("bulkacorp"), so a build from this repo would fetch and apply
+        // upstream JS bundles over the fork's own code on every foreground —
+        // silently replacing fork-specific behaviour in an already-installed
+        // APK. Builds here change only when someone installs a new binary.
+        //
+        // Re-enabling means pointing url/extra.eas.projectId/owner at an Expo
+        // project this fork controls, not just flipping this flag back.
         updates: {
+            enabled: false,
             url: "https://u.expo.dev/4558dd3d-cd5a-47cd-bad9-e591a241cc06",
             requestHeaders: {
                 "expo-channel-name": "production"
