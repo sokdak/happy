@@ -36,11 +36,18 @@ export interface AdoptionEnvironment {
     liveHappyPids: Iterable<number>;
     /** The daemon's own pid, which is a happy process but not a session. */
     selfPid: number;
+    /**
+     * Start token for a live pid, or null where the platform cannot report one.
+     * Compared against the token recorded when the session registered, so a
+     * recycled pid running a *different* happy session is not mistaken for the
+     * original.
+     */
+    startTokenForPid: (pid: number) => string | null;
 }
 
 export function selectAdoptableSessions(
     persisted: Record<string, PersistedSession>,
-    { liveHappyPids, selfPid }: AdoptionEnvironment,
+    { liveHappyPids, selfPid, startTokenForPid }: AdoptionEnvironment,
 ): AdoptableSession[] {
     const live = new Set(liveHappyPids);
 
@@ -55,6 +62,17 @@ export function selectAdoptableSessions(
         // and a persisted record can outlive the process it names.
         if (typeof pid !== 'number' || pid === selfPid || !live.has(pid)) {
             continue;
+        }
+
+        // Only a token that disagrees is disqualifying. A record from before
+        // tokens existed, or a platform that cannot produce one, leaves the
+        // check where it was rather than refusing to adopt anything.
+        const recordedToken = session.metadata?.hostProcessStartToken;
+        if (recordedToken) {
+            const currentToken = startTokenForPid(pid);
+            if (currentToken && currentToken !== recordedToken) {
+                continue;
+            }
         }
 
         candidates.push({ sessionId, pid });
