@@ -18,6 +18,11 @@ describe('parseLogFileTimestamp', () => {
         expect(parseLogFileTimestamp('2026-08-01-12-30-00-pid-1234-daemon.log')).not.toBeNull();
     });
 
+    it('reads the older name that predates the pid segment', () => {
+        expect(parseLogFileTimestamp('2026-08-01-12-30-00.log')).not.toBeNull();
+        expect(parseLogFileTimestamp('2026-08-01-12-30-00-daemon.log')).not.toBeNull();
+    });
+
     it('returns null for anything it does not recognise', () => {
         expect(parseLogFileTimestamp('notes.txt')).toBeNull();
         expect(parseLogFileTimestamp('happy.log')).toBeNull();

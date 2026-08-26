@@ -22,8 +22,10 @@ const DEFAULT_DELETE_LIMIT = 2_000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // Written by createTimestampForFilename(): a local-time stamp, the pid, and an
-// optional -daemon marker.
-const LOG_FILE_NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-pid-\d+(?:-daemon)?\.log$/;
+// optional -daemon marker. The pid segment is optional because a long-lived
+// logs directory also holds files from before it was added to the name, and
+// those are exactly the oldest ones worth clearing.
+const LOG_FILE_NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-pid-\d+)?(?:-daemon)?\.log$/;
 
 export function parseLogFileTimestamp(filename: string): number | null {
     const match = LOG_FILE_NAME.exec(filename);
