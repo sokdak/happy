@@ -313,6 +313,8 @@ export type Metadata = {
   happyToolsDir: string,
   startedFromDaemon?: boolean,
   hostPid?: number,
+  /** Identifies the run of hostPid, so a recycled pid is not mistaken for it. */
+  hostProcessStartToken?: string,
   startedBy?: 'daemon' | 'terminal',
   // Lifecycle state management
   lifecycleState?: 'running' | 'archiveRequested' | 'archived' | string,

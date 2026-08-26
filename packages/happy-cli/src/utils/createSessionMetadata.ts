@@ -7,6 +7,7 @@
  * @module createSessionMetadata
  */
 
+import { processStartToken } from '@/utils/processIdentity';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -107,6 +108,7 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         happyToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: opts.startedBy === 'daemon',
         hostPid: process.pid,
+        hostProcessStartToken: processStartToken(process.pid) ?? undefined,
         startedBy: opts.startedBy || 'terminal',
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
