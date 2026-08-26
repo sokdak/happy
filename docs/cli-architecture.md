@@ -356,8 +356,14 @@ Two environment variables on the daemon narrow that set (`src/utils/agentPolicy.
 | `HAPPY_DISABLED_AGENTS` | Denylist. These agents are never offered. |
 
 Both accept a comma- or space-separated list of `claude`, `codex`, `gemini`,
-`openclaw`, `agy`; unknown names are ignored. Neither can make a missing CLI
-usable — `PATH` still has the final say on availability.
+`openclaw`, `agy`. Neither can make a missing CLI usable — `PATH` still has the
+final say on availability.
+
+An unrecognised name is a configuration error rather than a no-op: the machine
+advertises no agents and every spawn fails naming the offending value. Ignoring
+it would be worse — `HAPPY_ENABLED_AGENTS=codxe` would parse to an empty policy,
+read as "no policy configured", and re-enable every agent on `PATH`, which is
+the outcome the operator was trying to prevent.
 
 A Codex-only deployment sets either of:
 
@@ -373,6 +379,13 @@ stages any credentials:
 - A request naming a disabled agent is coerced to the first enabled one. This is
   what keeps a browser holding a stale `agent: "claude"` draft working instead of
   failing against an unauthenticated CLI.
+- A coerced spawn drops the parts of the request that belonged to the agent that
+  was asked for: `token`, `modelMode`, `permissionMode`, and any resume id. They
+  do not translate across agents — a Claude OAuth token staged as
+  `CODEX_HOME/auth.json` is not a Codex credential, `bypassPermissions` is not a
+  Codex permission mode, and `claude-opus-5` is not a model Codex can run. The
+  session starts from the target agent's own credential and defaults instead.
+  `effortLevel` survives coercion: every agent reads the same `low`…`max` scale.
 - A request naming an agent this CLI cannot launch is rejected.
 - If the policy leaves nothing enabled, the spawn fails with that explanation
   instead of launching an arbitrary agent.
