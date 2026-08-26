@@ -96,7 +96,15 @@ describe('selectExpiredLogFiles', () => {
         expect(expired).toEqual([]);
     });
 
-    it('caps how much one run deletes so a huge backlog does not stall startup', () => {
+    it('takes the whole backlog when no cap is given', () => {
+        const names = Array.from({ length: 50 }, (_, i) => `2026-08-0${(i % 9) + 1}-09-00-0${i % 10}-pid-${i}.log`);
+
+        const expired = selectExpiredLogFiles(names, { now, retentionDays: 14 });
+
+        expect(expired).toHaveLength(50);
+    });
+
+    it('honours an explicit cap on one run', () => {
         const names = Array.from({ length: 50 }, (_, i) => `2026-08-0${(i % 9) + 1}-09-00-0${i % 10}-pid-${i}.log`);
 
         const expired = selectExpiredLogFiles(names, { now, retentionDays: 14, limit: 10 });

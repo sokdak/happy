@@ -14,11 +14,6 @@ import { join } from 'node:path';
 
 const DEFAULT_RETENTION_DAYS = 14;
 
-// A backlog can be six figures. Deleting it in one pass would make the first
-// start after an upgrade pay for months of accumulation, so each run takes a
-// bite and the oldest files go first.
-const DEFAULT_DELETE_LIMIT = 2_000;
-
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // Written by createTimestampForFilename(): a local-time stamp, the pid, and an
@@ -68,6 +63,14 @@ export interface SelectExpiredLogsOptions {
     retentionDays: number;
     /** The file this process is writing to; never a deletion candidate. */
     currentFile?: string;
+    /**
+     * Cap on one run's deletions, oldest first. Unset means the whole backlog:
+     * the reported directory held 204k files, and any cap small enough to be
+     * worth having would take dozens of daemon restarts to work through - a
+     * daemon restarts rarely, which is how the backlog got there. Deleting is
+     * awaited one file at a time off the startup path, so a long first pass
+     * costs background time, not startup time.
+     */
     limit?: number;
 }
 
@@ -75,7 +78,7 @@ export function selectExpiredLogFiles(
     filenames: string[],
     options: SelectExpiredLogsOptions,
 ): string[] {
-    const { now, retentionDays, currentFile, limit = DEFAULT_DELETE_LIMIT } = options;
+    const { now, retentionDays, currentFile, limit } = options;
     if (retentionDays <= 0) {
         return [];
     }
@@ -89,7 +92,7 @@ export function selectExpiredLogFiles(
         // directory is a path the user can point elsewhere.
         .filter((entry): entry is { name: string; at: number } => entry.at !== null && entry.at < cutoff)
         .sort((a, b) => a.at - b.at)
-        .slice(0, Math.max(0, limit))
+        .slice(0, limit === undefined ? undefined : Math.max(0, limit))
         .map((entry) => entry.name);
 }
 

@@ -115,8 +115,9 @@ Configuration lives in `src/configuration.ts`:
 - `HAPPY_SERVER_URL` and `HAPPY_WEBAPP_URL` override defaults.
 - `HAPPY_VARIANT`, `HAPPY_EXPERIMENTAL`, `HAPPY_DISABLE_CAFFEINATE` control behavior.
 - `HAPPY_LOG_RETENTION_DAYS` sets how long `logs/` is kept (default 14, `0` disables
-  pruning). Each start deletes a bounded batch of the oldest expired files, so a
-  large backlog clears over several runs rather than stalling one.
+  pruning). Expired files are deleted in the background on start, oldest first, off
+  the startup path — so a directory that has grown to six figures is cleared by the
+  next start rather than over dozens of them.
 - `HAPPY_ENABLED_AGENTS` / `HAPPY_DISABLED_AGENTS` restrict which agent CLIs this
   machine will run — see [Restricting which agents a machine will run](#restricting-which-agents-a-machine-will-run).
 

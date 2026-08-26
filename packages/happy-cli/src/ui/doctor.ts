@@ -80,7 +80,7 @@ function printLogFootprint(logs: { size: number }[]): void {
     const looksUnbounded = logs.length > 5_000 || totalBytes > 512 * 1024 * 1024;
     console.log(looksUnbounded ? chalk.yellow(`⚠️  ${summary}`) : chalk.gray(summary));
     if (looksUnbounded) {
-        console.log(chalk.gray('    Pruning removes a bounded batch per start, so a large backlog clears over several runs.'));
+        console.log(chalk.gray('    Expired files are removed on the next start; a large backlog is cleared in the background.'));
     }
 }
 
