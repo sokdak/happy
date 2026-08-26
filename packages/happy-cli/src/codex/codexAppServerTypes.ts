@@ -3,6 +3,8 @@
  * Only the essential types needed for our integration.
  */
 
+import type { CodexEffortLevel } from '@/utils/effortLevels';
+
 export type ThreadId = string;
 
 // --- Initialize ---
@@ -266,7 +268,7 @@ export type ReviewDecision =
 
 export type ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = CodexEffortLevel;
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TurnAbortReason = "interrupted" | "replaced" | "review_ended";
 
