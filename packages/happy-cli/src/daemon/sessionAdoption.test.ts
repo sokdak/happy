@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectAdoptableSessions, selectExpiredFinishedSessions } from './sessionAdoption';
+import { restoreFinishedSessions, selectAdoptableSessions, selectExpiredFinishedSessions } from './sessionAdoption';
 import type { PersistedSession } from '@/persistence';
 
 const persisted = (
@@ -174,5 +174,57 @@ describe('selectExpiredFinishedSessions', () => {
 
     it('returns nothing for an empty map', () => {
         expect(selectExpiredFinishedSessions([], now, 14 * day)).toEqual([]);
+    });
+});
+
+describe('restoreFinishedSessions', () => {
+    const now = 1_000_000_000_000;
+    const day = 24 * 60 * 60 * 1000;
+
+    it('dates a restored session from when it was persisted', () => {
+        const savedAt = now - 3 * day;
+
+        const restored = restoreFinishedSessions({ 'session-a': persisted(4242, savedAt) });
+
+        expect(restored.get('session-a')?.finishedAt).toBe(savedAt);
+    });
+
+    it('keeps every session the disk copy still loads past the first heartbeat', () => {
+        // readPersistedSessions() only returns records inside SESSION_MAX_AGE_MS,
+        // so anything it hands back must survive the heartbeat that prunes the
+        // same map at the same age. Restoring entries undated made that first
+        // heartbeat delete all of them, and resume then reported every session
+        // as "not tracked by this daemon" (sokdak/happy-helm#32).
+        const restored = restoreFinishedSessions({
+            'saved-today': persisted(1, now),
+            'saved-13-days-ago': persisted(2, now - 13 * day),
+        });
+
+        const expired = selectExpiredFinishedSessions(
+            Array.from(restored.entries()).map(([sessionId, session]) => ({
+                sessionId,
+                finishedAt: session.finishedAt,
+            })),
+            now,
+            14 * day,
+        );
+
+        expect(expired).toEqual([]);
+    });
+
+    it('carries the encryption material a resume needs', () => {
+        const restored = restoreFinishedSessions({ 'session-a': persisted(4242, now) });
+
+        expect(restored.get('session-a')).toMatchObject({
+            startedBy: 'persisted',
+            happySessionId: 'session-a',
+            pid: 0,
+            encryption: {
+                encryptionVariant: 'dataKey',
+                seq: 0,
+                metadataVersion: 0,
+                agentStateVersion: 0,
+            },
+        });
     });
 });
