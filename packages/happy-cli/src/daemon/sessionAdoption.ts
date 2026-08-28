@@ -17,7 +17,9 @@
  * The pid needed to find them again is already on disk: the webhook persists
  * the session's metadata, and `metadata.hostPid` is part of it.
  */
+import { decodeBase64 } from '@/api/encryption';
 import type { PersistedSession } from '@/persistence';
+import type { TrackedSession } from '@/daemon/types';
 
 /**
  * Marks a session the daemon picked up from a previous daemon rather than
@@ -103,8 +105,46 @@ export function selectExpiredFinishedSessions(
     maxAgeMs: number,
 ): string[] {
     return entries
-        // An entry with no timestamp predates this bookkeeping. Keeping it
-        // forever is the leak; the disk copy still backs any resume it served.
+        // An entry with no timestamp predates this bookkeeping, and nothing
+        // should produce one now that restoreFinishedSessions() dates what it
+        // loads from disk. Dropping it is the backstop against the map growing
+        // for as long as the daemon lives; note that a resume cannot fall back
+        // to the disk copy, so anything dropped here is unresumable.
         .filter(({ finishedAt }) => finishedAt === undefined || now - finishedAt > maxAgeMs)
         .map(({ sessionId }) => sessionId);
+}
+
+/**
+ * Rebuilds the finished-session map from the records on disk, so a resume can
+ * still find a session's encryption keys after a daemon restart.
+ *
+ * Entries are dated from `savedAt`. `readPersistedSessions()` already drops
+ * anything past `SESSION_MAX_AGE_MS`, and the heartbeat prunes this same map at
+ * the same age, so dating restored entries from the same clock is what keeps the
+ * two paths agreeing. Restoring them undated made the first heartbeat delete
+ * every session loaded from disk - a resume then reported all of them as "not
+ * tracked by this daemon", because nothing re-reads the disk copy after startup
+ * (sokdak/happy-helm#32).
+ */
+export function restoreFinishedSessions(
+    persisted: Record<string, PersistedSession>,
+): Map<string, TrackedSession> {
+    const restored = new Map<string, TrackedSession>();
+    for (const [sessionId, session] of Object.entries(persisted)) {
+        restored.set(sessionId, {
+            startedBy: 'persisted',
+            happySessionId: sessionId,
+            happySessionMetadataFromLocalWebhook: session.metadata,
+            encryption: {
+                encryptionKey: decodeBase64(session.encryptionKey),
+                encryptionVariant: session.encryptionVariant,
+                seq: session.seq,
+                metadataVersion: session.metadataVersion,
+                agentStateVersion: session.agentStateVersion,
+            },
+            pid: 0,
+            finishedAt: session.savedAt,
+        });
+    }
+    return restored;
 }
