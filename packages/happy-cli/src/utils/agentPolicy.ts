@@ -1,4 +1,5 @@
 import type { CLIAvailability } from './detectCLI';
+import { agentSupportsEffortLevel } from './effortLevels';
 
 const AGENT_KEYS = ['claude', 'codex', 'gemini', 'openclaw', 'agy'] as const;
 
@@ -161,24 +162,36 @@ export function resolveSpawnAgent(
  * either (`claude-opus-5`, `bypassPermissions`), and a resume id names a
  * conversation only the source agent can read.
  *
- * `effortLevel` is deliberately kept: every agent takes the same
- * `low | medium | high | xhigh | max` scale, so it survives coercion as the
- * user's stated intent rather than as an agent-specific value.
+ * `effortLevel` survives coercion only when the target agent has the level the
+ * client asked for. The scales overlap in the middle but not at the ends -
+ * `max` is Claude's alone and `none`/`minimal` are Codex's - so keeping it
+ * unconditionally forwards a level the target rejects. Where they agree it is
+ * the user's stated intent and worth carrying over.
  */
 export interface SourceAgentRequestFields {
     token?: string;
     modelMode?: string;
     permissionMode?: string;
+    effortLevel?: string;
     resumeClaudeSessionId?: string;
     resumeCodexThreadId?: string;
 }
 
-export function stripSourceAgentRequest<T extends SourceAgentRequestFields>(request: T): T {
+export function stripSourceAgentRequest<T extends SourceAgentRequestFields>(
+    request: T,
+    targetAgent: string,
+): T {
+    const effortLevel = request.effortLevel !== undefined
+        && agentSupportsEffortLevel(targetAgent, request.effortLevel)
+        ? request.effortLevel
+        : undefined;
+
     return {
         ...request,
         token: undefined,
         modelMode: undefined,
         permissionMode: undefined,
+        effortLevel,
         resumeClaudeSessionId: undefined,
         resumeCodexThreadId: undefined,
     };

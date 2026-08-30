@@ -393,7 +393,7 @@ export async function startDaemon(): Promise<void> {
         // so the target agent falls back to its own local credential and
         // defaults.
         const spawnOptions = agentResolution.coercedFrom
-          ? stripSourceAgentRequest(options)
+          ? stripSourceAgentRequest(options, resolvedAgent)
           : options;
 
         // Build environment variables for session spawning

@@ -3,6 +3,8 @@
  * Only the essential types needed for our integration.
  */
 
+import type { CodexEffortLevel } from '@/utils/effortLevels';
+
 export type ThreadId = string;
 
 // --- Initialize ---
@@ -269,8 +271,9 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 // Mirrors codex-rs `protocol/src/openai_models.rs` ReasoningEffort. `max` and
 // `ultra` are on the wire and in the model registry — gpt-5.6 sol/terra list
 // both, luna lists max — so stopping this union at `xhigh` silently dropped
-// every effort above it.
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+// every effort above it. The list itself lives in effortLevels.ts, next to
+// Claude's, because the two vocabularies are not interchangeable.
+export type ReasoningEffort = CodexEffortLevel;
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TurnAbortReason = "interrupted" | "replaced" | "review_ended";
 

@@ -33,6 +33,7 @@ vi.mock('node:child_process', () => ({
   execFileSync: mocks.mockExecFileSync,
 }))
 
+import { CODEX_EFFORT_LEVELS } from '@/utils/effortLevels'
 import { handleCodexCommand } from './codexCommand'
 
 describe('handleCodexCommand', () => {
@@ -193,5 +194,69 @@ describe('handleCodexCommand', () => {
 
       log.mockRestore()
     })
+  })
+
+  describe('--version', () => {
+    // `happy --version` was fixed to stop starting a session, but the top level
+    // dispatches on the `codex` subcommand before it ever parses --version, so
+    // `happy codex --version` still went all the way through auth, daemon and
+    // runCodex.
+    for (const flag of ['--version', '-v']) {
+      it(`prints versions and starts nothing for ${flag}`, async () => {
+        const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+        const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+        await handleCodexCommand([flag])
+
+        expect(mocks.mockAuthAndSetupMachineIfNeeded).not.toHaveBeenCalled()
+        expect(mocks.mockEnsureDaemonRunning).not.toHaveBeenCalled()
+        expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+        expect(mocks.mockExecFileSync).toHaveBeenCalledWith(
+          'codex',
+          ['--version'],
+          expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }),
+        )
+
+        stdout.mockRestore()
+        log.mockRestore()
+      })
+    }
+
+    it('still reports happy own version when codex is not installed', async () => {
+      mocks.mockExecFileSync.mockImplementation(() => {
+        throw new Error('spawn codex ENOENT')
+      })
+      const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+      await expect(handleCodexCommand(['--version'])).resolves.toBeUndefined()
+      expect(log).toHaveBeenCalled()
+      expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+
+      log.mockRestore()
+    })
+
+    it('prefers help when both flags are present', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+      await handleCodexCommand(['--version', '--help'])
+
+      expect(mocks.mockExecFileSync).toHaveBeenCalledWith('codex', ['--help'], expect.anything())
+      expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+
+      log.mockRestore()
+    })
+  })
+
+  it('advertises exactly the effort levels codex can run', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+    await handleCodexCommand(['--help'])
+    const helpText = log.mock.calls.map((call) => String(call[0])).join('\n')
+
+    // The help text used to carry its own hand-maintained copy of the list,
+    // which is how it drifted from what codex actually accepts.
+    expect(helpText).toContain(CODEX_EFFORT_LEVELS.join(', '))
+
+    log.mockRestore()
   })
 })
