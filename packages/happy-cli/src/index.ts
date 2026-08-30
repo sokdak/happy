@@ -47,10 +47,6 @@ import { sanitizeSessionEnvironment } from './daemon/sessionEnvironment'
 
   // Check if first argument is a subcommand
   const subcommand = args[0]
-  
-  // Log which subcommand was detected (for debugging)
-  if (!args.includes('--version')) {
-  }
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand
@@ -636,8 +632,6 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
         unknownArgs.push(arg)
       } else if (arg === '-v' || arg === '--version') {
         showVersion = true
-        // Also pass through to claude (will show after our version)
-        unknownArgs.push(arg)
       } else if (arg === '--happy-starting-mode') {
         options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
       } else if (arg === '--yolo') {
@@ -757,7 +751,13 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       // Run claude --help and display its output
       // Use execFileSync directly with claude CLI for runtime-agnostic compatibility
       try {
-        const claudeHelp = execFileSync(claudeCliPath, ['--help'], { encoding: 'utf8', windowsHide: true })
+        // stdio: execFileSync forwards the child's stderr to ours by default,
+        // so a missing claude printed a spawn stack trace under the message below.
+        const claudeHelp = execFileSync(claudeCliPath, ['--help'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        })
         console.log(claudeHelp)
       } catch (e) {
         console.log(chalk.yellow('Could not retrieve claude help. Make sure claude is installed.'))
@@ -769,7 +769,23 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     // Show version
     if (showVersion) {
       console.log(`happy version: ${packageJson.version}`)
-      // Don't exit - continue to pass --version to Claude Code
+
+      // Ask the agent directly instead of falling through to the session path
+      // with --version still in its arguments. That path authenticated, started
+      // a daemon and created a server-side session on every version check --
+      // side effects nobody asks for by typing `happy --version`, and one more
+      // source of sessions nobody opened. `--help` above already works this way.
+      try {
+        process.stdout.write(execFileSync(claudeCliPath, ['--version'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }))
+      } catch {
+        console.log(chalk.yellow('Could not retrieve claude version. Make sure claude is installed.'))
+      }
+
+      process.exit(0)
     }
 
     // Normal flow - auth and machine setup
