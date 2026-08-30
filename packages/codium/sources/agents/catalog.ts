@@ -38,6 +38,38 @@ export const AGENT_MODELS: AgentModel[] = [
         group: 'Anthropic',
         model: 'opus',
     },
+    {
+        id: 'claude-fable-5[1m]',
+        engine: 'claude',
+        label: 'Fable 5 (1M)',
+        group: 'Anthropic',
+        model: 'claude-fable-5[1m]',
+        description: 'Fable 5 with a 1M-token context window.',
+    },
+    {
+        id: 'claude-opus-5[1m]',
+        engine: 'claude',
+        label: 'Opus 5 (1M)',
+        group: 'Anthropic',
+        model: 'claude-opus-5[1m]',
+        description: 'Opus 5 with a 1M-token context window.',
+    },
+    {
+        id: 'claude-sonnet-5[1m]',
+        engine: 'claude',
+        label: 'Sonnet 5 (1M)',
+        group: 'Anthropic',
+        model: 'claude-sonnet-5[1m]',
+        description: 'Sonnet 5 with a 1M-token context window.',
+    },
+    {
+        id: 'claude-haiku-4-5',
+        engine: 'claude',
+        label: 'Haiku 4.5',
+        group: 'Anthropic',
+        model: 'claude-haiku-4-5',
+        description: 'Fastest Claude model.',
+    },
 ]
 
 export function agentModelById(id: string): AgentModel {
