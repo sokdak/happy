@@ -207,6 +207,20 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(new CodexAppServerClient().supportsGoalActions()).toBe(false);
     });
 
+    it('clears preserved thread state even when no transport remains to disconnect', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+
+        (client as any)._threadId = 'thread-preserved-by-failed-reconnect';
+        (client as any).threadDefaults = { model: 'gpt-test' };
+        expect(client.hasActiveThread()).toBe(true);
+
+        await client.disconnect();
+
+        expect(client.hasActiveThread()).toBe(false);
+        expect((client as any).threadDefaults).toBeNull();
+    });
+
     it('wraps transport when sandbox is enabled', async () => {
         // Dynamic import to ensure mocks are applied
         const { CodexAppServerClient } = await import('./codexAppServerClient');
@@ -331,7 +345,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             method: 'codex/event',
             params: { msg: { type: 'task_complete', turn_id: 'turn-old' } },
         });
-        await expect(initialTurn).resolves.toEqual({ aborted: false });
+        await expect(initialTurn).resolves.toEqual({ aborted: false, timedOut: false });
 
         const followUp = client.sendTurnAndWait('queued follow-up');
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -348,7 +362,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         const nextTurn = harness.turnStarts()[1];
         harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
         pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
-        await expect(followUp).resolves.toEqual({ aborted: false });
+        await expect(followUp).resolves.toEqual({ aborted: false, timedOut: false });
 
         await client.disconnect();
     });
@@ -417,7 +431,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         const initialTurn = client.sendTurnAndWait('initial turn');
         await waitFor(() => harness.turnStarts().length === 1);
         pushTerminalEvent(harness, first, 'turn-old', 'completed');
-        await expect(initialTurn).resolves.toEqual({ aborted: false });
+        await expect(initialTurn).resolves.toEqual({ aborted: false, timedOut: false });
 
         const followUp = client.sendTurnAndWait('queued follow-up');
         await waitFor(() => harness.turnStarts().length === 2);
@@ -428,7 +442,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         const nextTurn = harness.turnStarts()[1];
         harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
         pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
-        await expect(followUp).resolves.toEqual({ aborted: false });
+        await expect(followUp).resolves.toEqual({ aborted: false, timedOut: false });
 
         await client.disconnect();
     });
@@ -460,8 +474,297 @@ describe('CodexAppServerClient sandbox integration', () => {
         await waitFor(() => harness.turnStarts().length === 1);
         pushTerminalEvent(harness, 'legacy', 'turn-old', 'completed');
 
-        await expect(turn).resolves.toEqual({ aborted: false });
+        await expect(turn).resolves.toEqual({ aborted: false, timedOut: false });
         expect(terminalEvents).toHaveLength(1);
+
+        await client.disconnect();
+    });
+
+    it('interrupts and finishes reconnecting before a timed-out turn resolves', async () => {
+        const firstProcessRequests: MockRpcMessage[] = [];
+        const secondProcessRequests: MockRpcMessage[] = [];
+        const events: Array<Record<string, unknown>> = [];
+        let resumeResponded = false;
+
+        const proc1 = createMockProcess({
+            pid: 1901,
+            onRequest: (msg, stdout) => {
+                firstProcessRequests.push(msg);
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: { thread: { id: 'thread-timeout' }, model: 'gpt-test' },
+                    });
+                }
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-timeout' } } });
+                }
+                if (msg.method === 'turn/interrupt' && msg.id != null) {
+                    // The RPC acknowledges the request, but the old process never
+                    // emits a terminal event, so timeout recovery must reconnect.
+                    pushJsonLine(stdout, { id: msg.id, result: { abortReason: 'interrupted' } });
+                }
+            },
+        });
+        const proc2 = createMockProcess({
+            pid: 1902,
+            onRequest: (msg, stdout) => {
+                secondProcessRequests.push(msg);
+                if (msg.method === 'thread/resume' && msg.id != null) {
+                    setTimeout(() => {
+                        resumeResponded = true;
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: { thread: { id: 'thread-timeout' }, model: 'gpt-test' },
+                        });
+                    }, 30);
+                }
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-after-timeout' } } });
+                    setTimeout(() => pushJsonLine(stdout, {
+                        method: 'codex/event',
+                        params: { msg: { type: 'task_complete', turn_id: 'turn-after-timeout' } },
+                    }), 0);
+                }
+            },
+        });
+        mockSpawn
+            .mockImplementationOnce(() => proc1)
+            .mockImplementationOnce(() => proc2);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        client.setEventHandler((event) => events.push(event as Record<string, unknown>));
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        await expect(client.sendTurnAndWait('hang until timeout', {
+            turnTimeoutMs: 20,
+            timeoutAbortGracePeriodMs: 20,
+        })).resolves.toEqual({ aborted: true, timedOut: true });
+
+        expect(firstProcessRequests.some((msg) => msg.method === 'turn/interrupt')).toBe(true);
+        expect(secondProcessRequests.some((msg) => msg.method === 'thread/resume')).toBe(true);
+        expect(resumeResponded).toBe(true);
+        expect(events).toContainEqual(expect.objectContaining({
+            type: 'turn_aborted',
+            turn_id: 'turn-timeout',
+            forced_restart: true,
+        }));
+        await expect(client.sendTurnAndWait('follow up after timeout')).resolves.toEqual({
+            aborted: false,
+            timedOut: false,
+        });
+
+        await client.disconnect();
+    });
+
+    it('resets the transport instead of hanging when timeout recovery rejects early', async () => {
+        const firstProcessRequests: MockRpcMessage[] = [];
+        const secondProcessRequests: MockRpcMessage[] = [];
+        const proc1 = createMockProcess({
+            pid: 1911,
+            onRequest: (msg, stdout) => {
+                firstProcessRequests.push(msg);
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: { thread: { id: 'thread-recovery-failure' }, model: 'gpt-test' },
+                    });
+                }
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-recovery-failure' } } });
+                }
+            },
+        });
+        const proc2 = createMockProcess({
+            pid: 1912,
+            onRequest: (msg, stdout) => {
+                secondProcessRequests.push(msg);
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: { thread: { id: 'thread-after-reset' }, model: 'gpt-test' },
+                    });
+                }
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-after-reset' } } });
+                    setTimeout(() => pushJsonLine(stdout, {
+                        method: 'codex/event',
+                        params: { msg: { type: 'task_complete', turn_id: 'turn-after-reset' } },
+                    }), 0);
+                }
+            },
+        });
+        mockSpawn
+            .mockImplementationOnce(() => proc1)
+            .mockImplementationOnce(() => proc2);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+        vi.spyOn(client, 'abortTurnWithFallback')
+            .mockRejectedValueOnce(new Error('recovery exploded before disconnect'));
+
+        await expect(client.sendTurnAndWait('hang until recovery fails', {
+            turnTimeoutMs: 20,
+            timeoutAbortGracePeriodMs: 20,
+        })).resolves.toEqual({ aborted: true, timedOut: true });
+
+        expect(proc1.kill).toHaveBeenCalledWith('SIGTERM');
+        expect(mockSpawn).toHaveBeenCalledTimes(2);
+        expect(client.hasActiveThread()).toBe(false);
+
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+        await expect(client.sendTurnAndWait('follow up after reset')).resolves.toEqual({
+            aborted: false,
+            timedOut: false,
+        });
+        expect(secondProcessRequests.some((msg) => msg.method === 'turn/start')).toBe(true);
+
+        await client.disconnect();
+    });
+
+    it('does not reconnect after an explicit disconnect wins a timeout recovery race', async () => {
+        let rejectRecovery!: (error: Error) => void;
+        const recovery = new Promise<never>((_, reject) => {
+            rejectRecovery = reject;
+        });
+        const proc = createMockProcess({
+            pid: 1913,
+            onRequest: (msg, stdout) => {
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: { thread: { id: 'thread-explicit-disconnect' }, model: 'gpt-test' },
+                    });
+                }
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-explicit-disconnect' } } });
+                }
+            },
+        });
+        mockSpawn.mockImplementationOnce(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+        const abortSpy = vi.spyOn(client, 'abortTurnWithFallback').mockReturnValueOnce(recovery);
+
+        const turn = client.sendTurnAndWait('disconnect during timeout recovery', {
+            turnTimeoutMs: 20,
+            timeoutAbortGracePeriodMs: 20,
+        });
+        await waitFor(() => abortSpy.mock.calls.length === 1);
+        await client.disconnect();
+        rejectRecovery(new Error('late recovery failure'));
+
+        await expect(turn).resolves.toEqual({ aborted: true, timedOut: true });
+        expect(mockSpawn).toHaveBeenCalledTimes(1);
+        expect(client.hasActiveThread()).toBe(false);
+    });
+
+    it('cleans up a failed reset connection and reconnects on the next thread start', async () => {
+        const proc1 = createMockProcess({
+            pid: 1914,
+            onRequest: (msg, stdout) => {
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: { thread: { id: 'thread-before-reset-failure' }, model: 'gpt-test' },
+                    });
+                }
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-before-reset-failure' } } });
+                }
+            },
+        });
+        let proc2!: ReturnType<typeof createMockProcess>;
+        proc2 = createMockProcess({
+            pid: 1915,
+            onRequest: (msg) => {
+                if (msg.method === 'initialize') {
+                    setTimeout(() => proc2.emit('exit', 1, null), 0);
+                }
+            },
+        });
+        const proc3 = createMockProcess({
+            pid: 1916,
+            onRequest: (msg, stdout) => {
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: { thread: { id: 'thread-after-reset-failure' }, model: 'gpt-test' },
+                    });
+                }
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-after-reset-failure' } } });
+                    setTimeout(() => pushJsonLine(stdout, {
+                        method: 'codex/event',
+                        params: { msg: { type: 'task_complete', turn_id: 'turn-after-reset-failure' } },
+                    }), 0);
+                }
+            },
+        });
+        mockSpawn
+            .mockImplementationOnce(() => proc1)
+            .mockImplementationOnce(() => proc2)
+            .mockImplementationOnce(() => proc3);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+        vi.spyOn(client, 'abortTurnWithFallback')
+            .mockRejectedValueOnce(new Error('recovery exploded before disconnect'));
+
+        await expect(client.sendTurnAndWait('reset connect will fail', {
+            turnTimeoutMs: 20,
+            timeoutAbortGracePeriodMs: 20,
+        })).rejects.toThrow(/Codex process exited/);
+
+        expect(proc1.kill).toHaveBeenCalledWith('SIGTERM');
+        expect(proc2.kill).toHaveBeenCalledWith('SIGTERM');
+        expect(client.hasActiveThread()).toBe(false);
+
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+        await expect(client.sendTurnAndWait('follow up after reset failure')).resolves.toEqual({
+            aborted: false,
+            timedOut: false,
+        });
+        expect(mockSpawn).toHaveBeenCalledTimes(3);
 
         await client.disconnect();
     });
@@ -576,7 +879,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             forceRestartOnTimeout: true,
         });
 
-        await expect(pendingTurn).resolves.toEqual({ aborted: true });
+        await expect(pendingTurn).resolves.toEqual({ aborted: true, timedOut: false });
         expect(abortResult).toEqual({
             hadActiveTurn: true,
             aborted: true,
@@ -601,7 +904,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         }));
         expect(client.threadId).toBe('thread-1');
 
-        await expect(client.sendTurnAndWait('follow up after reconnect')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('follow up after reconnect')).resolves.toEqual({ aborted: false, timedOut: false });
 
         await client.disconnect();
     });
@@ -697,7 +1000,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         });
 
         expect(Date.now() - startedAt).toBeLessThan(1000);
-        await expect(pendingTurn).resolves.toEqual({ aborted: true });
+        await expect(pendingTurn).resolves.toEqual({ aborted: true, timedOut: false });
         expect(firstProcessRequests.some((msg) => msg.method === 'turn/interrupt')).toBe(true);
         expect(abortResult).toEqual({
             hadActiveTurn: true,
@@ -1244,7 +1547,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'danger-full-access',
         });
 
-        await expect(client.sendTurnAndWait('run pwd')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('run pwd')).resolves.toEqual({ aborted: false, timedOut: false });
 
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({ type: 'task_started', turn_id: 'turn-raw-1' }),
@@ -1561,7 +1864,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'danger-full-access',
         });
 
-        await expect(client.sendTurnAndWait('patch the file')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('patch the file')).resolves.toEqual({ aborted: false, timedOut: false });
 
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({
@@ -1896,7 +2199,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'danger-full-access',
         });
 
-        await expect(client.sendTurnAndWait('say hi')).resolves.toEqual({ aborted: false });
+        await expect(client.sendTurnAndWait('say hi')).resolves.toEqual({ aborted: false, timedOut: false });
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({ type: 'task_started', turn_id: 'turn-raw-2' }),
             expect.objectContaining({ type: 'agent_message', message: 'still works' }),

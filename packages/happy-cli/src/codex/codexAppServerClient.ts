@@ -224,6 +224,10 @@ export class CodexAppServerClient {
     private pending = new Map<number, PendingRequest>();
     private processEpoch = 0;
     private connected = false;
+    // Public disconnect is an owner lifecycle decision. Timeout recovery may
+    // replace a broken transport, but it must never reconnect after that
+    // explicit decision wins a race.
+    private explicitDisconnectGeneration = 0;
     private sandboxConfig?: SandboxConfig;
     private sandboxCleanup: (() => Promise<void>) | null = null;
     public sandboxEnabled = false;
@@ -716,8 +720,6 @@ export class CodexAppServerClient {
     }
 
     private async disconnectInternal(opts?: { preserveThreadState?: boolean }): Promise<void> {
-        if (!this.connected && !this.process) return;
-
         const proc = this.process;
         const pid = proc?.pid;
         const epoch = this.processEpoch;
@@ -772,6 +774,7 @@ export class CodexAppServerClient {
     }
 
     async disconnect(): Promise<void> {
+        this.explicitDisconnectGeneration += 1;
         await this.disconnectInternal();
     }
 
@@ -804,6 +807,13 @@ export class CodexAppServerClient {
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
     }): Promise<{ threadId: string; model: string }> {
+        // A failed timeout recovery clears its broken transport and thread.
+        // Let the next user turn establish a fresh generation instead of
+        // remaining stuck on a disconnected client.
+        if (!this.connected) {
+            await this.connect();
+        }
+
         const params: NewConversationParams = {
             model: opts.model ?? null,
             modelProvider: null,
@@ -1172,6 +1182,9 @@ export class CodexAppServerClient {
     /**
      * Send a user turn and wait for it to complete (task_complete or turn_aborted).
      * Returns { aborted: true } if the turn was aborted (user cancel, permission reject, etc.).
+     * A timeout first drives the normal interrupt/reconnect recovery to
+     * completion, then returns timedOut so callers cannot advertise ready while
+     * the old turn or app-server generation is still active.
      */
     async sendTurnAndWait(prompt: string, opts?: {
         model?: string;
@@ -1181,7 +1194,9 @@ export class CodexAppServerClient {
         effort?: ReasoningEffort;
         extraInputItems?: InputItem[];
         turnTimeoutMs?: number;
-    }): Promise<{ aborted: boolean }> {
+        /** Override the post-timeout interrupt grace period, primarily for tests. */
+        timeoutAbortGracePeriodMs?: number;
+    }): Promise<{ aborted: boolean; timedOut: boolean }> {
         // The interrupt request can resolve while the old turn is still in its
         // grace period or while the app-server is reconnecting. Do not create a
         // new turn until that complete operation has settled.
@@ -1201,33 +1216,129 @@ export class CodexAppServerClient {
         }
 
         const timeoutMs = opts?.turnTimeoutMs ?? CodexAppServerClient.TURN_TIMEOUT_MS;
+        const explicitDisconnectGeneration = this.explicitDisconnectGeneration;
         let timer: ReturnType<typeof setTimeout> | null = null;
+        const timeoutState: {
+            timedOut: boolean;
+            recovery: Promise<AbortTurnResult> | null;
+        } = {
+            timedOut: false,
+            recovery: null,
+        };
 
+        let resolveCompletion!: (aborted: boolean) => void;
         const completion = new Promise<boolean>((resolve) => {
-            this.pendingTurnCompletion = {
-                resolve,
-                turnId: null,
-            };
-
-            timer = setTimeout(() => {
-                if (this.pendingTurnCompletion) {
-                    logger.warn(`[CodexAppServer] Turn timed out after ${timeoutMs}ms — treating as abort`);
-                    this.resolvePendingTurn(true);
-                }
-            }, timeoutMs);
+            resolveCompletion = resolve;
         });
+        const pendingForCall = {
+            resolve: resolveCompletion,
+            turnId: null as string | null,
+        };
+        this.pendingTurnCompletion = pendingForCall;
 
         try {
             await this.sendTurn(prompt, opts);
         } catch (err) {
-            if (timer) clearTimeout(timer);
-            this.pendingTurnCompletion = null;
+            if (this.pendingTurnCompletion === pendingForCall) {
+                this.pendingTurnCompletion = null;
+            }
             throw err;
+        }
+
+        // The timeout covers completion after turn/start has been acknowledged.
+        // If a terminal notification already won the race, no timer is needed.
+        if (this.pendingTurnCompletion) {
+            timer = setTimeout(() => {
+                if (this.pendingTurnCompletion !== pendingForCall) return;
+
+                timeoutState.timedOut = true;
+                logger.warn(`[CodexAppServer] Turn timed out after ${timeoutMs}ms — interrupting it before returning ready`);
+                const recovery = this.abortTurnWithFallback({
+                    gracePeriodMs: opts?.timeoutAbortGracePeriodMs,
+                    forceRestartOnTimeout: true,
+                });
+                // Bind recovery failure to this exact pending turn. If the
+                // normal fallback failed before disconnecting, reset the
+                // transport to a clean connected generation. This both settles
+                // completion and keeps a later turn from racing the timed-out
+                // backend. Never resolve a newer pending turn (ABA guard).
+                timeoutState.recovery = recovery.catch(async (error) => {
+                    logger.warn('[CodexAppServer] Timed-out turn recovery failed', error);
+                    const currentPending = this.pendingTurnCompletion;
+                    const explicitDisconnectWon = this.explicitDisconnectGeneration !== explicitDisconnectGeneration;
+                    if (
+                        !explicitDisconnectWon
+                        && (currentPending === pendingForCall || (currentPending === null && !this.connected))
+                    ) {
+                        try {
+                            await this.disconnectInternal();
+                            if (this.pendingTurnCompletion === pendingForCall) {
+                                this.pendingTurnCompletion = null;
+                                pendingForCall.resolve(true);
+                            }
+                            if (this.explicitDisconnectGeneration !== explicitDisconnectGeneration) {
+                                return {
+                                    hadActiveTurn: true,
+                                    aborted: true,
+                                    forcedRestart: true,
+                                    resumedThread: false,
+                                };
+                            }
+                            await this.connect();
+                            logger.warn('[CodexAppServer] Reset transport after timed-out turn recovery failure');
+                            return {
+                                hadActiveTurn: true,
+                                aborted: true,
+                                forcedRestart: true,
+                                resumedThread: false,
+                            };
+                        } catch (resetError) {
+                            // connect() can fail after assigning a child process.
+                            // Tear that half-open generation down so startThread()
+                            // can reconnect cleanly on the next user turn.
+                            try {
+                                await this.disconnectInternal();
+                            } catch (cleanupError) {
+                                logger.warn('[CodexAppServer] Failed to clean up reset transport', cleanupError);
+                            }
+                            // Do not strand completion even if the clean reset
+                            // also fails. The recovery promise still rejects, so
+                            // the caller can treat the session as unhealthy.
+                            if (this.pendingTurnCompletion === pendingForCall) {
+                                this.pendingTurnCompletion = null;
+                                pendingForCall.resolve(true);
+                            }
+                            throw resetError;
+                        }
+                    }
+
+                    // A terminal event already settled this call. If another
+                    // call somehow owns the field, leave it untouched.
+                    pendingForCall.resolve(true);
+                    if (currentPending) {
+                        throw error;
+                    }
+                    return {
+                        hadActiveTurn: true,
+                        aborted: true,
+                        forcedRestart: false,
+                        resumedThread: false,
+                    };
+                });
+            }, timeoutMs);
         }
 
         const aborted = await completion;
         if (timer) clearTimeout(timer);
-        return { aborted };
+        if (timeoutState.recovery) {
+            // In the forced-restart path completion resolves during disconnect,
+            // before connect+thread/resume finishes. Await the whole barrier.
+            await timeoutState.recovery;
+        }
+        return {
+            aborted: timeoutState.timedOut ? true : aborted,
+            timedOut: timeoutState.timedOut,
+        };
     }
 
     async interruptTurn(opts?: { timeoutMs?: number }): Promise<void> {

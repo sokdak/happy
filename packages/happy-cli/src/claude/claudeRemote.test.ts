@@ -105,4 +105,44 @@ describe('claudeRemote', () => {
             isCompactSummary: true,
         }));
     });
+
+    it('surfaces SDK result errors and closes the turn as failed', async () => {
+        vi.mocked(query).mockReturnValue({
+            setPermissionMode: vi.fn(),
+            async *[Symbol.asyncIterator]() {
+                yield {
+                    type: 'result',
+                    subtype: 'error_max_budget_usd',
+                    errors: ['Budget limit reached by the provider'],
+                    num_turns: 4,
+                };
+            },
+        } as any);
+
+        const onCompletionEvent = vi.fn();
+        const onReady = vi.fn();
+        let messageCount = 0;
+
+        await claudeRemote({
+            sessionId: null,
+            path: process.cwd(),
+            allowedTools: [],
+            hookSettingsPath: '/tmp/happy-test-settings.json',
+            nextMessage: async () => {
+                messageCount += 1;
+                return messageCount === 1 ? { message: 'work', mode } : null;
+            },
+            onReady,
+            canCallTool: async () => ({ behavior: 'allow' }) as any,
+            isAborted: () => false,
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            onMessage: vi.fn(),
+            onCompletionEvent,
+        });
+
+        expect(onCompletionEvent).toHaveBeenCalledWith(expect.stringMatching(/maximum budget/i));
+        expect(onCompletionEvent).toHaveBeenCalledWith(expect.stringContaining('Budget limit reached by the provider'));
+        expect(onReady).toHaveBeenCalledWith('failed');
+    });
 });
