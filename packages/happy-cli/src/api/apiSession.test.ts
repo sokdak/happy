@@ -1550,6 +1550,79 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
+    it('hydrates version-zero metadata from the recovery sentinel before retrying a reconnect patch', async () => {
+        const reconnectMetadata = {
+            ...session.metadata,
+            summary: {
+                text: 'stale reconnect summary',
+                updatedAt: 100,
+            },
+            lifecycleState: 'archiveRequested',
+        };
+        const authoritativeMetadata = {
+            ...session.metadata,
+            summary: {
+                text: 'authoritative server summary',
+                updatedAt: 500,
+            },
+            modelMode: 'gpt-5.3-codex',
+            parentSessionId: 'parent-session-id',
+            codexThreadId: 'codex-thread-id',
+            gitBranch: 'resume-fix',
+            lifecycleState: 'archiveRequested',
+            lifecycleStateSince: 400,
+        };
+        session.metadata = reconnectMetadata;
+        session.metadataVersion = -1;
+
+        let calls = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => {
+            if (event !== 'update-metadata') return { result: 'error' };
+            calls += 1;
+            if (calls === 1) {
+                return {
+                    result: 'version-mismatch',
+                    version: 0,
+                    metadata: encryptContent(session, authoritativeMetadata),
+                };
+            }
+            return {
+                result: 'success',
+                version: 1,
+                metadata: payload.metadata,
+            };
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.updateMetadata((current) => ({
+            ...current,
+            lifecycleState: 'running',
+        }));
+
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+            expect((client as any).metadataVersion).toBe(1);
+        });
+
+        const firstPayload = mockSocket.emitWithAck.mock.calls[0][1];
+        const retryPayload = mockSocket.emitWithAck.mock.calls[1][1];
+        expect(firstPayload.expectedVersion).toBe(-1);
+        expect(retryPayload.expectedVersion).toBe(0);
+
+        const retriedMetadata = decrypt(
+            session.encryptionKey,
+            session.encryptionVariant,
+            decodeBase64(retryPayload.metadata),
+        );
+        expect(retriedMetadata).toEqual({
+            ...authoritativeMetadata,
+            lifecycleState: 'running',
+        });
+        expect(client.getMetadata()).toEqual(retriedMetadata);
+
+        await client.close();
+    });
+
     it('cancels a never-resolving workflow ACK when close begins', async () => {
         vi.useFakeTimers();
         mockSocket.emitWithAck.mockImplementation((event: string) => (

@@ -1009,11 +1009,14 @@ class Sync {
                 let decrypted = await this.encryption.decryptEncryptionKey(session.dataEncryptionKey);
                 if (!decrypted) {
                     console.error(`Failed to decrypt data encryption key for session ${session.id}`);
+                    this.sessionDataKeys.delete(session.id);
                     continue;
                 }
                 sessionKeys.set(session.id, decrypted);
+                this.sessionDataKeys.set(session.id, new Uint8Array(decrypted));
             } else {
                 sessionKeys.set(session.id, null);
+                this.sessionDataKeys.delete(session.id);
             }
         }
         await this.encryption.initializeSessions(sessionKeys);
@@ -1074,6 +1077,15 @@ class Sync {
 
     public refreshSessions = async () => {
         return this.sessionsSync.invalidateAndAwait();
+    }
+
+    public getSessionDataKey(sessionId: string): Uint8Array | undefined {
+        const dataKey = this.sessionDataKeys.get(sessionId);
+        return dataKey ? new Uint8Array(dataKey) : undefined;
+    }
+
+    public clearSessionDataKeys(): void {
+        this.sessionDataKeys.clear();
     }
 
     public getCredentials() {
@@ -2326,6 +2338,7 @@ class Sync {
 
             // Remove encryption keys from memory
             this.encryption.removeSessionEncryption(sessionId);
+            this.sessionDataKeys.delete(sessionId);
 
             // Clear any cached git status
             gitStatusSync.clearForSession(sessionId);
