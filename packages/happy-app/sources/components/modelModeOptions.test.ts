@@ -125,20 +125,28 @@ describe('modelModeOptions', () => {
         expect(includeConfiguredModel('claude', models, 'my-workspace-model')).toBe(models);
     });
 
-    it('only offers the current-generation claude models', () => {
+    it('offers the curated Claude catalog with explicit IDs and 1M variants', () => {
         const models = getClaudeModelModes();
         expect(models.map((model) => model.key)).toEqual([
             'claude-fable-5',
+            'claude-fable-5[1m]',
             'claude-opus-5',
             'claude-opus-5[1m]',
             'claude-sonnet-5',
+            'claude-sonnet-5[1m]',
+            'claude-haiku-4-5',
         ]);
         expect(models.map((model) => model.name)).toEqual([
             'Fable 5',
+            'Fable 5 [1M]',
             'Opus 5',
             'Opus 5 [1M]',
             'Sonnet 5',
+            'Sonnet 5 [1M]',
+            'Haiku 4.5',
         ]);
+        expect(models.filter((model) => model.key.endsWith('[1m]')).map((model) => model.description))
+            .toEqual(['1M context', '1M context', '1M context']);
         // No `default model` row, and no alias keys: an alias would silently
         // resolve to an older model than the row claims.
         expect(models.some((model) => model.key === 'default')).toBe(false);
@@ -164,8 +172,8 @@ describe('modelModeOptions', () => {
 
     it('offers claude the SDK effort union for every model', () => {
         // Claude's scale belongs to the SDK, not the model: an unreachable level
-        // is silently downgraded, so all three models get the same list.
-        for (const model of ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5']) {
+        // is silently downgraded, so every catalog model gets the same list.
+        for (const model of getClaudeModelModes().map((option) => option.key)) {
             const keys = getEffortLevelsForModel('claude', model).map((level) => level.key);
             expect(keys).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
             // Claude's floor is `low`; there is no off.

@@ -7,6 +7,7 @@ import { claudeRemoteLauncher } from "./claudeRemoteLauncher"
 import { ApiClient } from "@/lib"
 import type { JsRuntime } from "./runClaude"
 import type { SandboxConfig } from "@/persistence"
+import { applyClaudePermissionModeToArgs } from "./utils/permissionMode"
 
 // Re-export permission mode type from api/types
 // Single unified type with 7 modes - Codex modes mapped at SDK boundary
@@ -54,13 +55,14 @@ export async function loop(opts: LoopOptions): Promise<number> {
 
     // Get log path for debug display
     const logPath = logger.logFilePath;
+    const claudeArgs = applyClaudePermissionModeToArgs(opts.permissionMode, opts.claudeArgs);
     let session = new Session({
         api: opts.api,
         client: opts.session,
         path: opts.path,
         sessionId: null,
         claudeEnvVars: opts.claudeEnvVars,
-        claudeArgs: opts.claudeArgs,
+        claudeArgs,
         mcpServers: opts.mcpServers,
         logPath: logPath,
         messageQueue: opts.messageQueue,

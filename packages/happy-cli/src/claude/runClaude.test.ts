@@ -815,21 +815,36 @@ describe('runClaude remote JSONL scanner', () => {
         await harness.finish();
     });
 
-    it('keeps the picked model and effort after an abort resets the other mode defaults', async () => {
+    it('keeps session modes and clears transient overrides after an abort', async () => {
         const harness = await startRemoteRunClaudeHarness();
         const userMessageHandler = harness.sessionClient.onUserMessage.mock.calls[0][0];
 
         await userMessageHandler({
             content: { text: 'first turn' },
-            meta: { model: 'claude-fable-5-20260115', effort: 'high' },
+            meta: {
+                permissionMode: 'bypassPermissions',
+                model: 'claude-fable-5[1m]',
+                fallbackModel: 'claude-haiku-4-5',
+                effort: 'max',
+                customSystemPrompt: 'one-turn system prompt',
+                appendSystemPrompt: 'one-turn appended prompt',
+                allowedTools: ['Read'],
+                disallowedTools: ['Bash'],
+            },
         });
         expect(harness.loopOptions.messageQueue.queue[0].mode).toMatchObject({
-            model: 'claude-fable-5-20260115',
-            effort: 'high',
+            permissionMode: 'bypassPermissions',
+            model: 'claude-fable-5[1m]',
+            fallbackModel: 'claude-haiku-4-5',
+            effort: 'max',
+            customSystemPrompt: 'one-turn system prompt',
+            appendSystemPrompt: 'one-turn appended prompt',
+            allowedTools: ['Read'],
+            disallowedTools: ['Bash'],
         });
 
-        // Aborting the turn must not silently revert the picker's choice —
-        // the app only sends meta.model/meta.effort when the user changes them.
+        // Mode picks are session state, while prompt and tool overrides apply
+        // only to the interrupted turn.
         harness.loopOptions.onAbort();
 
         await userMessageHandler({
@@ -837,8 +852,14 @@ describe('runClaude remote JSONL scanner', () => {
             meta: {},
         });
         expect(harness.loopOptions.messageQueue.queue[1].mode).toMatchObject({
-            model: 'claude-fable-5-20260115',
-            effort: 'high',
+            permissionMode: 'bypassPermissions',
+            model: 'claude-fable-5[1m]',
+            fallbackModel: 'claude-haiku-4-5',
+            effort: 'max',
+            customSystemPrompt: undefined,
+            appendSystemPrompt: undefined,
+            allowedTools: undefined,
+            disallowedTools: undefined,
         });
 
         await harness.finish();

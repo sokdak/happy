@@ -32,7 +32,7 @@ import {
     type ClaudeGoalStatusTranscriptEvent,
 } from '@/claude/claudeGoalStatus';
 import { Session } from './session';
-import { applySandboxPermissionPolicy, normalizeRemotePermissionMode, resolveInitialClaudePermissionMode, resolveRemoteClaudePermissionMode } from './utils/permissionMode';
+import { applyClaudePermissionModeToArgs, applySandboxPermissionPolicy, normalizeRemotePermissionMode, resolveInitialClaudePermissionMode, resolveRemoteClaudePermissionMode } from './utils/permissionMode';
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import type { Session as ApiSession } from '@/api/types';
 import { getProjectPath } from './utils/path';
@@ -245,7 +245,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 onThinkingChange: () => {},
                 abort: new AbortController().signal,
                 claudeEnvVars: options.claudeEnvVars,
-                claudeArgs: options.claudeArgs,
+                claudeArgs: applyClaudePermissionModeToArgs(initialPermissionMode, options.claudeArgs),
                 mcpServers: {},
                 allowedTools: [],
                 sandboxConfig,
@@ -543,17 +543,15 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
     let currentEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined = options.effort ?? DEFAULT_CLAUDE_EFFORT; // Track current Claude effort (thinking depth)
 
-    const resetCurrentModeDefaults = () => {
-        // Model and effort are deliberately NOT reset here. The app sends them
-        // only when the user changes the picker, so resetting them on abort
-        // silently desyncs the picker from what the next turn actually runs.
-        currentPermissionMode = initialPermissionMode;
-        currentFallbackModel = undefined;
+    const resetTransientModeStateAfterAbort = () => {
+        // Abort only the active turn. Permission, model, fallback model, and
+        // effort are session choices; resetting any of them silently desyncs
+        // the next turn from the app. Prompt and tool overrides are transient.
         currentCustomSystemPrompt = undefined;
         currentAppendSystemPrompt = undefined;
         currentAllowedTools = undefined;
         currentDisallowedTools = undefined;
-        logger.debug('[loop] Reset current mode defaults after abort');
+        logger.debug(`[loop] Reset transient mode state after abort; preserving permission=${currentPermissionMode ?? 'default'}, model=${currentModel ?? 'default'}, fallbackModel=${currentFallbackModel ?? 'none'}, effort=${currentEffort ?? 'default'}`);
     };
     const currentEnhancedMode = (): EnhancedMode => ({
         // Deliberately not coerced to 'default': undefined means "no override",
@@ -956,7 +954,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // Store reference for hook server callback
             currentSession = sessionInstance;
         },
-        onAbort: resetCurrentModeDefaults,
+        onAbort: resetTransientModeStateAfterAbort,
         mcpServers: {
             'happy': {
                 type: 'http' as const,

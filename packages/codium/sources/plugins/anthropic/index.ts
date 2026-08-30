@@ -10,10 +10,14 @@ import type {
 const STORAGE_KEY = 'codium.plugin.anthropic.apiKey'
 
 const MODELS: ModelDescriptor[] = [
+    { id: 'claude-fable-5[1m]',  label: 'Fable 5 (1M)',  group: 'Anthropic', description: 'Fable 5 with a 1M-token context window.' },
+    { id: 'claude-opus-5[1m]',   label: 'Opus 5 (1M)',   group: 'Anthropic', description: 'Opus 5 with a 1M-token context window.' },
     { id: 'claude-opus-4-8',   label: 'Opus 4.8',   group: 'Anthropic', description: 'Latest Opus generation.' },
     { id: 'claude-opus-4-7',   label: 'Opus 4.7',   group: 'Anthropic', description: 'Previous Opus generation.' },
     { id: 'claude-opus-4-6',   label: 'Opus 4.6',   group: 'Anthropic', description: 'Deepest reasoning, slowest.' },
+    { id: 'claude-sonnet-5[1m]', label: 'Sonnet 5 (1M)', group: 'Anthropic', description: 'Sonnet 5 with a 1M-token context window.' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', group: 'Anthropic', description: 'Balanced reasoning + speed.' },
+    { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',  group: 'Anthropic', description: 'Fastest Claude model.' },
 ]
 
 /**
@@ -25,7 +29,7 @@ const MODELS: ModelDescriptor[] = [
 class AnthropicPlugin implements Plugin {
     id = 'anthropic'
     name = 'Anthropic'
-    description = 'Direct API access to Claude — Sonnet & Opus models. Bring your own API key.'
+    description = 'Direct API access to Claude models. Bring your own API key.'
     vendor = 'Anthropic'
     category = 'inference' as const
     accent = '#d97757'
