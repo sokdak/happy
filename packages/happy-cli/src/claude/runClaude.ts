@@ -1,3 +1,4 @@
+import { processStartToken } from '@/utils/processIdentity';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -142,6 +143,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         happyToolsDir: resolve(projectPath(), 'tools', 'unpacked'),
         startedFromDaemon: options.startedBy === 'daemon',
         hostPid: process.pid,
+        hostProcessStartToken: processStartToken(process.pid) ?? undefined,
         startedBy: options.startedBy || 'terminal',
         // Initialize lifecycle state
         lifecycleState: 'running',

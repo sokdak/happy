@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { selectAdoptableSessions, selectExpiredFinishedSessions } from './sessionAdoption';
 import type { PersistedSession } from '@/persistence';
 
-const persisted = (hostPid: number | undefined, savedAt = 0): PersistedSession => ({
+const persisted = (
+    hostPid: number | undefined,
+    savedAt = 0,
+    hostProcessStartToken?: string,
+): PersistedSession => ({
     encryptionKey: 'key',
     encryptionVariant: 'dataKey',
     seq: 0,
     metadataVersion: 0,
     agentStateVersion: 0,
-    metadata: { hostPid } as PersistedSession['metadata'],
+    metadata: { hostPid, hostProcessStartToken } as PersistedSession['metadata'],
     savedAt,
 });
 
@@ -16,7 +20,7 @@ describe('selectAdoptableSessions', () => {
     it('adopts a persisted session whose process is still running', () => {
         const adopted = selectAdoptableSessions(
             { 'session-a': persisted(4242) },
-            { liveHappyPids: [4242], selfPid: 1 },
+            { liveHappyPids: [4242], selfPid: 1, startTokenForPid: () => null },
         );
 
         expect(adopted).toEqual([{ sessionId: 'session-a', pid: 4242 }]);
@@ -25,7 +29,7 @@ describe('selectAdoptableSessions', () => {
     it('ignores a session whose process is gone', () => {
         const adopted = selectAdoptableSessions(
             { 'session-a': persisted(4242) },
-            { liveHappyPids: [], selfPid: 1 },
+            { liveHappyPids: [], selfPid: 1, startTokenForPid: () => null },
         );
 
         expect(adopted).toEqual([]);
@@ -36,7 +40,7 @@ describe('selectAdoptableSessions', () => {
         // Only pids that a process scan still reports as happy are adoptable.
         const adopted = selectAdoptableSessions(
             { 'session-a': persisted(4242) },
-            { liveHappyPids: [9999], selfPid: 1 },
+            { liveHappyPids: [9999], selfPid: 1, startTokenForPid: () => null },
         );
 
         expect(adopted).toEqual([]);
@@ -45,7 +49,7 @@ describe('selectAdoptableSessions', () => {
     it('never adopts the daemon itself', () => {
         const adopted = selectAdoptableSessions(
             { 'session-a': persisted(777) },
-            { liveHappyPids: [777], selfPid: 777 },
+            { liveHappyPids: [777], selfPid: 777, startTokenForPid: () => null },
         );
 
         expect(adopted).toEqual([]);
@@ -54,7 +58,7 @@ describe('selectAdoptableSessions', () => {
     it('skips a session that never reported a host pid', () => {
         const adopted = selectAdoptableSessions(
             { 'session-a': persisted(undefined) },
-            { liveHappyPids: [4242], selfPid: 1 },
+            { liveHappyPids: [4242], selfPid: 1, startTokenForPid: () => null },
         );
 
         expect(adopted).toEqual([]);
@@ -66,7 +70,7 @@ describe('selectAdoptableSessions', () => {
         // the user is still using.
         const adopted = selectAdoptableSessions(
             { 'session-a': persisted(4242), 'session-b': persisted(4242) },
-            { liveHappyPids: [4242], selfPid: 1 },
+            { liveHappyPids: [4242], selfPid: 1, startTokenForPid: () => null },
         );
 
         expect(adopted).toEqual([]);
@@ -79,13 +83,55 @@ describe('selectAdoptableSessions', () => {
                 'session-b': persisted(22),
                 'session-c': persisted(33),
             },
-            { liveHappyPids: [11, 33], selfPid: 1 },
+            { liveHappyPids: [11, 33], selfPid: 1, startTokenForPid: () => null },
         );
 
         expect(adopted).toEqual([
             { sessionId: 'session-a', pid: 11 },
             { sessionId: 'session-c', pid: 33 },
         ]);
+    });
+});
+
+
+describe('selectAdoptableSessions process identity', () => {
+    it('adopts when the recorded start token still matches the process', () => {
+        const adopted = selectAdoptableSessions(
+            { 'session-a': persisted(4242, 0, 'tick-100') },
+            { liveHappyPids: [4242], selfPid: 1, startTokenForPid: () => 'tick-100' },
+        );
+
+        expect(adopted).toEqual([{ sessionId: 'session-a', pid: 4242 }]);
+    });
+
+    it('refuses a pid whose process started at a different time', () => {
+        // Same pid, different process: the original exited and the OS handed
+        // the number to another happy session. Adopting it would let a stop
+        // request for the old session kill the new one.
+        const adopted = selectAdoptableSessions(
+            { 'session-a': persisted(4242, 0, 'tick-100') },
+            { liveHappyPids: [4242], selfPid: 1, startTokenForPid: () => 'tick-999' },
+        );
+
+        expect(adopted).toEqual([]);
+    });
+
+    it('falls back to the pid check when the platform cannot report a token', () => {
+        const adopted = selectAdoptableSessions(
+            { 'session-a': persisted(4242, 0, 'tick-100') },
+            { liveHappyPids: [4242], selfPid: 1, startTokenForPid: () => null },
+        );
+
+        expect(adopted).toEqual([{ sessionId: 'session-a', pid: 4242 }]);
+    });
+
+    it('adopts records written before start tokens existed', () => {
+        const adopted = selectAdoptableSessions(
+            { 'session-a': persisted(4242, 0, undefined) },
+            { liveHappyPids: [4242], selfPid: 1, startTokenForPid: () => 'tick-100' },
+        );
+
+        expect(adopted).toEqual([{ sessionId: 'session-a', pid: 4242 }]);
     });
 });
 

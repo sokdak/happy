@@ -30,6 +30,7 @@ import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
 import { ADOPTED_SESSION_LABEL, selectAdoptableSessions, selectExpiredFinishedSessions } from '@/daemon/sessionAdoption';
 import { findAllHappyProcesses } from '@/daemon/doctor';
+import { processStartToken } from '@/utils/processIdentity';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
 import {
   buildSessionChildEnvironment,
@@ -211,6 +212,7 @@ export async function startDaemon(): Promise<void> {
       const adoptable = selectAdoptableSessions(persisted, {
         liveHappyPids: happyProcesses.map(({ pid }) => pid),
         selfPid: process.pid,
+        startTokenForPid: processStartToken,
       });
 
       for (const { sessionId, pid } of adoptable) {
