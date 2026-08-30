@@ -101,14 +101,15 @@ describe('modelModeOptions', () => {
         expect(keys).not.toContain('plan');
     });
 
-    it('only offers the curated codex harness models', () => {
+    it('only offers the curated codex harness models, led by "no explicit pick"', () => {
         const models = getCodexModelModes();
         expect(models.map((model) => model.key)).toEqual([
+            'default',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
         ]);
-        expect(models[0].name).toBe('GPT-5.6 Sol');
+        expect(models[1].name).toBe('GPT-5.6 Sol');
     });
 
     it('adds a configured custom codex model without expanding the shared catalog', () => {
@@ -116,12 +117,13 @@ describe('modelModeOptions', () => {
         const withCustom = includeConfiguredModel('codex', models, 'my-workspace-model');
 
         expect(withCustom.map((model) => model.key)).toEqual([
+            'default',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(3);
+        expect(models).toHaveLength(4);
         expect(includeConfiguredModel('claude', models, 'my-workspace-model')).toBe(models);
     });
 
@@ -185,7 +187,8 @@ describe('modelModeOptions', () => {
         expect(getClaudeModelModes().some((model) => model.key === getDefaultModelKey('claude'))).toBe(true);
         expect(getDefaultEffortKey('claude')).toBe('medium');
         expect(getDefaultPermissionModeKey('codex')).toBe('auto');
-        expect(getDefaultModelKey('codex')).toBe('gpt-5.6-sol');
+        expect(getDefaultModelKey('codex')).toBe('default');
+        expect(getCodexModelModes().some((model) => model.key === getDefaultModelKey('codex'))).toBe(true);
         expect(getDefaultEffortKey('codex')).toBe('medium');
     });
 

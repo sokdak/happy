@@ -149,6 +149,12 @@ export function getClaudeModelModes(): ModelMode[] {
 
 export function getCodexModelModes(): ModelMode[] {
     return [
+        // Unlike Claude, Codex has a real "no explicit pick": the request omits
+        // the model and Codex reads its own ~/.codex/config.toml. Naming one
+        // here would send it on every new session, which a gateway with an
+        // allowed-model list rejects outright (sokdak/happy-helm#17). The
+        // metadata path already prepends the same row.
+        { key: 'default', name: 'default model', description: null },
         { key: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', description: null },
         { key: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', description: null },
         { key: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', description: null },

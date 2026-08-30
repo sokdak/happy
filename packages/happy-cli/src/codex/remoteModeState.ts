@@ -3,6 +3,7 @@ import type { MessageMeta, PermissionMode } from '@/api/types';
 import { CODEX_EFFORT_LEVELS } from '@/utils/effortLevels';
 
 import type { ReasoningEffort } from './codexAppServerTypes';
+import { resolveCodexModel } from './codexModel';
 import { isRemoteCodexPermissionMode } from './executionPolicy';
 
 const VALID_REMOTE_EFFORTS: readonly ReasoningEffort[] = CODEX_EFFORT_LEVELS;
@@ -67,7 +68,10 @@ export class CodexRemoteModeState {
 
         let modelResolution: Resolution<string | undefined>;
         if (meta !== undefined && Object.prototype.hasOwnProperty.call(meta, 'model')) {
-            this.currentModel = meta?.model || undefined;
+            // `default` is the app's sentinel for "no explicit pick", not a
+            // model name — forwarding it verbatim asks Codex for a model
+            // called "default".
+            this.currentModel = resolveCodexModel(meta?.model ?? undefined);
             modelResolution = { kind: 'updated', value: this.currentModel };
         } else {
             modelResolution = { kind: 'retained', value: this.currentModel };

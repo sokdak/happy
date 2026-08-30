@@ -1,3 +1,4 @@
+import { resolveCodexModel } from './codexModel';
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
@@ -81,7 +82,6 @@ function hasCodexSubagentReference(message: Record<string, unknown>): boolean {
     return false;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_CODEX_EFFORT: ReasoningEffort = 'medium';
 // Codex's app-server protocol requires a concrete approval policy and sandbox
 // on every turn, so unlike Claude there is no "send nothing" here. This is the
@@ -274,7 +274,9 @@ export async function runCodex(opts: {
     // Use shared PermissionMode type from api/types for cross-agent compatibility
     const remoteModeState = new CodexRemoteModeState({
         permissionMode: initialPermissionMode,
-        model: opts.model ?? DEFAULT_CODEX_MODEL,
+        // No built-in model: an unset model leaves it out of the request so
+        // Codex reads its own config rather than Happy guessing one.
+        model: resolveCodexModel(opts.model),
         effort: opts.effort ?? DEFAULT_CODEX_EFFORT,
     });
     let currentAppendSystemPrompt: string | undefined = undefined;

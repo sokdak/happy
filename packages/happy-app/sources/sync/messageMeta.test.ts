@@ -13,7 +13,10 @@ describe('resolveMessageModeMeta', () => {
 
         expect(meta).toEqual({
             permissionMode: 'auto',
-            model: 'gpt-5.6-sol',
+            // The codex code default is now the `default` row, which goes on
+            // the wire as an explicit reset: Codex reads its own config
+            // instead of running whatever model Happy would have guessed.
+            model: null,
             effort: 'medium',
         });
     });

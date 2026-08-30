@@ -117,4 +117,19 @@ describe('CodexRemoteModeState', () => {
             effortResolution: { kind: 'ignored', incoming: 'impossible' },
         });
     });
+
+    it('reads the app\'s `default` model row as "send no model"', () => {
+        // The picker's `default` row means "let Codex read its own config".
+        // Forwarding the string asks Codex for a model named "default".
+        const state = new CodexRemoteModeState({
+            permissionMode: 'auto',
+            model: 'gpt-5.6-sol',
+            effort: 'medium',
+        });
+
+        expect(state.resolve({ model: 'default' })).toMatchObject({
+            model: undefined,
+            modelResolution: { kind: 'updated', value: undefined },
+        });
+    });
 });

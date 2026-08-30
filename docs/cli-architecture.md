@@ -99,6 +99,7 @@ graph LR
         E7[HAPPY_ENABLED_AGENTS]
         E8[HAPPY_DISABLED_AGENTS]
         E9[HAPPY_LOG_RETENTION_DAYS]
+        E10[HAPPY_CODEX_MODEL]
     end
 
     E1 -.-> settings & access & daemon & logs
@@ -114,6 +115,10 @@ Local state lives under `~/.happy` (or `HAPPY_HOME_DIR`):
 Configuration lives in `src/configuration.ts`:
 - `HAPPY_SERVER_URL` and `HAPPY_WEBAPP_URL` override defaults.
 - `HAPPY_VARIANT`, `HAPPY_EXPERIMENTAL`, `HAPPY_DISABLE_CAFFEINATE` control behavior.
+- `HAPPY_CODEX_MODEL` pins the model Codex sessions run when the request does not
+  name one. There is no built-in default: without this variable, and without an
+  explicit pick, the model is left out of the request and Codex uses its own
+  `~/.codex/config.toml`. A user's explicit choice always wins over this.
 - `HAPPY_LOG_RETENTION_DAYS` sets how long `logs/` is kept (default 14, `0` disables
   pruning). Expired files are deleted in the background on start, oldest first, off
   the startup path — so a directory that has grown to six figures is cleared by the
