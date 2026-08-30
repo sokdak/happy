@@ -8,6 +8,23 @@ require('../patches/force-preact-cjs.cjs');
 require('../patches/fix-pierre-trees-preact-hooks.cjs');
 require('../patches/fix-react-native-audio-api-size-t.cjs');
 
+const {
+  applyReactNativeAudioApiWindowsBuildPatch,
+} = require('../patches/fix-react-native-audio-api-windows-build.cjs');
+const {
+  applyReactNativeLibsodiumWindowsCmakePatch,
+} = require('../patches/fix-react-native-libsodium-windows-cmake.cjs');
+
+const patchedAudioApiFiles = applyReactNativeAudioApiWindowsBuildPatch();
+if (patchedAudioApiFiles > 0) {
+  console.log(`[patch] Shortened react-native-audio-api native build paths (${patchedAudioApiFiles} file(s))`);
+}
+
+const patchedLibsodiumFiles = applyReactNativeLibsodiumWindowsCmakePatch();
+if (patchedLibsodiumFiles > 0) {
+  console.log(`[patch] Fixed react-native-libsodium Windows CMake paths (${patchedLibsodiumFiles} file(s))`);
+}
+
 if (process.env.SKIP_HAPPY_WIRE_BUILD === '1') {
   console.log('[postinstall] SKIP_HAPPY_WIRE_BUILD=1, skipping @slopus/happy-wire build');
   process.exit(0);
