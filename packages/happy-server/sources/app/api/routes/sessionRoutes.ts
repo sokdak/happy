@@ -8,6 +8,39 @@ import { randomKeyNaked } from "@/utils/randomKeyNaked";
 import { allocateUserSeq } from "@/storage/seq";
 import { sessionDelete } from "@/app/session/sessionDelete";
 
+const v1SessionSelect = {
+    id: true,
+    seq: true,
+    createdAt: true,
+    updatedAt: true,
+    metadata: true,
+    metadataVersion: true,
+    agentState: true,
+    agentStateVersion: true,
+    dataEncryptionKey: true,
+    active: true,
+    lastActiveAt: true,
+} satisfies Prisma.SessionSelect;
+
+type V1Session = Prisma.SessionGetPayload<{ select: typeof v1SessionSelect }>;
+
+function toV1SessionResponse(session: V1Session) {
+    return {
+        id: session.id,
+        seq: session.seq,
+        createdAt: session.createdAt.getTime(),
+        updatedAt: session.updatedAt.getTime(),
+        active: session.active,
+        activeAt: session.lastActiveAt.getTime(),
+        metadata: session.metadata,
+        metadataVersion: session.metadataVersion,
+        agentState: session.agentState,
+        agentStateVersion: session.agentStateVersion,
+        dataEncryptionKey: session.dataEncryptionKey ? Buffer.from(session.dataEncryptionKey).toString('base64') : null,
+        lastMessage: null
+    };
+}
+
 export function sessionRoutes(app: Fastify) {
 
     // Sessions API
@@ -20,53 +53,39 @@ export function sessionRoutes(app: Fastify) {
             where: { accountId: userId },
             orderBy: { updatedAt: 'desc' },
             take: 150,
-            select: {
-                id: true,
-                seq: true,
-                createdAt: true,
-                updatedAt: true,
-                metadata: true,
-                metadataVersion: true,
-                agentState: true,
-                agentStateVersion: true,
-                dataEncryptionKey: true,
-                active: true,
-                lastActiveAt: true,
-                // messages: {
-                //     orderBy: { seq: 'desc' },
-                //     take: 1,
-                //     select: {
-                //         id: true,
-                //         seq: true,
-                //         content: true,
-                //         localId: true,
-                //         createdAt: true
-                //     }
-                // }
-            }
+            select: v1SessionSelect
         });
 
         return reply.send({
-            sessions: sessions.map((v) => {
-                // const lastMessage = v.messages[0];
-                const sessionUpdatedAt = v.updatedAt.getTime();
-                // const lastMessageCreatedAt = lastMessage ? lastMessage.createdAt.getTime() : 0;
+            sessions: sessions.map(toV1SessionResponse)
+        });
+    });
 
-                return {
-                    id: v.id,
-                    seq: v.seq,
-                    createdAt: v.createdAt.getTime(),
-                    updatedAt: sessionUpdatedAt,
-                    active: v.active,
-                    activeAt: v.lastActiveAt.getTime(),
-                    metadata: v.metadata,
-                    metadataVersion: v.metadataVersion,
-                    agentState: v.agentState,
-                    agentStateVersion: v.agentStateVersion,
-                    dataEncryptionKey: v.dataEncryptionKey ? Buffer.from(v.dataEncryptionKey).toString('base64') : null,
-                    lastMessage: null
-                };
+    app.get('/v1/sessions/:sessionId', {
+        preHandler: app.authenticate,
+        schema: {
+            params: z.object({
+                sessionId: z.string()
             })
+        }
+    }, async (request, reply) => {
+        const userId = request.userId;
+        const { sessionId } = request.params;
+
+        const session = await db.session.findFirst({
+            where: {
+                id: sessionId,
+                accountId: userId
+            },
+            select: v1SessionSelect
+        });
+
+        if (!session) {
+            return reply.code(404).send({ error: 'Session not found' });
+        }
+
+        return reply.send({
+            session: toV1SessionResponse(session)
         });
     });
 

@@ -32,6 +32,7 @@ import { ADOPTED_SESSION_LABEL, restoreFinishedSessions, selectAdoptableSessions
 import { findAllHappyProcesses } from '@/daemon/doctor';
 import { processStartToken } from '@/utils/processIdentity';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
+import { persistedSessionFromResumeContext, type ResumeSessionOptions } from '@/daemon/resumeContext';
 import {
   buildSessionChildEnvironment,
   sanitizeSessionEnvironment,
@@ -730,28 +731,98 @@ export async function startDaemon(): Promise<void> {
       return sessionIdToFinishedSession.get(happySessionId);
     };
 
-    const fetchServerSessionMetadata = async (sessionId: string, encryptionKey: Uint8Array, encryptionVariant: 'legacy' | 'dataKey'): Promise<Metadata | null> => {
+    const fetchServerSession = async (sessionId: string): Promise<unknown | null> => {
+      try {
+        const response = await axios.get(
+          `${configuration.serverUrl}/v1/sessions/${encodeURIComponent(sessionId)}`,
+          {
+            headers: { Authorization: `Bearer ${credentials.token}` },
+            timeout: 10_000,
+          },
+        );
+        const data = response.data as { session?: unknown };
+        if (data.session) {
+          return data.session;
+        }
+      } catch (error) {
+        logger.debug(`[DAEMON RUN] Failed to fetch exact session ${sessionId} from server: ${error instanceof Error ? error.message : error}`);
+      }
+
+      // Keep new CLIs compatible with servers that predate the exact-session
+      // endpoint. The legacy list is capped at 150, so it is only a rollout
+      // fallback; the exact route remains necessary for arbitrary old sessions.
       try {
         const response = await axios.get(`${configuration.serverUrl}/v1/sessions`, {
           headers: { Authorization: `Bearer ${credentials.token}` },
           timeout: 10_000,
         });
-        const sessions = (response.data as { sessions: { id: string; metadata: string }[] }).sessions;
-        const matched = sessions.find(s => s.id === sessionId);
-        if (!matched) return null;
-        const decrypted = decrypt(encryptionKey, encryptionVariant, decodeBase64(matched.metadata));
-        return decrypted as Metadata | null;
+        const sessions = (response.data as { sessions?: unknown }).sessions;
+        if (!Array.isArray(sessions)) {
+          return null;
+        }
+        return sessions.find((session) => (
+          session
+          && typeof session === 'object'
+          && 'id' in session
+          && session.id === sessionId
+        )) ?? null;
       } catch (error) {
-        logger.debug(`[DAEMON RUN] Failed to fetch session metadata from server: ${error instanceof Error ? error.message : error}`);
+        logger.debug(`[DAEMON RUN] Failed to fetch session ${sessionId} from legacy server list: ${error instanceof Error ? error.message : error}`);
         return null;
       }
     };
 
-    const resumeSession = async (happySessionId: string, options?: { model?: string; permissionMode?: string }): Promise<SpawnSessionResult> => {
+    const fetchServerSessionMetadata = async (sessionId: string, encryptionKey: Uint8Array, encryptionVariant: 'legacy' | 'dataKey'): Promise<Metadata | null> => {
+      const serverSession = await fetchServerSession(sessionId);
+      if (
+        !serverSession
+        || typeof serverSession !== 'object'
+        || !('metadata' in serverSession)
+        || typeof serverSession.metadata !== 'string'
+      ) {
+        return null;
+      }
+
       try {
-        const tracked = findTrackedSessionById(happySessionId);
+        return decrypt(
+          encryptionKey,
+          encryptionVariant,
+          decodeBase64(serverSession.metadata),
+        ) as Metadata | null;
+      } catch (error) {
+        logger.debug(`[DAEMON RUN] Failed to decrypt session ${sessionId} metadata from server: ${error instanceof Error ? error.message : error}`);
+        return null;
+      }
+    };
+
+    const resumeSession = async (happySessionId: string, options?: ResumeSessionOptions): Promise<SpawnSessionResult> => {
+      try {
+        let tracked = findTrackedSessionById(happySessionId);
+        let recoveredPersistedSession: PersistedSession | null = null;
+
+        // The app already decrypted this session's per-session key with the
+        // account secret. The daemon intentionally does not possess that
+        // secret, so this encrypted machine RPC is the only way to recover a
+        // record that the local 14-day cache has pruned. Never replace a local
+        // record: context is a fallback only.
+        if (!tracked && options?.resumeContext) {
+          const serverSession = await fetchServerSession(happySessionId);
+          if (!serverSession) {
+            throw new Error(`Cannot recover Happy session ${happySessionId}: the server session record is unavailable. Check the connection and try again.`);
+          }
+          recoveredPersistedSession = persistedSessionFromResumeContext(
+            happySessionId,
+            machineId,
+            options.resumeContext,
+            serverSession,
+          );
+          tracked = restoreFinishedSessions({
+            [happySessionId]: recoveredPersistedSession,
+          }).get(happySessionId);
+        }
+
         if (!tracked) {
-          return { type: 'error', errorMessage: `Session ${happySessionId} is not tracked by this daemon. It may have been started before the daemon or on another machine.` };
+          return { type: 'error', errorMessage: `Session ${happySessionId} has no local resume data. Refresh or update the Happy app and retry; sessions without per-session recovery data cannot be restored after the local 14-day retention window.` };
         }
         if (!tracked.happySessionMetadataFromLocalWebhook) {
           return { type: 'error', errorMessage: `Session ${happySessionId} has no metadata. Cannot resume.` };
@@ -790,6 +861,16 @@ export async function startDaemon(): Promise<void> {
         }
 
         await fs.access(launch.cwd);
+
+        if (recoveredPersistedSession) {
+          // Rehydrate the normal local cache only after the supplied context
+          // has produced a valid launch in an existing directory. Future
+          // resumes and daemon restarts then use the established local path.
+          recoveredPersistedSession.metadata = metadata;
+          persistSession(happySessionId, recoveredPersistedSession);
+          sessionIdToFinishedSession.set(happySessionId, tracked);
+          logger.debug(`[DAEMON RUN] Restored local resume data for session ${happySessionId} from encrypted app context`);
+        }
 
         return spawnTrackedHappyProcess({
           args: launch.args,
