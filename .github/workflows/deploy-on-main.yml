@@ -1,0 +1,123 @@
+name: deploy-on-main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Every job starts read-only. Only the image job may write packages; Helm is
+# updated through its separately scoped repository token.
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-on-main
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+    steps:
+      - name: Resolve immutable image tag
+        id: meta
+        shell: bash
+        run: |
+          echo "tag=$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout happy-helm image definition
+        uses: actions/checkout@v4
+        with:
+          repository: sokdak/happy-helm
+          path: happy-helm
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: happy-helm/docker
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            HAPPY_REPO=https://github.com/sokdak/happy.git
+            HAPPY_REF=${{ github.sha }}
+          tags: |
+            ghcr.io/sokdak/happy:${{ steps.meta.outputs.tag }}
+            ghcr.io/sokdak/happy:latest
+
+      - name: Summarize image
+        run: echo 'Image `ghcr.io/sokdak/happy:${{ steps.meta.outputs.tag }}` from `${{ github.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+
+  helm-pr:
+    runs-on: ubuntu-latest
+    needs: image
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout happy-helm
+        uses: actions/checkout@v4
+        with:
+          repository: sokdak/happy-helm
+          path: happy-helm
+          token: ${{ secrets.HELM_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Install pinned yq
+        shell: bash
+        run: |
+          YQ_VERSION="v4.53.3"
+          YQ_SHA256="fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4"
+          YQ_PATH="$RUNNER_TEMP/yq"
+          curl --fail --location --silent --show-error \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            --output "$YQ_PATH"
+          echo "${YQ_SHA256}  ${YQ_PATH}" | sha256sum --check --strict
+          chmod +x "$YQ_PATH"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Bump immutable image reference
+        working-directory: happy-helm
+        shell: bash
+        env:
+          TAG: ${{ needs.image.outputs.tag }}
+          SHA: ${{ needs.image.outputs.sha }}
+        run: |
+          yq -i '.image.repository = "ghcr.io/sokdak/happy" | .image.tag = strenv(TAG)' values.yaml
+          yq -i '.appVersion = strenv(TAG)' Chart.yaml
+          sed -i 's#\(HAPPY_REF="${HAPPY_REF:-\)[^}]*\(}"\)#\1'"${SHA}"'\2#' docker/build.sh
+          sed -i 's#\(IMAGE="${IMAGE:-\)[^}]*\(}"\)#\1ghcr.io/sokdak/happy\2#' docker/build.sh
+          yq '.image' values.yaml
+          yq '.appVersion' Chart.yaml
+          grep -E 'HAPPY_REF=|IMAGE=' docker/build.sh
+
+      - name: Open happy-helm bump PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.HELM_REPO_TOKEN }}
+          path: happy-helm
+          base: main
+          branch: bump-image-${{ needs.image.outputs.tag }}-${{ github.sha }}
+          delete-branch: true
+          commit-message: "chore: bump happy image to ${{ needs.image.outputs.tag }} (${{ github.sha }})"
+          title: "Bump happy image to ${{ needs.image.outputs.tag }}"
+          body: |
+            Automated bump from [`sokdak/happy@${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
+
+            - image: `ghcr.io/sokdak/happy:${{ needs.image.outputs.tag }}`
+            - `HAPPY_REF`: `${{ github.sha }}`
+            - run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
