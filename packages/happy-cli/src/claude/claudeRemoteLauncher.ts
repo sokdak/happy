@@ -28,6 +28,11 @@ interface PermissionsField {
 }
 
 export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
+    const resetClaudeWorkflowsBestEffort = () => {
+        void session.client.resetClaudeWorkflows().catch((error) => {
+            logger.debug('[remote]: failed to reset Claude workflows', error);
+        });
+    };
     logger.debug('[claudeRemoteLauncher] Starting remote launcher');
 
     // Check if we have a TTY for UI rendering
@@ -310,6 +315,7 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
             let modeHash: string | null = null;
             let mode: EnhancedMode | null = null;
             try {
+                resetClaudeWorkflowsBestEffort();
                 const remoteResult = await claudeRemote({
                     sessionId: session.sessionId,
                     path: session.path,
@@ -459,33 +465,43 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     continue;
                 }
             } finally {
+                try {
+                    resetClaudeWorkflowsBestEffort();
+                } finally {
+                    logger.debug('[remote]: launch finally');
 
-                logger.debug('[remote]: launch finally');
-
-                // Terminate all ongoing tool calls
-                for (let [toolCallId, { parentToolCallId }] of ongoingToolCalls) {
-                    const converted = sdkToLogConverter.generateInterruptedToolResult(toolCallId, parentToolCallId);
-                    if (converted) {
-                        logger.debug('[remote]: terminating tool call ' + toolCallId + ' parent: ' + parentToolCallId);
-                        session.client.sendClaudeSessionMessage(converted);
+                    // Terminate all ongoing tool calls
+                    for (let [toolCallId, { parentToolCallId }] of ongoingToolCalls) {
+                        const converted = sdkToLogConverter.generateInterruptedToolResult(toolCallId, parentToolCallId);
+                        if (converted) {
+                            logger.debug('[remote]: terminating tool call ' + toolCallId + ' parent: ' + parentToolCallId);
+                            session.client.sendClaudeSessionMessage(converted);
+                        }
                     }
+                    ongoingToolCalls.clear();
+
+                    // Flush any remaining messages in the queue
+                    logger.debug('[remote]: flushing message queue');
+                    try {
+                        await messageQueue.flush();
+                    } finally {
+                        try {
+                            messageQueue.destroy();
+                        } finally {
+                            resetClaudeWorkflowsBestEffort();
+                        }
+                    }
+                    logger.debug('[remote]: message queue flushed');
+
+                    // Reset abort controller and future
+                    abortController = null;
+                    abortFuture?.resolve(undefined);
+                    abortFuture = null;
+                    logger.debug('[remote]: launch done');
+                    permissionHandler.reset();
+                    modeHash = null;
+                    mode = null;
                 }
-                ongoingToolCalls.clear();
-
-                // Flush any remaining messages in the queue
-                logger.debug('[remote]: flushing message queue');
-                await messageQueue.flush();
-                messageQueue.destroy();
-                logger.debug('[remote]: message queue flushed');
-
-                // Reset abort controller and future
-                abortController = null;
-                abortFuture?.resolve(undefined);
-                abortFuture = null;
-                logger.debug('[remote]: launch done');
-                permissionHandler.reset();
-                modeHash = null;
-                mode = null;
             }
         }
     } finally {

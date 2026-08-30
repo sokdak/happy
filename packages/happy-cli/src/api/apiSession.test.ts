@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiSessionClient } from './apiSession';
+import {
+    AGENT_STATE_ACK_TIMEOUT_MS,
+    AGENT_STATE_RETRY_MIN_DELAY_MS,
+    CLAUDE_WORKFLOW_RESET_TIMEOUT_MS,
+    ApiSessionClient,
+} from './apiSession';
 import { decodeBase64, decrypt, decryptBlob, encodeBase64, encrypt } from './encryption';
 import type { Update } from './types';
 import { logger } from '@/ui/logger';
+import { OutgoingMessageQueue } from '@/claude/utils/OutgoingMessageQueue';
 
 const {
     mockIo,
@@ -143,6 +149,16 @@ async function waitForCheck(check: () => void, timeoutMs = 2000) {
     throw lastError;
 }
 
+function createDeferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
 describe('ApiSessionClient v3 messages API migration', () => {
     let socketHandlers: SocketHandlers;
     let mockSocket: any;
@@ -170,11 +186,13 @@ describe('ApiSessionClient v3 messages API migration', () => {
             off: vi.fn(),
             emit: vi.fn(),
             emitWithAck: vi.fn(async () => ({ result: 'error' })),
+            timeout: vi.fn(),
             volatile: {
                 emit: vi.fn()
             },
             close: vi.fn()
         };
+        mockSocket.timeout.mockReturnValue(mockSocket);
 
         mockIo.mockReturnValue(mockSocket);
     });
@@ -209,6 +227,28 @@ describe('ApiSessionClient v3 messages API migration', () => {
         await vi.advanceTimersByTimeAsync(3000);
         expect(mockSocket.connect).toHaveBeenCalledTimes(3);
 
+        await client.close();
+    });
+
+    it('does not reset active workflows on a transient socket disconnect', async () => {
+        mockShouldReconnect.mockReturnValue(false);
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+            workflow_name: 'inspect-packages',
+        } as any);
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+        mockSocket.emitWithAck.mockClear();
+
+        emitSocketEvent('disconnect', 'transport close');
+
+        expect(mockSocket.emitWithAck).not.toHaveBeenCalled();
+        expect((client as any).claudeWorkflowTracker.snapshot()).toHaveProperty('workflow-1');
         await client.close();
     });
 
@@ -373,6 +413,314 @@ describe('ApiSessionClient v3 messages API migration', () => {
             }
         });
         expect(typeof (sessionUser as any).content.time).toBe('number');
+    });
+
+    it('publishes active Claude workflows through encrypted agent state without chat envelopes', async () => {
+        let version = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => {
+            if (event !== 'update-state') {
+                return { result: 'error' };
+            }
+            const agentState = decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(payload.agentState),
+            );
+            return {
+                result: 'success',
+                agentState: encryptContent(session, agentState),
+                version: ++version,
+            };
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        try {
+            client.sendClaudeSessionMessage({
+                type: 'system',
+                subtype: 'task_started',
+                task_id: 'workflow-1',
+                task_type: 'local_workflow',
+                workflow_name: 'inspect-packages',
+            } as any);
+
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+            });
+
+            const firstPayload = mockSocket.emitWithAck.mock.calls[0][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(firstPayload.agentState),
+            )).toMatchObject({
+                activeWorkflows: {
+                    'workflow-1': { taskId: 'workflow-1', name: 'inspect-packages' },
+                },
+            });
+
+            client.sendClaudeSessionMessage({
+                type: 'system',
+                subtype: 'task_notification',
+                task_id: 'workflow-1',
+            } as any);
+
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+            });
+
+            const secondPayload = mockSocket.emitWithAck.mock.calls[1][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(secondPayload.agentState),
+            )).not.toHaveProperty('activeWorkflows');
+            expect(mockAxiosPost).not.toHaveBeenCalled();
+        } finally {
+            await client.close();
+        }
+    });
+
+    it('awaits the authoritative workflow reset behind an in-flight agent state update', async () => {
+        const firstAck = createDeferred<any>();
+        const resetAck = createDeferred<any>();
+        let updateStateCalls = 0;
+        mockSocket.emitWithAck.mockImplementation((event: string) => {
+            if (event !== 'update-state') {
+                return Promise.resolve({ result: 'error' });
+            }
+            updateStateCalls += 1;
+            return updateStateCalls === 1 ? firstAck.promise : resetAck.promise;
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+            workflow_name: 'inspect-packages',
+        } as any);
+
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+
+        let resetResolved = false;
+        const reset = Promise.resolve(client.resetClaudeWorkflows()).then(() => {
+            resetResolved = true;
+        });
+        await Promise.resolve();
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        expect(resetResolved).toBe(false);
+
+        const firstPayload = mockSocket.emitWithAck.mock.calls[0][1];
+        firstAck.resolve({
+            result: 'success',
+            agentState: firstPayload.agentState,
+            version: 1,
+        });
+
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+        });
+        expect(resetResolved).toBe(false);
+
+        const resetPayload = mockSocket.emitWithAck.mock.calls[1][1];
+        expect(decrypt(
+            session.encryptionKey,
+            session.encryptionVariant,
+            decodeBase64(resetPayload.agentState),
+        )).not.toHaveProperty('activeWorkflows');
+
+        resetAck.resolve({
+            result: 'success',
+            agentState: resetPayload.agentState,
+            version: 2,
+        });
+        await reset;
+
+        expect(resetResolved).toBe(true);
+        expect((client as any).agentState).not.toHaveProperty('activeWorkflows');
+        await client.close();
+    });
+
+    it('clears server workflow state after the prior update applied but its ACK was lost', async () => {
+        let serverVersion = 0;
+        let serverState: Record<string, unknown> = {};
+        const expectedVersions: number[] = [];
+        let updateStateCalls = 0;
+        mockSocket.emitWithAck.mockImplementation((event: string, payload: any) => {
+            if (event !== 'update-state') {
+                return Promise.resolve({ result: 'error' });
+            }
+            updateStateCalls += 1;
+            expectedVersions.push(payload.expectedVersion);
+            const requestedState = decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(payload.agentState),
+            ) as Record<string, unknown>;
+
+            if (updateStateCalls === 1) {
+                serverState = requestedState;
+                serverVersion = 1;
+                // The server applied the active snapshot, but the client never
+                // receives its ACK. reset() must supersede this wait, observe
+                // the version mismatch, and retry an empty snapshot.
+                return new Promise(() => {});
+            }
+            if (payload.expectedVersion !== serverVersion) {
+                return Promise.resolve({
+                    result: 'version-mismatch',
+                    version: serverVersion,
+                    agentState: encryptContent(session, serverState),
+                });
+            }
+
+            serverState = requestedState;
+            serverVersion += 1;
+            return Promise.resolve({
+                result: 'success',
+                version: serverVersion,
+                agentState: encryptContent(session, serverState),
+            });
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-ack-lost',
+            task_type: 'local_workflow',
+        } as any);
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+
+        await client.resetClaudeWorkflows();
+
+        expect(expectedVersions).toEqual([0, 0, 1]);
+        expect(serverVersion).toBe(2);
+        expect(serverState).not.toHaveProperty('activeWorkflows');
+        await client.close();
+    });
+
+    it('seals workflow ingestion before the final authoritative reset', async () => {
+        let version = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => (
+            event === 'update-state'
+                ? { result: 'success', agentState: payload.agentState, version: ++version }
+                : { result: 'error' }
+        ));
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-before-seal',
+            task_type: 'local_workflow',
+        } as any);
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+
+        await client.resetClaudeWorkflows({ seal: true });
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+        expect((client as any).claudeWorkflowTracker.snapshot()).toEqual({});
+
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-after-seal',
+            task_type: 'local_workflow',
+        } as any);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+        expect((client as any).claudeWorkflowTracker.snapshot()).toEqual({});
+        await client.close();
+    });
+
+    it('tracks remote queued workflow system events while harmless system events create no transcript envelopes', async () => {
+        let version = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => {
+            if (event !== 'update-state') {
+                return { result: 'error' };
+            }
+            const agentState = decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(payload.agentState),
+            );
+            return {
+                result: 'success',
+                agentState: encryptContent(session, agentState),
+                version: ++version,
+            };
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        const sendClaudeSessionMessage = vi.spyOn(client, 'sendClaudeSessionMessage');
+        const queue = new OutgoingMessageQueue((message) => client.sendClaudeSessionMessage(message));
+        try {
+            queue.enqueue({
+                type: 'system',
+                subtype: 'init',
+            });
+            queue.enqueue({
+                type: 'system',
+                subtype: 'task_started',
+                task_id: 'workflow-1',
+                task_type: 'local_workflow',
+                workflow_name: 'inspect-packages',
+            });
+            queue.enqueue({
+                type: 'system',
+                subtype: 'task_progress',
+                task_id: 'workflow-1',
+                usage: { total_tokens: 25000 },
+            });
+            await queue.flush();
+
+            expect(sendClaudeSessionMessage.mock.calls.map(([message]) => (message as any).subtype))
+                .toEqual(['init', 'task_started', 'task_progress']);
+            expect((client as any).claudeWorkflowTracker.snapshot()['workflow-1'].usage?.totalTokens).toBe(25000);
+
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+            });
+
+            queue.enqueue({
+                type: 'system',
+                subtype: 'task_notification',
+                task_id: 'workflow-1',
+            });
+            await queue.flush();
+
+            expect(sendClaudeSessionMessage.mock.calls.map(([message]) => (message as any).subtype))
+                .toEqual(['init', 'task_started', 'task_progress', 'task_notification']);
+            await waitForCheck(() => {
+                expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2);
+            });
+
+            const firstPayload = mockSocket.emitWithAck.mock.calls[0][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(firstPayload.agentState),
+            )).toHaveProperty('activeWorkflows.workflow-1');
+            const secondPayload = mockSocket.emitWithAck.mock.calls[1][1];
+            expect(decrypt(
+                session.encryptionKey,
+                session.encryptionVariant,
+                decodeBase64(secondPayload.agentState),
+            )).not.toHaveProperty('activeWorkflows');
+            expect(mockAxiosPost).not.toHaveBeenCalled();
+        } finally {
+            queue.destroy();
+            await client.close();
+        }
     });
 
     it('uploads local Claude transcript image blocks and sends file before user text', async () => {
@@ -1188,6 +1536,149 @@ describe('ApiSessionClient v3 messages API migration', () => {
             expect(mockAxiosGet).toHaveBeenCalledTimes(1);
         });
         expect(mockAxiosGet.mock.calls[0][1].params.after_seq).toBe(0);
+    });
+
+    it('waits for an in-flight workflow publication before closing the socket', async () => {
+        const stateAck = createDeferred<any>();
+        mockSocket.emitWithAck.mockImplementation((event: string) => (
+            event === 'update-state' ? stateAck.promise : Promise.resolve({ result: 'error' })
+        ));
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+            workflow_name: 'inspect-packages',
+        } as any);
+        await waitForCheck(() => {
+            expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+        });
+
+        let closeResolved = false;
+        const close = client.close().then(() => {
+            closeResolved = true;
+        });
+        await Promise.resolve();
+
+        expect(closeResolved).toBe(false);
+        expect(mockSocket.close).not.toHaveBeenCalled();
+
+        const payload = mockSocket.emitWithAck.mock.calls[0][1];
+        stateAck.resolve({
+            result: 'success',
+            agentState: payload.agentState,
+            version: 1,
+        });
+        await close;
+
+        expect(closeResolved).toBe(true);
+        expect(mockSocket.close).toHaveBeenCalledOnce();
+    });
+
+    it('bounds a workflow reset queued behind a never-resolving agent-state ACK', async () => {
+        vi.useFakeTimers();
+        mockSocket.emitWithAck.mockImplementation((event: string) => (
+            event === 'update-state' ? new Promise(() => {}) : Promise.resolve({ result: 'error' })
+        ));
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+            workflow_name: 'inspect-packages',
+        } as any);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+
+        const resetResult = client.resetClaudeWorkflows().then(
+            () => ({ ok: true as const, error: undefined }),
+            (error: unknown) => ({ ok: false as const, error }),
+        );
+
+        await vi.advanceTimersByTimeAsync(CLAUDE_WORKFLOW_RESET_TIMEOUT_MS);
+        const result = await resetResult;
+
+        expect(result.ok).toBe(false);
+        expect(result.error).toBeInstanceOf(Error);
+        expect((result.error as Error).message).toMatch(/workflow reset timed out/i);
+        expect(vi.getTimerCount()).toBe(0);
+
+        await client.close();
+        expect(mockSocket.close).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('retries network and version-mismatch failures while the session remains active', async () => {
+        vi.useFakeTimers();
+        let calls = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => {
+            if (event !== 'update-state') return { result: 'error' };
+            calls += 1;
+            if (calls === 1) throw new Error('network unavailable');
+            if (calls === 2) {
+                return {
+                    result: 'version-mismatch',
+                    version: 1,
+                    agentState: encryptContent(session, { serverValue: true }),
+                };
+            }
+            return {
+                result: 'success',
+                version: 2,
+                agentState: payload.agentState,
+            };
+        });
+
+        const client = new ApiSessionClient('fake-token', session);
+        const update = client.updateAgentState((current) => ({ ...current, localValue: true }));
+
+        await vi.advanceTimersByTimeAsync(AGENT_STATE_RETRY_MIN_DELAY_MS * 3);
+        await update;
+
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(3);
+        expect(mockSocket.timeout).toHaveBeenCalledTimes(3);
+        expect(mockSocket.timeout).toHaveBeenCalledWith(AGENT_STATE_ACK_TIMEOUT_MS);
+        expect((client as any).agentState).toEqual({ serverValue: true, localValue: true });
+        await client.close();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('cancels a never-resolving workflow ACK when close begins', async () => {
+        vi.useFakeTimers();
+        mockSocket.emitWithAck.mockImplementation((event: string) => (
+            event === 'update-state' ? new Promise(() => {}) : Promise.resolve({ result: 'error' })
+        ));
+
+        const client = new ApiSessionClient('fake-token', session);
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+            workflow_name: 'inspect-packages',
+        } as any);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(1);
+
+        const close = client.close();
+        await vi.advanceTimersByTimeAsync(AGENT_STATE_ACK_TIMEOUT_MS);
+        await expect(close).resolves.toBeUndefined();
+
+        expect(mockSocket.close).toHaveBeenCalledOnce();
+        const updateCallsAtClose = mockSocket.emitWithAck.mock.calls.length;
+        client.sendClaudeSessionMessage({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-after-close',
+            task_type: 'local_workflow',
+        } as any);
+        await vi.advanceTimersByTimeAsync(AGENT_STATE_ACK_TIMEOUT_MS);
+        expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(updateCallsAtClose);
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     it('stops send and receive sync loops on close', async () => {

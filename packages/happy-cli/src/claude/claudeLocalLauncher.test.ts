@@ -78,6 +78,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessage: vi.fn(),
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {}),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -153,6 +154,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessage: vi.fn(),
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {}),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -225,6 +227,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
                 sendSessionEvent: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {}),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -255,5 +258,108 @@ describe('claudeLocalLauncher', () => {
             type: 'message',
             message: `Process exited unexpectedly: ${sdkFailure.message}`,
         });
+    });
+
+    it('invokes the final workflow reset after scanner cleanup drains its last message', async () => {
+        const events: string[] = [];
+        mockCreateSessionScanner.mockImplementation(async (options: ScannerOptions) => ({
+            onNewSession: vi.fn(),
+            cleanup: vi.fn(async () => {
+                events.push('cleanup');
+                options.onMessage({
+                    type: 'system',
+                    subtype: 'task_started',
+                    task_id: 'workflow-final-scanner-message',
+                    task_type: 'local_workflow',
+                });
+            }),
+        }));
+        mockClaudeLocal.mockResolvedValueOnce(undefined);
+
+        const session = {
+            sessionId: 'claude-session-final-drain',
+            path: '/tmp/project',
+            client: {
+                sendClaudeSessionMessage: vi.fn(),
+                sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {
+                    events.push('send');
+                }),
+                closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {
+                    events.push('reset');
+                }),
+                rpcHandlerManager: {
+                    registerHandler: vi.fn(),
+                },
+            },
+            queue: {
+                reset: vi.fn(),
+                setOnMessage: vi.fn(),
+                size: vi.fn(() => 0),
+            },
+            addSessionFoundCallback: vi.fn(),
+            removeSessionFoundCallback: vi.fn(),
+            onAbort: vi.fn(),
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            consumeOneTimeFlags: vi.fn(),
+            claudeEnvVars: undefined,
+            claudeArgs: undefined,
+            mcpServers: {},
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook-settings.json',
+            sandboxConfig: undefined,
+        };
+
+        await expect(claudeLocalLauncher(session as any)).resolves.toEqual({ type: 'exit', code: 0 });
+
+        expect(session.client.resetClaudeWorkflows).toHaveBeenCalledTimes(3);
+        expect(events.lastIndexOf('reset')).toBeGreaterThan(events.lastIndexOf('cleanup'));
+        expect(events.lastIndexOf('reset')).toBeGreaterThan(events.lastIndexOf('send'));
+    });
+
+    it('does not block Claude startup or cleanup on workflow reset failures', async () => {
+        const stalledReset = createDeferred<void>();
+        const resetClaudeWorkflows = vi.fn()
+            .mockReturnValueOnce(stalledReset.promise)
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValue(undefined);
+        mockClaudeLocal.mockResolvedValueOnce(undefined);
+
+        const session = {
+            sessionId: 'claude-session-offline-reset',
+            path: '/tmp/project',
+            client: {
+                sendClaudeSessionMessage: vi.fn(),
+                sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
+                closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows,
+                rpcHandlerManager: {
+                    registerHandler: vi.fn(),
+                },
+            },
+            queue: {
+                reset: vi.fn(),
+                setOnMessage: vi.fn(),
+                size: vi.fn(() => 0),
+            },
+            addSessionFoundCallback: vi.fn(),
+            removeSessionFoundCallback: vi.fn(),
+            onAbort: vi.fn(),
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            consumeOneTimeFlags: vi.fn(),
+            claudeEnvVars: undefined,
+            claudeArgs: undefined,
+            mcpServers: {},
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook-settings.json',
+            sandboxConfig: undefined,
+        };
+
+        await expect(claudeLocalLauncher(session as any)).resolves.toEqual({ type: 'exit', code: 0 });
+
+        expect(mockClaudeLocal).toHaveBeenCalledOnce();
+        expect(resetClaudeWorkflows.mock.calls.length).toBeGreaterThanOrEqual(3);
     });
 });

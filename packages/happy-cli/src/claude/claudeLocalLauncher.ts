@@ -8,6 +8,11 @@ import { launchFailureMessage } from "./utils/launchFailureMessage";
 export type LauncherResult = { type: 'switch' } | { type: 'exit', code: number };
 
 export async function claudeLocalLauncher(session: Session): Promise<LauncherResult> {
+    const resetClaudeWorkflowsBestEffort = () => {
+        void session.client.resetClaudeWorkflows().catch((error) => {
+            logger.debug('[local]: failed to reset Claude workflows', error);
+        });
+    };
 
     let scannerMessageChain = Promise.resolve();
 
@@ -109,6 +114,7 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
 
             // Launch
             logger.debug('[local]: launch');
+            resetClaudeWorkflowsBestEffort();
             try {
                 await claudeLocal({
                     path: session.path,
@@ -162,21 +168,28 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
             logger.debug('[local]: launch done');
         }
     } finally {
+        try {
+            resetClaudeWorkflowsBestEffort();
+        } finally {
+            // Resolve future
+            exutFuture.resolve(undefined);
 
-        // Resolve future
-        exutFuture.resolve(undefined);
+            // Set handlers to no-op
+            session.client.rpcHandlerManager.registerHandler('abort', async () => { });
+            session.client.rpcHandlerManager.registerHandler('switch', async () => { });
+            session.queue.setOnMessage(null);
 
-        // Set handlers to no-op
-        session.client.rpcHandlerManager.registerHandler('abort', async () => { });
-        session.client.rpcHandlerManager.registerHandler('switch', async () => { });
-        session.queue.setOnMessage(null);
-        
-        // Remove session found callback
-        session.removeSessionFoundCallback(scannerSessionCallback);
+            // Remove session found callback
+            session.removeSessionFoundCallback(scannerSessionCallback);
 
-        // Cleanup
-        await scanner.cleanup();
-        await scannerMessageChain;
+            // Cleanup
+            try {
+                await scanner.cleanup();
+            } finally {
+                await scannerMessageChain;
+                resetClaudeWorkflowsBestEffort();
+            }
+        }
     }
 
     // Return

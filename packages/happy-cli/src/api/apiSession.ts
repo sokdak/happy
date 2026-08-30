@@ -21,6 +21,13 @@ import {
 } from '@/claude/utils/sessionProtocolMapper';
 import { InvalidateSync } from '@/utils/sync';
 import axios from 'axios';
+import { ClaudeWorkflowTracker } from '@/claude/workflows/claudeWorkflowTracker';
+
+export const AGENT_STATE_ACK_TIMEOUT_MS = 2_000;
+export const AGENT_STATE_RETRY_MIN_DELAY_MS = 100;
+export const AGENT_STATE_RETRY_MAX_DELAY_MS = 1_000;
+export const CLAUDE_WORKFLOW_RESET_TIMEOUT_MS = 5_000;
+export const CLAUDE_WORKFLOW_DRAIN_TIMEOUT_MS = 1_000;
 
 /**
  * ACP (Agent Communication Protocol) message data types.
@@ -239,6 +246,11 @@ export class ApiSessionClient extends EventEmitter {
     private pendingOutbox: Array<{ content: string; localId: string }> = [];
     private readonly sendSync: InvalidateSync;
     private readonly receiveSync: InvalidateSync;
+    private readonly claudeWorkflowTracker: ClaudeWorkflowTracker;
+    private readonly closeController = new AbortController();
+    private closePromise: Promise<void> | null = null;
+    private closing = false;
+    private closed = false;
 
     constructor(token: string, session: Session) {
         super()
@@ -278,6 +290,17 @@ export class ApiSessionClient extends EventEmitter {
             transports: ['websocket'],
             withCredentials: true,
             autoConnect: false
+        });
+        this.claudeWorkflowTracker = new ClaudeWorkflowTracker((snapshot, signal) => {
+            return this.updateAgentState((currentAgentState) => {
+                const next = { ...currentAgentState };
+                if (Object.keys(snapshot).length === 0) {
+                    delete next.activeWorkflows;
+                } else {
+                    next.activeWorkflows = snapshot;
+                }
+                return next;
+            }, signal);
         });
 
         //
@@ -728,10 +751,32 @@ export class ApiSessionClient extends EventEmitter {
      * @param body - Message body (can be MessageContent or raw content for agent messages)
      */
     sendClaudeSessionMessage(body: RawJSONLines) {
+        this.claudeWorkflowTracker.handle(body);
         const mapped = mapClaudeLogMessageToSessionEnvelopes(body, this.claudeSessionProtocolState);
         this.claudeSessionProtocolState.currentTurnId = mapped.currentTurnId;
         this.enqueueSessionProtocolEnvelopes(mapped.envelopes);
         this.applyClaudeSessionMessageSideEffects(body);
+    }
+
+    async resetClaudeWorkflows(options: { seal?: boolean } = {}): Promise<void> {
+        if (this.closing || this.closed) {
+            throw new Error('Cannot reset Claude workflows after session close has begun');
+        }
+        if (options.seal) {
+            this.claudeWorkflowTracker.seal();
+        }
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => {
+            controller.abort(new Error(
+                `Claude workflow reset timed out after ${CLAUDE_WORKFLOW_RESET_TIMEOUT_MS}ms`,
+            ));
+        }, CLAUDE_WORKFLOW_RESET_TIMEOUT_MS);
+        try {
+            await this.claudeWorkflowTracker.reset(controller.signal);
+        } finally {
+            clearTimeout(timeout);
+        }
     }
 
     async sendClaudeSessionMessageFromLocalTranscript(body: RawJSONLines): Promise<void> {
@@ -957,27 +1002,114 @@ export class ApiSessionClient extends EventEmitter {
      * Update session agent state
      * @param handler - Handler function that returns the updated agent state
      */
-    updateAgentState(handler: (metadata: AgentState) => AgentState) {
+    updateAgentState(handler: (metadata: AgentState) => AgentState, operationSignal?: AbortSignal): Promise<void> {
+        if (this.closing || this.closed) return Promise.resolve();
         logger.debugLargeJson('Updating agent state', this.agentState);
-        this.agentStateLock.inLock(async () => {
-            await backoff(async () => {
-                let updated = handler(this.agentState || {});
-                const answer = await this.socket.emitWithAck('update-state', { sid: this.sessionId, expectedVersion: this.agentStateVersion, agentState: updated ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated)) : null });
-                if (answer.result === 'success') {
-                    this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
-                    this.agentStateVersion = answer.version;
-                    logger.debug('Agent state updated', this.agentState);
-                } else if (answer.result === 'version-mismatch') {
-                    if (answer.version > this.agentStateVersion) {
-                        this.agentStateVersion = answer.version;
-                        this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
-                    }
-                    throw new Error('Agent state version mismatch');
-                } else if (answer.result === 'error') {
-                    // console.error('Agent state update error', answer);
-                    // Hard error - ignore
+        const controller = new AbortController();
+        const abortFromClose = () => controller.abort(this.closeController.signal.reason);
+        const abortFromOperation = () => controller.abort(operationSignal?.reason);
+        this.closeController.signal.addEventListener('abort', abortFromClose, { once: true });
+        operationSignal?.addEventListener('abort', abortFromOperation, { once: true });
+        if (this.closeController.signal.aborted) abortFromClose();
+        if (operationSignal?.aborted) abortFromOperation();
+
+        const update = this.agentStateLock.inLock(async () => {
+            let failuresCount = 0;
+            while (true) {
+                if (controller.signal.aborted) {
+                    throw controller.signal.reason ?? new Error('Agent state update aborted');
                 }
-            });
+
+                try {
+                    const updated = handler(this.agentState || {});
+                    const answer = await this.awaitAgentStateAck(
+                        this.socket
+                            .timeout(AGENT_STATE_ACK_TIMEOUT_MS)
+                            .emitWithAck('update-state', {
+                                sid: this.sessionId,
+                                expectedVersion: this.agentStateVersion,
+                                agentState: updated
+                                    ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated))
+                                    : null,
+                            }),
+                        controller.signal,
+                    );
+                    if (answer.result === 'success') {
+                        this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
+                        this.agentStateVersion = answer.version;
+                        logger.debug('Agent state updated', this.agentState);
+                        return;
+                    }
+                    if (answer.result === 'version-mismatch') {
+                        if (answer.version > this.agentStateVersion) {
+                            this.agentStateVersion = answer.version;
+                            this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
+                        }
+                        throw new Error('Agent state version mismatch');
+                    }
+                    // Hard error - ignore
+                    return;
+                } catch (error) {
+                    if (controller.signal.aborted) throw error;
+                    failuresCount += 1;
+                    logger.debug(`[AGENT STATE] retry ${failuresCount}:`, (error as Error)?.message || error);
+                    const retryDelay = Math.min(
+                        AGENT_STATE_RETRY_MIN_DELAY_MS * (2 ** Math.min(failuresCount - 1, 4)),
+                        AGENT_STATE_RETRY_MAX_DELAY_MS,
+                    );
+                    await this.waitForAgentStateRetry(retryDelay, controller.signal);
+                }
+            }
+        }, controller.signal);
+
+        return update.catch((error) => {
+            // Closing is an expected cancellation path. Operation-scoped
+            // cancellations (notably a bounded workflow reset) still reject.
+            if (this.closeController.signal.aborted) return;
+            throw error;
+        }).finally(() => {
+            this.closeController.signal.removeEventListener('abort', abortFromClose);
+            operationSignal?.removeEventListener('abort', abortFromOperation);
+        });
+    }
+
+    private awaitAgentStateAck<T>(ack: Promise<T>, signal: AbortSignal): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            let settled = false;
+            const finish = (handler: () => void) => {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                handler();
+            };
+            const onAbort = () => finish(() => reject(
+                signal.reason ?? new Error('Agent state ACK aborted'),
+            ));
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+            void ack.then(
+                (value) => finish(() => resolve(value)),
+                (error) => finish(() => reject(error)),
+            );
+        });
+    }
+
+    private waitForAgentStateRetry(ms: number, signal: AbortSignal): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const finish = (handler: () => void) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
+                signal.removeEventListener('abort', onAbort);
+                handler();
+            };
+            const onAbort = () => finish(() => reject(
+                signal.reason ?? new Error('Agent state retry aborted'),
+            ));
+            const timeout = setTimeout(() => finish(resolve), ms);
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
         });
     }
 
@@ -1002,21 +1134,41 @@ export class ApiSessionClient extends EventEmitter {
         });
     }
 
-    async close() {
+    close(): Promise<void> {
+        if (this.closePromise) return this.closePromise;
         logger.debug('[API] socket.close() called');
-        this.sendSync.stop();
-        this.receiveSync.stop();
-        if (this.reconnectInterval) {
-            clearInterval(this.reconnectInterval);
-            this.reconnectInterval = null;
-        }
-        this.socket.close();
+        this.closing = true;
+        this.closeController.abort(new Error('API session is closing'));
+        this.claudeWorkflowTracker.dispose();
+
+        this.closePromise = (async () => {
+            try {
+                await this.claudeWorkflowTracker.drain({
+                    timeoutMs: CLAUDE_WORKFLOW_DRAIN_TIMEOUT_MS,
+                });
+            } finally {
+                try {
+                    this.sendSync.stop();
+                    this.receiveSync.stop();
+                    if (this.reconnectInterval) {
+                        clearInterval(this.reconnectInterval);
+                        this.reconnectInterval = null;
+                    }
+                    this.socket.close();
+                } finally {
+                    this.closed = true;
+                }
+            }
+        })();
+        return this.closePromise;
     }
 
     private startSmartReconnect() {
+        if (this.closing || this.closed) return;
         if (this.reconnectInterval) return;
 
         this.reconnectInterval = setInterval(() => {
+            if (this.closing || this.closed) return;
             if (this.socket.connected) {
                 clearInterval(this.reconnectInterval!);
                 this.reconnectInterval = null;
@@ -1032,7 +1184,9 @@ export class ApiSessionClient extends EventEmitter {
 
         if (shouldReconnect()) {
             logger.debug('[API] Network up + lid open — reconnecting in 1s');
-            setTimeout(() => { if (!this.socket.connected) this.socket.connect() }, 1000);
+            setTimeout(() => {
+                if (!this.closing && !this.closed && !this.socket.connected) this.socket.connect()
+            }, 1000);
         }
     }
 }
