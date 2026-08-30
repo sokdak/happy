@@ -98,6 +98,75 @@ async function waitFor(predicate: () => boolean, timeoutMs: number = 1000): Prom
     }
 }
 
+function createAbortBarrierHarness() {
+    const requests: MockRpcMessage[] = [];
+    const proc = createMockProcess({
+        onRequest: (msg, stdout) => {
+            requests.push(msg);
+
+            if (msg.method === 'thread/start' && msg.id != null) {
+                pushJsonLine(stdout, {
+                    id: msg.id,
+                    result: {
+                        thread: { id: 'thread-abort-barrier', path: '/tmp/thread-abort-barrier' },
+                        model: 'gpt-test',
+                        modelProvider: 'openai',
+                        cwd: '/tmp/project',
+                        approvalPolicy: 'on-request',
+                        sandbox: { type: 'readOnly' },
+                        reasoningEffort: null,
+                    },
+                });
+            }
+
+            const turnStarts = requests.filter((request) => request.method === 'turn/start');
+            if (msg.method === 'turn/start' && msg.id != null && turnStarts.length === 1) {
+                pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-old' } } });
+            }
+
+            if (msg.method === 'turn/interrupt' && msg.id != null) {
+                pushJsonLine(stdout, { id: msg.id, result: { abortReason: 'interrupted' } });
+            }
+        },
+    });
+
+    return {
+        proc,
+        push: (payload: unknown) => pushJsonLine(proc.stdout, payload),
+        turnStarts: () => requests.filter((msg) => msg.method === 'turn/start'),
+    };
+}
+
+type TerminalProtocol = 'legacy' | 'raw';
+
+function pushTerminalEvent(
+    harness: ReturnType<typeof createAbortBarrierHarness>,
+    protocol: TerminalProtocol,
+    turnId: string,
+    status: 'completed' | 'cancelled',
+) {
+    if (protocol === 'legacy') {
+        harness.push({
+            method: 'codex/event',
+            params: {
+                msg: {
+                    type: status === 'cancelled' ? 'turn_aborted' : 'task_complete',
+                    turn_id: turnId,
+                },
+            },
+        });
+        return;
+    }
+
+    harness.push({
+        method: 'turn/completed',
+        params: {
+            threadId: 'thread-abort-barrier',
+            turn: { id: turnId, status, items: [], error: null },
+        },
+    });
+}
+
 const sandboxConfig: SandboxConfig = {
     enabled: true,
     workspaceRoot: '~/projects',
@@ -234,6 +303,166 @@ describe('CodexAppServerClient sandbox integration', () => {
         }, 10);
 
         await expect(reconnect).resolves.toBeUndefined();
+        await client.disconnect();
+    });
+
+    it('does not start a queued follow-up until the complete abort fallback settles', async () => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const initialTurn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+
+        const abort = client.abortTurnWithFallback({
+            gracePeriodMs: 1000,
+            forceRestartOnTimeout: false,
+        });
+        harness.push({
+            method: 'codex/event',
+            params: { msg: { type: 'task_complete', turn_id: 'turn-old' } },
+        });
+        await expect(initialTurn).resolves.toEqual({ aborted: false });
+
+        const followUp = client.sendTurnAndWait('queued follow-up');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(harness.turnStarts()).toHaveLength(1);
+
+        await expect(abort).resolves.toEqual({
+            hadActiveTurn: true,
+            aborted: true,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+
+        await waitFor(() => harness.turnStarts().length === 2);
+        const nextTurn = harness.turnStarts()[1];
+        harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
+        pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
+        await expect(followUp).resolves.toEqual({ aborted: false });
+
+        await client.disconnect();
+    });
+
+    it('does not let an older abort completion clear a newer abort', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        type AbortResult = {
+            hadActiveTurn: boolean;
+            aborted: boolean;
+            forcedRestart: boolean;
+            resumedThread: boolean;
+        };
+        const internals = client as unknown as {
+            pendingAbort: Promise<AbortResult> | null;
+            performAbortTurnWithFallback: () => Promise<AbortResult>;
+        };
+        let settleFirst!: (result: AbortResult) => void;
+        const firstOperation = new Promise<AbortResult>((resolve) => {
+            settleFirst = resolve;
+        });
+        internals.performAbortTurnWithFallback = () => firstOperation;
+
+        const firstAbort = client.abortTurnWithFallback();
+        const newerAbort = Promise.resolve({
+            hadActiveTurn: true,
+            aborted: true,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+        internals.pendingAbort = newerAbort;
+        settleFirst({
+            hadActiveTurn: false,
+            aborted: false,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+
+        await firstAbort;
+        expect(internals.pendingAbort).toBe(newerAbort);
+    });
+
+    it.each([
+        ['legacy', 'raw'],
+        ['raw', 'legacy'],
+    ] as const)('ignores a duplicate $duplicate terminal event after $first completion', async (first, duplicate) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const terminalEvents: unknown[] = [];
+        client.setEventHandler((msg) => {
+            if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
+                terminalEvents.push(msg);
+            }
+        });
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const initialTurn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+        pushTerminalEvent(harness, first, 'turn-old', 'completed');
+        await expect(initialTurn).resolves.toEqual({ aborted: false });
+
+        const followUp = client.sendTurnAndWait('queued follow-up');
+        await waitFor(() => harness.turnStarts().length === 2);
+        pushTerminalEvent(harness, duplicate, 'turn-old', 'cancelled');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(terminalEvents).toHaveLength(1);
+
+        const nextTurn = harness.turnStarts()[1];
+        harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
+        pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
+        await expect(followUp).resolves.toEqual({ aborted: false });
+
+        await client.disconnect();
+    });
+
+    it('closes the terminal callback reentrancy window', async () => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const terminalEvents: unknown[] = [];
+        client.setEventHandler((msg) => {
+            if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
+                terminalEvents.push(msg);
+            }
+            if (msg.type === 'task_complete' && msg.turn_id === 'turn-old') {
+                pushTerminalEvent(harness, 'raw', 'turn-old', 'cancelled');
+            }
+        });
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const turn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+        pushTerminalEvent(harness, 'legacy', 'turn-old', 'completed');
+
+        await expect(turn).resolves.toEqual({ aborted: false });
+        expect(terminalEvents).toHaveLength(1);
+
         await client.disconnect();
     });
 
