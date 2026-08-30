@@ -49,6 +49,8 @@ import { FileViewPanel } from '@/components/FileViewPanel';
 import { prefetchPierreDiff } from '@/components/diff/PierreDiffView';
 import { GitFileStatus } from '@/sync/gitStatusFiles';
 import { useOverlayNav } from '@/-session/sessionOverlayNav';
+import { SessionHeaderActionsButton } from '@/-session/SessionHeaderActionsButton';
+import { shouldShowDesktopSessionActions } from '@/-session/sessionHeaderActions';
 import { formatPathRelativeToHome, getResumeCommandBlock, getSessionAvatarId, getSessionName, useSessionStatus } from '@/utils/sessionUtils';
 import { useSessionQuickActions } from '@/hooks/useSessionQuickActions';
 import { isVersionSupported, MINIMUM_CLI_VERSION } from '@/utils/versionUtils';
@@ -436,11 +438,18 @@ export const SessionView = React.memo((props: { id: string }) => {
             </Pressable>
         )
         : null;
+    const desktopActionsHeaderRight = shouldShowDesktopSessionActions({
+        hasSession: !!session,
+        platformOS: Platform.OS,
+        runningOnMac: isRunningOnMac(),
+    })
+        ? <SessionHeaderActionsButton sessionId={sessionId} />
+        : null;
     const workflowBadge = activeWorkflows.length > 0
         ? <WorkflowActivityBadge count={activeWorkflows.length} onPress={openWorkflowMonitor} />
         : null;
     const contextualHeaderRight = (diffViewOpen || !!fileViewPath) ? headerRightSlot : avatarHeaderRight;
-    const composedHeaderRight = workflowBadge || contextualHeaderRight
+    const composedHeaderRight = workflowBadge || contextualHeaderRight || desktopActionsHeaderRight
         ? (
             <View
                 style={{
@@ -451,6 +460,7 @@ export const SessionView = React.memo((props: { id: string }) => {
             >
                 {workflowBadge}
                 {contextualHeaderRight}
+                {desktopActionsHeaderRight}
             </View>
         )
         : null;

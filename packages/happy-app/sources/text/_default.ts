@@ -352,6 +352,7 @@ export const en = {
         newChat: 'New chat',
         statusBarContext: 'Context',
         statusBarPathTitle: 'Working directory',
+        headerActionsAccessibility: 'Session actions',
         // Fork / duplicate / rewind flow (Claude only)
         forkAction: 'Fork session',
         forkSubtitle: 'Continue in a new session with the same context',
