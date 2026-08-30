@@ -4,10 +4,14 @@ import type { Machine } from './types';
 
 const {
     mockIo,
-    mockShouldReconnect
+    mockShouldReconnect,
+    mockRegisterHandler,
+    mockHasHandler,
 } = vi.hoisted(() => ({
     mockIo: vi.fn(),
-    mockShouldReconnect: vi.fn(() => true)
+    mockShouldReconnect: vi.fn(() => true),
+    mockRegisterHandler: vi.fn(),
+    mockHasHandler: vi.fn(() => false),
 }));
 
 vi.mock('socket.io-client', () => ({
@@ -37,9 +41,9 @@ vi.mock('@/api/rpc/RpcHandlerManager', () => ({
         onSocketConnect = vi.fn();
         onSocketDisconnect = vi.fn();
         handleRequest = vi.fn(async () => '');
-        registerHandler = vi.fn();
+        registerHandler = mockRegisterHandler;
         unregisterHandler = vi.fn();
-        hasHandler = vi.fn(() => false);
+        hasHandler = mockHasHandler;
     }
 }));
 
@@ -174,5 +178,42 @@ describe('ApiMachineClient socket reconnection', () => {
         expect(aliveCalls).toHaveLength(2);
 
         client.shutdown();
+    });
+
+    it('forwards optional encrypted resume recovery context to the daemon handler', async () => {
+        const resumeSession = vi.fn(async () => ({
+            type: 'success' as const,
+            sessionId: 'session-a',
+        }));
+        const resumeContext = {
+            encryptionKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+            encryptionVariant: 'dataKey' as const,
+        };
+
+        const client = new ApiMachineClient('fake-token', makeMachine());
+        client.setRPCHandlers({
+            spawnSession: vi.fn(),
+            resumeSession,
+            stopSession: vi.fn(),
+            requestShutdown: vi.fn(),
+        });
+
+        const registration = mockRegisterHandler.mock.calls.find(
+            ([method]) => method === 'resume-happy-session',
+        );
+        expect(registration).toBeDefined();
+
+        await registration![1]({
+            sessionId: 'session-a',
+            model: 'gpt-5',
+            permissionMode: 'default',
+            resumeContext,
+        });
+
+        expect(resumeSession).toHaveBeenCalledWith('session-a', {
+            model: 'gpt-5',
+            permissionMode: 'default',
+            resumeContext,
+        });
     });
 });

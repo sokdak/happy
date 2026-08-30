@@ -7,6 +7,7 @@ import { apiSocket } from './apiSocket';
 import { sync } from './sync';
 import { storage } from './storage';
 import type { AgentQuestionAnswer, MachineMetadata, SessionAgentModesPatch } from './storageTypes';
+import type { SessionResumeContext } from './resumeContext';
 import { markAgentModePushPending, clearAgentModePushPending, type AgentModeField } from './agentModesPending';
 import {
     isRigMetadata,
@@ -251,6 +252,7 @@ export type CodexListRewindPointsResult =
 export interface ResumeSessionOptions {
     machineId: string;
     sessionId: string;
+    resumeContext?: SessionResumeContext;
 }
 
 // Exported session operation functions
@@ -494,13 +496,24 @@ export async function codexListRewindPoints(
 }
 
 export async function machineResumeSession(options: ResumeSessionOptions & { model?: string; permissionMode?: string }): Promise<SpawnSessionResult> {
-    const { machineId, sessionId, model, permissionMode } = options;
+    const { machineId, sessionId, model, permissionMode, resumeContext } = options;
 
     try {
-        const result = await apiSocket.machineRPC<SpawnSessionResult, { sessionId: string; model?: string; permissionMode?: string }>(
+        const params = {
+            sessionId,
+            model,
+            permissionMode,
+            ...(resumeContext ? { resumeContext } : {}),
+        };
+        const result = await apiSocket.machineRPC<SpawnSessionResult, {
+            sessionId: string;
+            model?: string;
+            permissionMode?: string;
+            resumeContext?: SessionResumeContext;
+        }>(
             machineId,
             'resume-happy-session',
-            { sessionId, model, permissionMode },
+            params,
         );
         return result;
     } catch (error) {

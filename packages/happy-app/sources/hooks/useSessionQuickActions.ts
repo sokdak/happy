@@ -19,6 +19,7 @@ import { useSession } from '@/sync/storage';
 import { DuplicateSheet } from '@/components/DuplicateSheet';
 import type { SessionActionShortcutId } from '@/keyboard/shortcuts';
 import { isRigMetadata } from '@/sync/rig';
+import { buildSessionResumeContext } from '@/sync/resumeContext';
 
 export interface SessionActionItem {
     id: SessionActionShortcutId;
@@ -202,11 +203,13 @@ export function useSessionQuickActions(
             }
             throw error;
         }
+        const resumeContext = buildSessionResumeContext(session, sync.getSessionDataKey(session.id));
         const result = await machineResumeSession({
             machineId,
             sessionId: session.id,
             model: modeMeta.model ?? undefined,
             permissionMode: modeMeta.permissionMode,
+            resumeContext,
         });
 
         switch (result.type) {
