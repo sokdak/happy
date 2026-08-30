@@ -26,6 +26,13 @@ const SCROLL_BUTTON_COMPOSER_GAP = 16;
 // Fallback for non-floating layouts (tablet/web/landscape), where the list
 // already ends at the input's top edge.
 const SCROLL_BUTTON_DOCK_GAP = 4;
+// Keep native defaults unchanged. On web, long markdown/tool histories are
+// DOM-heavy; this retains roughly twelve viewport-heights while allowing a
+// larger batch than the old fork tuning so fast inverted scrolling can fill
+// variable-height rows without visible gaps.
+const WEB_CHAT_WINDOW_SIZE = 12;
+const WEB_CHAT_RENDER_BATCH = 8;
+const WEB_CHAT_INITIAL_ROWS = 12;
 
 export const ChatList = React.memo((props: {
     session: Session;
@@ -346,7 +353,7 @@ const ChatListInternal = React.memo((props: {
                     metadata={props.metadata}
                     sessionId={props.sessionId}
                     expanded={!collapsedGroups.has(item.id)}
-                    onToggle={() => handleToggleGroup(item.id)}
+                    onToggle={handleToggleGroup}
                     onAnchorLayoutChange={preserveToolGroupAnchor}
                 />
             );
@@ -358,7 +365,7 @@ const ChatListInternal = React.memo((props: {
                     metadata={props.metadata}
                     sessionId={props.sessionId}
                     expanded={!collapsedGroups.has(item.id)}
-                    onToggle={() => handleToggleGroup(item.id)}
+                    onToggle={handleToggleGroup}
                     onAnchorLayoutChange={preserveToolGroupAnchor}
                 />
             );
@@ -453,6 +460,9 @@ const ChatListInternal = React.memo((props: {
                 renderItem={renderItem}
                 onScroll={handleScroll}
                 scrollEventThrottle={16}
+                windowSize={Platform.OS === 'web' ? WEB_CHAT_WINDOW_SIZE : undefined}
+                maxToRenderPerBatch={Platform.OS === 'web' ? WEB_CHAT_RENDER_BATCH : undefined}
+                initialNumToRender={Platform.OS === 'web' ? WEB_CHAT_INITIAL_ROWS : undefined}
                 onLayout={(event) => {
                     scrollMetricsRef.current.viewportHeight = event.nativeEvent.layout.height;
                     updateHeaderBackdropVisibility();

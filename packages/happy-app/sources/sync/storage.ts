@@ -13,6 +13,7 @@ import {
 } from "./agentCommunications";
 import { createReducer, reducer, ReducerState } from "./reducer/reducer";
 import { Message } from "./typesMessage";
+import { mergeMessagesInto } from './messageList';
 import { NormalizedMessage } from "./typesRaw";
 import { isMachineOnline } from '@/utils/machineUtils';
 import { getSessionName, getSessionSubtitle, getSessionAvatarId } from '@/utils/sessionUtils';
@@ -91,6 +92,8 @@ export type KnownEntitlements = 'pro';
 
 interface SessionMessages {
     messages: Message[];
+    // Private mutable lookup used by mergeMessagesInto. Consumers observe the
+    // immutable messages array, not this lookup's identity.
     messagesMap: Record<string, Message>;
     reducerState: ReducerState;
     isLoaded: boolean;
@@ -646,13 +649,12 @@ export const storage = create<StorageState>()((set, get) => {
                     // reference, so leaving the entry untouched still carries
                     // the new agentState forward.
                     if (processedMessages.length > 0) {
-                        const mergedMessagesMap = { ...existingSessionMessages.messagesMap };
-                        processedMessages.forEach(message => {
-                            mergedMessagesMap[message.id] = message;
-                        });
-
-                        const messagesArray = Object.values(mergedMessagesMap)
-                            .sort((a, b) => b.createdAt - a.createdAt);
+                        const mergedMessagesMap = existingSessionMessages.messagesMap;
+                        const messagesArray = mergeMessagesInto(
+                            existingSessionMessages.messages,
+                            mergedMessagesMap,
+                            processedMessages,
+                        );
 
                         updatedSessionMessages[session.id] = {
                             messages: messagesArray,
@@ -778,14 +780,12 @@ export const storage = create<StorageState>()((set, get) => {
                 }
 
                 // Merge messages
-                const mergedMessagesMap = { ...existingSession.messagesMap };
-                processedMessages.forEach(message => {
-                    mergedMessagesMap[message.id] = message;
-                });
-
-                // Convert to array and sort by createdAt
-                const messagesArray = Object.values(mergedMessagesMap)
-                    .sort((a, b) => b.createdAt - a.createdAt);
+                const mergedMessagesMap = existingSession.messagesMap;
+                const messagesArray = mergeMessagesInto(
+                    existingSession.messages,
+                    mergedMessagesMap,
+                    processedMessages,
+                );
 
                 // Update session with todos and latestUsage
                 // IMPORTANT: We extract latestUsage from the mutable reducerState and copy it to the Session object
@@ -846,14 +846,7 @@ export const storage = create<StorageState>()((set, get) => {
                 if (agentState) {
                     // Process AgentState through reducer to get initial permission messages
                     const reducerResult = reducer(reducerState, [], agentState);
-                    const processedMessages = reducerResult.messages;
-
-                    processedMessages.forEach(message => {
-                        messagesMap[message.id] = message;
-                    });
-
-                    messages = Object.values(messagesMap)
-                        .sort((a, b) => b.createdAt - a.createdAt);
+                    messages = mergeMessagesInto(messages, messagesMap, reducerResult.messages);
                 }
 
                 // Extract latestUsage from reducerState if available and update session

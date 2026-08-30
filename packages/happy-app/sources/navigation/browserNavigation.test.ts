@@ -51,6 +51,18 @@ describe('browser navigation shortcuts', () => {
         });
     });
 
+    test('marked replace swaps the current entry without growing history', () => {
+        let history = createRouteHistory('/');
+        history = applyRouteHistoryPathname(history, '/session/one', null);
+
+        history = applyRouteHistoryPathname(history, '/session/two', 'replace');
+
+        expect(history).toEqual({
+            stack: ['/', '/session/two'],
+            cursor: 1,
+        });
+    });
+
     test('route back only runs when React Navigation can actually go back', () => {
         let history = createRouteHistory('/');
         history = applyRouteHistoryPathname(history, '/session/one', null);

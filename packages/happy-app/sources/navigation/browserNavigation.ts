@@ -1,5 +1,5 @@
 export type BrowserNavigationDirection = 'back' | 'forward';
-export type PendingRouteDirection = BrowserNavigationDirection | null;
+export type PendingRouteAction = BrowserNavigationDirection | 'replace' | null;
 
 export interface RouteHistoryState {
     stack: string[];
@@ -49,14 +49,14 @@ export function getNavigatorCanGoBack(navigator: { canGoBack: () => boolean }): 
 export function applyRouteHistoryPathname(
     history: RouteHistoryState,
     pathname: string,
-    pendingDirection: PendingRouteDirection
+    pendingAction: PendingRouteAction,
 ): RouteHistoryState {
     const current = history.stack[history.cursor];
     if (current === pathname) {
         return history;
     }
 
-    if (pendingDirection === 'back') {
+    if (pendingAction === 'back') {
         const nextCursor = Math.max(0, history.cursor - 1);
         if (history.stack[nextCursor] === pathname) {
             return {
@@ -66,7 +66,7 @@ export function applyRouteHistoryPathname(
         }
     }
 
-    if (pendingDirection === 'forward') {
+    if (pendingAction === 'forward') {
         const nextCursor = Math.min(history.stack.length - 1, history.cursor + 1);
         if (history.stack[nextCursor] === pathname) {
             return {
@@ -74,6 +74,12 @@ export function applyRouteHistoryPathname(
                 cursor: nextCursor,
             };
         }
+    }
+
+    if (pendingAction === 'replace') {
+        const stack = [...history.stack];
+        stack[history.cursor] = pathname;
+        return { stack, cursor: history.cursor };
     }
 
     const stack = history.stack.slice(0, history.cursor + 1);

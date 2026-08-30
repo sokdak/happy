@@ -3,6 +3,7 @@ import { Message } from '@/sync/typesMessage';
 import { knownTools } from '@/components/tools/knownTools';
 import { getToolSummaryCategory, isInteractiveQuestionToolName } from '@/utils/toolDisplay';
 import { t } from '@/text';
+import { reconcileDisplayItems } from './displayItemReconcile';
 
 // Display item types for the grouped message list
 export type TextItem = {
@@ -46,8 +47,12 @@ export function useGroupedMessages(
     options: { collapseCurrentTurn?: boolean } = {},
 ): DisplayItem[] {
     const collapseCurrentTurn = options.collapseCurrentTurn ?? true;
+    const previousItemsRef = React.useRef<DisplayItem[]>([]);
     return React.useMemo(() => {
-        return groupMessagesForDisplay(messages, enabled, { collapseCurrentTurn });
+        const grouped = groupMessagesForDisplay(messages, enabled, { collapseCurrentTurn });
+        const reconciled = reconcileDisplayItems(previousItemsRef.current, grouped);
+        previousItemsRef.current = reconciled;
+        return reconciled;
     }, [messages, enabled, collapseCurrentTurn]);
 }
 

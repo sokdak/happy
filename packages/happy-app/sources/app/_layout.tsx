@@ -5,7 +5,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as Fonts from 'expo-font';
 import * as Notifications from 'expo-notifications';
 import { FontAwesome } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { usePathname, useRouter } from 'expo-router';
 import { AuthCredentials, TokenStorage } from '@/auth/tokenStorage';
 import { AuthProvider } from '@/auth/AuthContext';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
@@ -207,6 +207,12 @@ export default function RootLayout() {
     useTauriZoom();
     useTauriDrag();
     const router = useRouter();
+    const pathname = usePathname();
+    // Keep notification routing stable while still making its navigation
+    // decision from the latest route. Depending on pathname directly would
+    // tear down and re-register the notification listener on every route.
+    const pathnameRef = React.useRef(pathname);
+    pathnameRef.current = pathname;
     const { theme } = useUnistyles();
     const navigationTheme = React.useMemo(() => {
         if (theme.dark) {
@@ -318,7 +324,7 @@ export default function RootLayout() {
                 }
             })();
             console.log(`[PUSH ROUTING] Navigating to session: ${sessionId}`);
-            navigateToSession(router, sessionId);
+            navigateToSession(router, sessionId, pathnameRef.current);
         } finally {
             try {
                 await Notifications.clearLastNotificationResponseAsync();

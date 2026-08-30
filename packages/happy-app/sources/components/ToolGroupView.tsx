@@ -24,7 +24,7 @@ interface ToolGroupViewProps {
     metadata: Metadata | null;
     sessionId: string;
     expanded: boolean;
-    onToggle: () => void;
+    onToggle: (groupId: string) => void;
     onAnchorLayoutChange?: (anchor: ToolGroupLayoutAnchor) => void;
     nested?: boolean;
     hideSingleToolChildren?: boolean;
@@ -58,7 +58,7 @@ export const ToolGroupView = React.memo<ToolGroupViewProps>((props) => {
         : null;
     const handleSingleToolPress = React.useCallback(() => {
         if (!singleToolMessage) {
-            onToggle();
+            onToggle(group.id);
             return;
         }
         const filePath = isFileEditTool(singleToolMessage.tool.name) && typeof singleToolMessage.tool.input?.file_path === 'string'
@@ -69,8 +69,8 @@ export const ToolGroupView = React.memo<ToolGroupViewProps>((props) => {
             return;
         }
         router.push(`/session/${sessionId}/message/${singleToolMessage.id}`);
-    }, [onToggle, router, sessionId, singleToolMessage]);
-    const handleAnchoredToggle = useAnchoredToggle(expanded, onToggle, onAnchorLayoutChange);
+    }, [group.id, onToggle, router, sessionId, singleToolMessage]);
+    const handleAnchoredToggle = useAnchoredToggle(expanded, group.id, onToggle, onAnchorLayoutChange);
     const renderGroupMessage = React.useCallback((msg: Message) => (
         <ToolGroupMessageRow
             key={msg.id}
@@ -118,7 +118,7 @@ interface AgentWorkGroupViewProps {
     metadata: Metadata | null;
     sessionId: string;
     expanded: boolean;
-    onToggle: () => void;
+    onToggle: (groupId: string) => void;
     onAnchorLayoutChange?: (anchor: ToolGroupLayoutAnchor) => void;
 }
 
@@ -130,7 +130,7 @@ export const AgentWorkGroupView = React.memo<AgentWorkGroupViewProps>((props) =>
         ? runningElapsedSeconds * 1000
         : group.completedAt - group.startedAt;
     const label = t('toolGroup.workedFor', { duration: formatWorkDuration(durationMs) });
-    const handleAnchoredToggle = useAnchoredToggle(expanded, onToggle, onAnchorLayoutChange);
+    const handleAnchoredToggle = useAnchoredToggle(expanded, group.id, onToggle, onAnchorLayoutChange);
     const nestedItemsNewestFirst = React.useMemo(
         () => groupToolCallsForDisplay(group.messages, true, { groupSingleToolCalls: true }),
         [group.messages],
@@ -196,7 +196,7 @@ export const AgentWorkGroupView = React.memo<AgentWorkGroupViewProps>((props) =>
                     metadata={metadata}
                     sessionId={sessionId}
                     expanded={!collapsedToolGroups.has(item.id)}
-                    onToggle={() => handleToggleNestedGroup(item.id)}
+                    onToggle={handleToggleNestedGroup}
                     onAnchorLayoutChange={onAnchorLayoutChange}
                     nested
                     hideSingleToolChildren
@@ -311,7 +311,8 @@ function CollapseHeader(props: {
 
 function useAnchoredToggle(
     expanded: boolean,
-    onToggle: () => void,
+    groupId: string,
+    onToggle: (groupId: string) => void,
     onAnchorLayoutChange?: (anchor: ToolGroupLayoutAnchor) => void,
 ): (anchor?: ToolGroupLayoutAnchor) => void {
     const pendingAnchorRef = React.useRef<ToolGroupLayoutAnchor | null>(null);
@@ -327,8 +328,8 @@ function useAnchoredToggle(
 
     return React.useCallback((anchor?: ToolGroupLayoutAnchor) => {
         pendingAnchorRef.current = anchor ?? null;
-        onToggle();
-    }, [onToggle]);
+        onToggle(groupId);
+    }, [groupId, onToggle]);
 }
 
 function ToolGroupMessageRow(props: {
