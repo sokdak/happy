@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+
+vi.mock('@/ui/logger', () => ({
+  logger: { debug: vi.fn() },
+}))
+
 import { createSessionScanner } from './sessionScanner'
 import { RawJSONLines } from '../types'
 import type { ClaudeGoalStatusTranscriptEvent } from '../claudeGoalStatus'
@@ -7,6 +12,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { getProjectPath } from './path'
+import { logger } from '@/ui/logger'
 
 describe('sessionScanner', () => {
   let testDir: string
@@ -25,6 +31,7 @@ describe('sessionScanner', () => {
 
     collectedMessages = []
     collectedTranscriptEvents = []
+    vi.mocked(logger.debug).mockClear()
   })
   
   afterEach(async () => {
@@ -380,5 +387,125 @@ describe('sessionScanner', () => {
       isApiErrorMessage: true,
       apiErrorStatus: 429,
     })
+  })
+
+  it('silently skips known bookkeeping lines while preserving goal attachments', async () => {
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+      onTranscriptEvent: (event) => collectedTranscriptEvents.push(event),
+    })
+
+    const sessionId = '11111111-1111-1111-1111-111111111111'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+    const bookkeepingTypes = [
+      'attachment',
+      'last-prompt',
+      'ai-title',
+      'relocated',
+      'mode',
+      'pr-link',
+      'permission-mode',
+      'worktree-state',
+      'file-history-delta',
+    ]
+    await writeFile(
+      sessionFile,
+      bookkeepingTypes.map((type, index) => JSON.stringify({ type, uuid: `${type}-${index}` })).join('\n') + '\n',
+    )
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    expect(collectedMessages).toHaveLength(0)
+    expect(collectedTranscriptEvents).toHaveLength(0)
+    expect(vi.mocked(logger.debug).mock.calls.some(
+      ([message]) => typeof message === 'string' && message.includes('failing schema validation'),
+    )).toBe(false)
+  })
+
+  it('logs a truly unknown line type once per session file across rescans', async () => {
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+    })
+
+    const sessionId = '22222222-2222-2222-2222-222222222222'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+    const unknownLine = (index: number) => JSON.stringify({
+      type: 'not-a-real-type',
+      uuid: `unknown-${index}`,
+    })
+    await writeFile(sessionFile, `${unknownLine(0)}\n${unknownLine(1)}\n`)
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await appendFile(sessionFile, `${unknownLine(2)}\n`)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await appendFile(sessionFile, `${unknownLine(3)}\n`)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    const schemaDiagnostics = vi.mocked(logger.debug).mock.calls.filter(
+      ([message]) => typeof message === 'string' && message.includes('failing schema validation'),
+    )
+    expect(schemaDiagnostics).toHaveLength(1)
+    expect(schemaDiagnostics[0][0]).toContain('type=not-a-real-type')
+    expect(collectedMessages).toHaveLength(0)
+  })
+
+  it('logs malformed JSON once per session file across rescans', async () => {
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+    })
+
+    const sessionId = '33333333-3333-3333-3333-333333333333'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+    await writeFile(sessionFile, '{"type":"user"\nnot-json\n')
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await appendFile(sessionFile, '{still-not-json\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await appendFile(sessionFile, ']\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    const parseDiagnostics = vi.mocked(logger.debug).mock.calls.filter(
+      ([message]) => typeof message === 'string' && message.includes('malformed JSON'),
+    )
+    expect(parseDiagnostics).toHaveLength(1)
+    expect(collectedMessages).toHaveLength(0)
+  })
+
+  it('logs valid non-object JSON once per session file across rescans', async () => {
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg),
+    })
+
+    const sessionId = '44444444-4444-4444-4444-444444444444'
+    const sessionFile = join(projectDir, `${sessionId}.jsonl`)
+    await writeFile(sessionFile, 'null\nnull\n')
+
+    scanner.onNewSession(sessionId)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await appendFile(sessionFile, 'null\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await appendFile(sessionFile, 'null\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    const schemaDiagnostics = vi.mocked(logger.debug).mock.calls.filter(
+      ([message]) => typeof message === 'string' && message.includes('failing schema validation'),
+    )
+    const processingDiagnostics = vi.mocked(logger.debug).mock.calls.filter(
+      ([message]) => typeof message === 'string' && message.includes('Error processing transcript'),
+    )
+    expect(schemaDiagnostics).toHaveLength(1)
+    expect(processingDiagnostics).toHaveLength(0)
+    expect(collectedMessages).toHaveLength(0)
   })
 })

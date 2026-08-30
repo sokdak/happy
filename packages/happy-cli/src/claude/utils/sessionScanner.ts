@@ -14,8 +14,16 @@ import { getProjectPath } from "./path";
  */
 const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
     'file-history-snapshot',
+    'file-history-delta',
     'change',
     'queue-operation',
+    'last-prompt',
+    'ai-title',
+    'relocated',
+    'mode',
+    'permission-mode',
+    'pr-link',
+    'worktree-state',
 ]);
 
 export type ScannerTranscriptEvent = ClaudeGoalStatusTranscriptEvent;
@@ -46,6 +54,9 @@ export async function createSessionScanner(opts: {
     let currentSessionId: string | null = null;
     let watchers = new Map<string, (() => void)>();
     let processedEntryKeys = new Set<string>();
+    // Every rescan re-reads the whole transcript. Cap parse/schema diagnostics
+    // per session file for this scanner's life.
+    let loggedTranscriptDiagnostics = new Set<string>();
     // Sessions whose transcript file never appeared. Their watcher gave up,
     // so we must stop re-reading them and never re-create a watcher for them
     // — otherwise a phantom session id (e.g. a remote launch whose .jsonl is
@@ -55,7 +66,7 @@ export async function createSessionScanner(opts: {
 
     // Mark existing entries as processed and start watching the initial session
     if (opts.sessionId) {
-        let entries = await readSessionEntries(projectDir, opts.sessionId);
+        let entries = await readSessionEntries(projectDir, opts.sessionId, loggedTranscriptDiagnostics);
         logger.debug(`[SESSION_SCANNER] Marking ${entries.length} existing entries as processed from session ${opts.sessionId}`);
         for (let entry of entries) {
             processedEntryKeys.add(entry.key);
@@ -89,7 +100,7 @@ export async function createSessionScanner(opts: {
 
         // Process sessions
         for (let session of sessions) {
-            const sessionEntries = await readSessionEntries(projectDir, session);
+            const sessionEntries = await readSessionEntries(projectDir, session, loggedTranscriptDiagnostics);
             let skipped = 0;
             let sentMessages = 0;
             let sentTranscriptEvents = 0;
@@ -163,6 +174,7 @@ export async function createSessionScanner(opts: {
             watchers.clear();
             await sync.invalidateAndAwait();
             sync.stop();
+            loggedTranscriptDiagnostics.clear();
         },
         onNewSession: async (sessionId: string, options?: { treatExistingAsProcessed?: boolean }) => {
             if (currentSessionId === sessionId) {
@@ -190,7 +202,7 @@ export async function createSessionScanner(opts: {
             // file as fresh user prompts. Without this, every previous
             // user message re-appears in the chat after reconnect.
             if (options?.treatExistingAsProcessed) {
-                const existing = await readSessionEntries(projectDir, sessionId);
+                const existing = await readSessionEntries(projectDir, sessionId, loggedTranscriptDiagnostics);
                 logger.debug(`[SESSION_SCANNER] Pre-marking ${existing.length} existing entries as processed for new session ${sessionId}`);
                 for (const entry of existing) {
                     processedEntryKeys.add(entry.key);
@@ -236,7 +248,11 @@ function transcriptEventKey(event: ScannerTranscriptEvent): string {
  * Returns only valid conversation messages and recognized side-channel events,
  * silently skipping internal events.
  */
-async function readSessionEntries(projectDir: string, sessionId: string): Promise<SessionLogEntry[]> {
+async function readSessionEntries(
+    projectDir: string,
+    sessionId: string,
+    loggedTranscriptDiagnostics: Set<string>,
+): Promise<SessionLogEntry[]> {
     const expectedSessionFile = join(projectDir, `${sessionId}.jsonl`);
     logger.debug(`[SESSION_SCANNER] Reading session file: ${expectedSessionFile}`);
     let file: string;
@@ -249,15 +265,30 @@ async function readSessionEntries(projectDir: string, sessionId: string): Promis
     let lines = file.split('\n');
     let entries: SessionLogEntry[] = [];
     for (let l of lines) {
+        if (l.trim() === '') {
+            continue;
+        }
+
+        let message: any;
         try {
-            if (l.trim() === '') {
-                continue;
+            message = JSON.parse(l);
+        } catch (error) {
+            const loggedKey = `${expectedSessionFile}:malformed-json`;
+            if (!loggedTranscriptDiagnostics.has(loggedKey)) {
+                loggedTranscriptDiagnostics.add(loggedKey);
+                logger.debug(
+                    `[SESSION_SCANNER] Skipping malformed JSON transcript lines `
+                    + `(further malformed lines in this file are silent): ${error}`,
+                );
             }
-            let message = JSON.parse(l);
+            continue;
+        }
+
+        try {
             
             // Silently skip known internal Claude Code events
             // These are state/tracking events, not conversation messages
-            if (message.type && INTERNAL_CLAUDE_EVENT_TYPES.has(message.type)) {
+            if (typeof message?.type === 'string' && INTERNAL_CLAUDE_EVENT_TYPES.has(message.type)) {
                 continue;
             }
 
@@ -270,10 +301,28 @@ async function readSessionEntries(projectDir: string, sessionId: string): Promis
                 });
                 continue;
             }
-            
+
+            // Non-goal attachment lines are expected Claude bookkeeping. Goal
+            // status attachments have already been extracted above.
+            if (message?.type === 'attachment') {
+                continue;
+            }
+
             let parsed = RawJSONLinesSchema.safeParse(message);
             if (!parsed.success) {
-                // Unknown message types are silently skipped
+                const lineType = typeof message?.type === 'string' ? message.type : 'unknown';
+                const loggedKey = `${expectedSessionFile}:${lineType}`;
+                if (!loggedTranscriptDiagnostics.has(loggedKey)) {
+                    loggedTranscriptDiagnostics.add(loggedKey);
+                    const issues = parsed.error.issues
+                        .slice(0, 3)
+                        .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+                        .join('; ');
+                    logger.debug(
+                        `[SESSION_SCANNER] Skipping transcript lines failing schema validation `
+                        + `(further lines of this type in this file are silent): type=${lineType} — ${issues}`,
+                    );
+                }
                 continue;
             }
             entries.push({
@@ -282,7 +331,15 @@ async function readSessionEntries(projectDir: string, sessionId: string): Promis
                 message: parsed.data,
             });
         } catch (e) {
-            logger.debug(`[SESSION_SCANNER] Error processing message: ${e}`);
+            const lineType = typeof message?.type === 'string' ? message.type : 'unknown';
+            const loggedKey = `${expectedSessionFile}:processing-error:${lineType}`;
+            if (!loggedTranscriptDiagnostics.has(loggedKey)) {
+                loggedTranscriptDiagnostics.add(loggedKey);
+                logger.debug(
+                    `[SESSION_SCANNER] Error processing transcript lines `
+                    + `(further errors of this type in this file are silent): type=${lineType} — ${e}`,
+                );
+            }
             continue;
         }
     }
