@@ -41,4 +41,27 @@ describe('CLI availability detection', () => {
 
     expect(detectCLIAvailability().agy).toBe(true);
   });
+
+  it('applies the agent policy, so an installed but disallowed agent is never advertised', () => {
+    // Everything on PATH — the point is that detection alone does not decide.
+    mockedExecSync.mockImplementation(() => '');
+    mockedExistsSync.mockReturnValue(true);
+    mockedFindAgyBin.mockReturnValue('/home/person/.local/bin/agy');
+
+    expect(detectCLIAvailability({})).toMatchObject({
+      claude: true,
+      codex: true,
+      gemini: true,
+      openclaw: true,
+      agy: true,
+    });
+
+    expect(detectCLIAvailability({ HAPPY_ENABLED_AGENTS: 'gemini' })).toMatchObject({
+      claude: false,
+      codex: false,
+      gemini: true,
+      openclaw: false,
+      agy: false,
+    });
+  });
 });
