@@ -63,6 +63,8 @@ import { UserProfile } from './friendTypes';
 import { resolveControlHandoffDirection } from './controlHandoff';
 import { resolveMessageModeMeta, UnsupportedPermissionModeError } from './messageMeta';
 import type { AttachmentPreview, UploadedAttachment } from './attachmentTypes';
+import { shouldRefreshOnWebFocusTransition, type WebFocusState } from './webFocusRefresh';
+import { resolveExistingViewingSessionId, stopDeletedSessionWork } from './sessionSyncLifecycle';
 import { requestAttachmentUpload, uploadEncryptedBlob } from './apiAttachments';
 import { encryptBlob } from '@/encryption/blob';
 import { readFileBytes } from '@/utils/readFileBytes';
@@ -168,6 +170,7 @@ class Sync {
     private activityAccumulator: ActivityUpdateAccumulator;
     private pendingSettings: Partial<Settings> = loadPendingSettings();
     private appState: AppStateStatus = AppState.currentState;
+    private webFocusState: WebFocusState = getCurrentAppState();
     private backgroundSendTimeout: ReturnType<typeof setTimeout> | null = null;
     private backgroundSendNotificationId: string | null = null;
     private backgroundSendStartedAt: number | null = null;
@@ -205,7 +208,11 @@ class Sync {
             // Web/desktop: visibilitychange/focus listeners below drive this same path
             // by updating this.appState too — re-derive via getCurrentAppState() so
             // the wire value matches what the server uses for suppression.
-            apiSocket.sendAppState(getCurrentAppState());
+            const currentAppState = getCurrentAppState();
+            apiSocket.sendAppState(currentAppState);
+            if (Platform.OS === 'web') {
+                this.handleWebFocusState(currentAppState);
+            }
 
             if (nextAppState === 'active') {
                 const shouldFailAfterResume = this.backgroundSendStartedAt !== null
@@ -239,9 +246,8 @@ class Sync {
                 // fresh SessionView mount). getMessagesSync does a bounded forward sync;
                 // if the socket hasn't reconnected yet, InvalidateSync's backoff retries
                 // until it has.
-                const resumeViewingSessionId = storage.getState().currentViewingSessionId;
-                if (resumeViewingSessionId) {
-                    this.onSessionVisible(resumeViewingSessionId);
+                if (Platform.OS !== 'web') {
+                    this.refreshViewingSession();
                 }
             } else {
                 log.log(`📱 App state changed to: ${nextAppState}`);
@@ -255,7 +261,10 @@ class Sync {
         // the user is actually looking at this client.
         if (Platform.OS === 'web' && typeof document !== 'undefined') {
             const broadcast = () => {
-                apiSocket.sendAppState(getCurrentAppState());
+                const currentAppState = getCurrentAppState();
+                this.appState = currentAppState;
+                apiSocket.sendAppState(currentAppState);
+                this.handleWebFocusState(currentAppState);
             };
             document.addEventListener('visibilitychange', broadcast);
             window.addEventListener('focus', broadcast);
@@ -343,6 +352,24 @@ class Sync {
         const session = storage.getState().sessions[sessionId];
         if (session) {
             voiceHooks.onSessionFocus(sessionId, session.metadata || undefined);
+        }
+    }
+
+    /** Refresh only while the viewed session still exists in the store. */
+    private refreshViewingSession = () => {
+        const state = storage.getState();
+        const sessionId = resolveExistingViewingSessionId(state);
+        if (!sessionId) {
+            return;
+        }
+        this.onSessionVisible(sessionId);
+    }
+
+    private handleWebFocusState(nextState: WebFocusState) {
+        const shouldRefresh = shouldRefreshOnWebFocusTransition(this.webFocusState, nextState);
+        this.webFocusState = nextState;
+        if (shouldRefresh) {
+            this.refreshViewingSession();
         }
     }
 
@@ -2078,10 +2105,17 @@ class Sync {
                 this.sessionLastSeq.set(sessionId, maxSeq);
             }
         } catch (error) {
-            this.maybeStartBackgroundSendWatchdog();
-            throw error;
+            // Session deletion and the background-send watchdog deliberately
+            // abort an in-flight POST. Treat that as settled work; stop() on the
+            // owning InvalidateSync prevents another retry for a deleted session.
+            if (!controller.signal.aborted) {
+                this.maybeStartBackgroundSendWatchdog();
+                throw error;
+            }
         } finally {
-            this.sendAbortControllers.delete(sessionId);
+            if (this.sendAbortControllers.get(sessionId) === controller) {
+                this.sendAbortControllers.delete(sessionId);
+            }
         }
 
         if (pending.length === 0) {
@@ -2368,10 +2402,7 @@ class Sync {
             // changes", but realtimeStatus tracks the voice session, not this data
             // socket — see useSocketStatus vs useRealtimeStatus — so that trigger
             // never fired on reconnect.)
-            const reconnectViewingSessionId = storage.getState().currentViewingSessionId;
-            if (reconnectViewingSessionId) {
-                this.onSessionVisible(reconnectViewingSessionId);
-            }
+            this.refreshViewingSession();
             for (const sync of this.sendSync.values()) {
                 sync.invalidate();
             }
@@ -2488,17 +2519,25 @@ class Sync {
             log.log('🗑️ Delete session update received');
             const sessionId = updateData.body.sid;
 
+            // Stop retry loops before removing their session/encryption state.
+            // Dropping only the map entries leaves the InvalidateSync instances
+            // alive, and an in-flight outbox POST must also be aborted explicitly.
+            stopDeletedSessionWork(sessionId, {
+                messagesSync: this.messagesSync,
+                sendSync: this.sendSync,
+                sendAbortControllers: this.sendAbortControllers,
+                pendingOutbox: this.pendingOutbox,
+            });
+
             // Remove session from storage
             storage.getState().deleteSession(sessionId);
 
             // Remove encryption keys from memory
             this.encryption.removeSessionEncryption(sessionId);
+            this.sessionDataKeys.delete(sessionId);
 
             // Clear any cached git status
             gitStatusSync.clearForSession(sessionId);
-            this.messagesSync.delete(sessionId);
-            this.sendSync.delete(sessionId);
-            this.pendingOutbox.delete(sessionId);
             this.sessionLastSeq.delete(sessionId);
             this.sessionOldestSeq.delete(sessionId);
             this.sessionMessageLocks.delete(sessionId);
