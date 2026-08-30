@@ -69,6 +69,29 @@ export const it: TranslationStructure = {
         saveAs: 'Salva con nome',
     },
 
+    workflows: {
+        activeTitle: 'Flussi di lavoro attivi',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Altro',
+        states: {
+            running: 'In esecuzione',
+            completed: 'Completato',
+            error: 'Errore',
+            active: 'Attivo',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Flusso di lavoro',
+    },
+
     profile: {
         userProfile: 'Profilo utente',
         details: 'Dettagli',

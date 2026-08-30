@@ -397,6 +397,29 @@ export const ru: TranslationStructure = {
         },
     },
 
+    workflows: {
+        activeTitle: 'Активные рабочие процессы',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Другое',
+        states: {
+            running: 'Выполняется',
+            completed: 'Завершено',
+            error: 'Ошибка',
+            active: 'Активно',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Рабочий процесс',
+    },
+
     profile: {
         userProfile: 'Профиль пользователя',
         details: 'Детали',

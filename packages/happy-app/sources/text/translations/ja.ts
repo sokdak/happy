@@ -72,6 +72,29 @@ export const ja: TranslationStructure = {
         saveAs: '名前を付けて保存',
     },
 
+    workflows: {
+        activeTitle: '実行中のワークフロー',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'その他',
+        states: {
+            running: '実行中',
+            completed: '完了',
+            error: 'エラー',
+            active: 'アクティブ',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'ワークフロー',
+    },
+
     profile: {
         userProfile: 'ユーザープロフィール',
         details: '詳細',

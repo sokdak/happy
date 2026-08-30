@@ -122,6 +122,14 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="session/[id]/workflows"
+                options={{
+                    headerShown: true,
+                    headerTitle: t('workflows.activeTitle'),
+                    headerBackTitle: t('common.back'),
+                }}
+            />
+            <Stack.Screen
                 name="session/[id]/files"
                 options={{
                     headerShown: true,

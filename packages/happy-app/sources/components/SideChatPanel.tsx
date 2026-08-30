@@ -35,6 +35,7 @@ export const SideChatPanel = React.memo(function SideChatPanel({
     onCreateSideChat,
     canCreateSideChat,
     creatingSideChat,
+    interactionEnabled = true,
 }: {
     parentSessionId: string;
     sideChats: Session[];
@@ -44,6 +45,7 @@ export const SideChatPanel = React.memo(function SideChatPanel({
     onCreateSideChat: () => void;
     canCreateSideChat: boolean;
     creatingSideChat: boolean;
+    interactionEnabled?: boolean;
 }) {
     const activeSession = React.useMemo(() => {
         if (activeSideChatId) {
@@ -56,10 +58,10 @@ export const SideChatPanel = React.memo(function SideChatPanel({
     // Pull the focused side chat's messages into the store while mounted.
     const activeId = activeSession?.id ?? null;
     React.useEffect(() => {
-        if (activeId) {
+        if (activeId && interactionEnabled) {
             sync.onSessionVisible(activeId);
         }
-    }, [activeId]);
+    }, [activeId, interactionEnabled]);
 
     if (sideChats.length === 0) {
         return (
@@ -80,7 +82,11 @@ export const SideChatPanel = React.memo(function SideChatPanel({
                 onClose={onCloseSideChat}
             />
             {activeSession && (
-                <SideChatConversation key={activeSession.id} session={activeSession} />
+                <SideChatConversation
+                    key={activeSession.id}
+                    session={activeSession}
+                    interactionEnabled={interactionEnabled}
+                />
             )}
         </View>
     );
@@ -215,7 +221,13 @@ const SideChatEmptyState = React.memo(function SideChatEmptyState({
 });
 
 /** Focused side chat inside the panel: the real chat body + an expand button. */
-const SideChatConversation = React.memo(function SideChatConversation({ session }: { session: Session }) {
+const SideChatConversation = React.memo(function SideChatConversation({
+    session,
+    interactionEnabled,
+}: {
+    session: Session;
+    interactionEnabled: boolean;
+}) {
     const { theme } = useUnistyles();
     const openFullScreen = React.useCallback(() => {
         Modal.show({ component: SideChatModal, props: { sessionId: session.id } });
@@ -237,7 +249,12 @@ const SideChatConversation = React.memo(function SideChatConversation({ session 
                 </Pressable>
             </View>
             <View style={styles.chatWrap}>
-                <SessionViewLoaded sessionId={session.id} session={session} embedded />
+                <SessionViewLoaded
+                    sessionId={session.id}
+                    session={session}
+                    embedded
+                    interactionEnabled={interactionEnabled}
+                />
             </View>
         </View>
     );

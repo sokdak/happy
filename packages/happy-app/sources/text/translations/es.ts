@@ -69,6 +69,29 @@ export const es: TranslationStructure = {
         optional: 'opcional',
     },
 
+    workflows: {
+        activeTitle: 'Flujos de trabajo activos',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Otros',
+        states: {
+            running: 'En ejecución',
+            completed: 'Completado',
+            error: 'Error',
+            active: 'Activo',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Flujo de trabajo',
+    },
+
     profile: {
         userProfile: 'Perfil de usuario',
         details: 'Detalles',

@@ -149,4 +149,13 @@ describe('terminal tool display helpers', () => {
         pendingPlan.permission.status = 'approved';
         expect(shouldUseCompactToolRow(pendingPlan, true)).toBe(true);
     });
+
+    it('uses the localized launch title for compact Workflow activity', () => {
+        const workflow = tool('Workflow', {
+            script: 'export default workflow({ phases: [{ name: "build" }] })',
+        });
+        workflow.description = 'Launch the full build workflow';
+
+        expect(getToolActivityLabel(workflow)).toBe('workflows.toolTitle:');
+    });
 });
