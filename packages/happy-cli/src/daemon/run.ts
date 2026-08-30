@@ -28,7 +28,7 @@ import { detectCLIAvailability } from '@/utils/detectCLI';
 import { resolveSpawnAgent, stripSourceAgentRequest } from '@/utils/agentPolicy';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
-import { ADOPTED_SESSION_LABEL, selectAdoptableSessions, selectExpiredFinishedSessions } from '@/daemon/sessionAdoption';
+import { ADOPTED_SESSION_LABEL, restoreFinishedSessions, selectAdoptableSessions, selectExpiredFinishedSessions } from '@/daemon/sessionAdoption';
 import { findAllHappyProcesses } from '@/daemon/doctor';
 import { processStartToken } from '@/utils/processIdentity';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
@@ -180,23 +180,8 @@ export async function startDaemon(): Promise<void> {
 
     // Retain session data after process exits so resume can still find it.
     // Pre-populate from disk so sessions survive daemon restarts.
-    const sessionIdToFinishedSession = new Map<string, TrackedSession>();
     const persisted = readPersistedSessions();
-    for (const [id, s] of Object.entries(persisted)) {
-      sessionIdToFinishedSession.set(id, {
-        startedBy: 'persisted',
-        happySessionId: id,
-        happySessionMetadataFromLocalWebhook: s.metadata,
-        encryption: {
-          encryptionKey: decodeBase64(s.encryptionKey),
-          encryptionVariant: s.encryptionVariant,
-          seq: s.seq,
-          metadataVersion: s.metadataVersion,
-          agentStateVersion: s.agentStateVersion,
-        },
-        pid: 0,
-      });
-    }
+    const sessionIdToFinishedSession = restoreFinishedSessions(persisted);
     if (Object.keys(persisted).length > 0) {
       logger.debug(`[DAEMON RUN] Loaded ${Object.keys(persisted).length} persisted sessions from disk`);
     }
