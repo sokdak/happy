@@ -124,8 +124,11 @@ export function getGeminiPermissionModes(translate: Translate): PermissionMode[]
     ];
 }
 
-// The current generation plus Haiku 4.5. Older Claudes and the `default model`
-// row are deliberately absent: picking a model is the point of this menu.
+// The 1M-context Claude 5 models plus Haiku 4.5. The 256k variants are
+// deliberately absent: this fork runs long sessions, so the wider window is
+// what every row here is for, and Haiku is the one cheap escape hatch. Older
+// Claudes and the `default model` row are absent too — picking a model is the
+// point of this menu.
 //
 // Keys are full model IDs rather than the short aliases, because the aliases
 // do not all mean what the row says. `sonnet` still resolves to Sonnet 4.6 in
@@ -137,11 +140,8 @@ export function getGeminiPermissionModes(translate: Translate): PermissionMode[]
 // dropped (#1721).
 export function getClaudeModelModes(): ModelMode[] {
     return [
-        { key: 'claude-fable-5', name: 'Fable 5', description: null },
-        { key: 'claude-fable-5[1m]', name: 'Fable 5 [1M]', description: '1M context' },
-        { key: 'claude-opus-5', name: 'Opus 5', description: null },
         { key: 'claude-opus-5[1m]', name: 'Opus 5 [1M]', description: '1M context' },
-        { key: 'claude-sonnet-5', name: 'Sonnet 5', description: null },
+        { key: 'claude-fable-5[1m]', name: 'Fable 5 [1M]', description: '1M context' },
         { key: 'claude-sonnet-5[1m]', name: 'Sonnet 5 [1M]', description: '1M context' },
         { key: 'claude-haiku-4-5', name: 'Haiku 4.5', description: null },
     ];

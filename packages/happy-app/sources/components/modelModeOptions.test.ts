@@ -125,28 +125,25 @@ describe('modelModeOptions', () => {
         expect(includeConfiguredModel('claude', models, 'my-workspace-model')).toBe(models);
     });
 
-    it('offers the curated Claude catalog with explicit IDs and 1M variants', () => {
+    it('offers only the 1M Claude 5 models and Haiku', () => {
         const models = getClaudeModelModes();
         expect(models.map((model) => model.key)).toEqual([
-            'claude-fable-5',
-            'claude-fable-5[1m]',
-            'claude-opus-5',
             'claude-opus-5[1m]',
-            'claude-sonnet-5',
+            'claude-fable-5[1m]',
             'claude-sonnet-5[1m]',
             'claude-haiku-4-5',
         ]);
         expect(models.map((model) => model.name)).toEqual([
-            'Fable 5',
-            'Fable 5 [1M]',
-            'Opus 5',
             'Opus 5 [1M]',
-            'Sonnet 5',
+            'Fable 5 [1M]',
             'Sonnet 5 [1M]',
             'Haiku 4.5',
         ]);
         expect(models.filter((model) => model.key.endsWith('[1m]')).map((model) => model.description))
             .toEqual(['1M context', '1M context', '1M context']);
+        // The 256k variants are not offered: every Claude 5 row is the 1M one.
+        expect(models.some((model) => ['claude-opus-5', 'claude-fable-5', 'claude-sonnet-5'].includes(model.key)))
+            .toBe(false);
         // No `default model` row, and no alias keys: an alias would silently
         // resolve to an older model than the row claims.
         expect(models.some((model) => model.key === 'default')).toBe(false);
@@ -183,7 +180,9 @@ describe('modelModeOptions', () => {
 
     it('uses code defaults for agent defaults', () => {
         expect(getDefaultPermissionModeKey('claude')).toBe('auto');
-        expect(getDefaultModelKey('claude')).toBe('claude-opus-5');
+        // The default has to be a row the picker actually offers.
+        expect(getDefaultModelKey('claude')).toBe('claude-opus-5[1m]');
+        expect(getClaudeModelModes().some((model) => model.key === getDefaultModelKey('claude'))).toBe(true);
         expect(getDefaultEffortKey('claude')).toBe('medium');
         expect(getDefaultPermissionModeKey('codex')).toBe('auto');
         expect(getDefaultModelKey('codex')).toBe('gpt-5.6-sol');
