@@ -14,7 +14,7 @@ import { startCaffeinate, stopCaffeinate } from '@/utils/caffeinate';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
-import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock, readPersistedSessions, persistSession } from '@/persistence';
+import { writeDaemonState, DaemonLocallyPersistedState, readDaemonState, acquireDaemonLock, releaseDaemonLock, readPersistedSessions, persistSession, SESSION_MAX_AGE_MS } from '@/persistence';
 import type { PersistedSession } from '@/persistence';
 
 import { cleanupDaemonState, isDaemonRunningCurrentlyInstalledHappyVersion, stopDaemon } from './controlClient';
@@ -28,6 +28,8 @@ import { detectCLIAvailability } from '@/utils/detectCLI';
 import { resolveSpawnAgent, stripSourceAgentRequest } from '@/utils/agentPolicy';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
+import { ADOPTED_SESSION_LABEL, selectAdoptableSessions, selectExpiredFinishedSessions } from '@/daemon/sessionAdoption';
+import { findAllHappyProcesses } from '@/daemon/doctor';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
 import {
   buildSessionChildEnvironment,
@@ -198,6 +200,47 @@ export async function startDaemon(): Promise<void> {
       logger.debug(`[DAEMON RUN] Loaded ${Object.keys(persisted).length} persisted sessions from disk`);
     }
 
+    // Sessions register once, over the webhook, and the registration lives only
+    // in memory - so every daemon restart, including the automatic hand-off on
+    // upgrade, left the sessions it had spawned running but untracked. Untracked
+    // means unstoppable: stopSession() resolves ids through pidToTrackedSession,
+    // so the app could neither list nor stop them. Re-adopt the ones whose
+    // process is still alive.
+    try {
+      const happyProcesses = await findAllHappyProcesses();
+      const adoptable = selectAdoptableSessions(persisted, {
+        liveHappyPids: happyProcesses.map(({ pid }) => pid),
+        selfPid: process.pid,
+      });
+
+      for (const { sessionId, pid } of adoptable) {
+        const s = persisted[sessionId];
+        pidToTrackedSession.set(pid, {
+          // No ChildProcess handle to inherit across a restart, so stopSession
+          // takes its kill-by-pid path. Labelled distinctly because we cannot
+          // tell from disk whether a daemon or a terminal started it.
+          startedBy: ADOPTED_SESSION_LABEL,
+          happySessionId: sessionId,
+          happySessionMetadataFromLocalWebhook: s.metadata,
+          encryption: {
+            encryptionKey: decodeBase64(s.encryptionKey),
+            encryptionVariant: s.encryptionVariant,
+            seq: s.seq,
+            metadataVersion: s.metadataVersion,
+            agentStateVersion: s.agentStateVersion,
+          },
+          pid,
+        });
+      }
+
+      if (adoptable.length > 0) {
+        logger.debug(`[DAEMON RUN] Adopted ${adoptable.length} session(s) still running from a previous daemon: ${adoptable.map((a) => `${a.sessionId}(pid ${a.pid})`).join(', ')}`);
+      }
+    } catch (error) {
+      // Adoption is a recovery path, not a startup requirement.
+      logger.debug('[DAEMON RUN] Failed to adopt sessions from a previous daemon', error);
+    }
+
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
 
@@ -231,7 +274,21 @@ export async function startDaemon(): Promise<void> {
       }
 
       // Check if we already have this PID (daemon-spawned)
-      const existingSession = pidToTrackedSession.get(pid);
+      let existingSession = pidToTrackedSession.get(pid);
+
+      // A pid adopted at startup can since have been recycled by the OS and
+      // handed to a new session. The webhook is the authoritative source of
+      // pid -> session id, so when they disagree the adopted record is stale
+      // and must not shadow the session reporting itself now.
+      if (
+        existingSession
+        && existingSession.startedBy === ADOPTED_SESSION_LABEL
+        && existingSession.happySessionId !== sessionId
+      ) {
+        logger.debug(`[DAEMON RUN] Dropping adopted record for PID ${pid} (${existingSession.happySessionId}); ${sessionId} reported the same pid`);
+        pidToTrackedSession.delete(pid);
+        existingSession = undefined;
+      }
 
       if (existingSession && existingSession.startedBy === 'daemon') {
         // Update daemon-spawned session with reported data
@@ -816,7 +873,7 @@ export async function startDaemon(): Promise<void> {
     const onChildExited = (pid: number) => {
       const session = pidToTrackedSession.get(pid);
       if (session?.happySessionId && session.encryption) {
-        sessionIdToFinishedSession.set(session.happySessionId, session);
+        sessionIdToFinishedSession.set(session.happySessionId, { ...session, finishedAt: Date.now() });
         logger.debug(`[DAEMON RUN] Process PID ${pid} exited, preserved session ${session.happySessionId} for resume`);
       } else {
         logger.debug(`[DAEMON RUN] Removing exited process PID ${pid} from tracking`);
@@ -920,6 +977,24 @@ export async function startDaemon(): Promise<void> {
           logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           pidToTrackedSession.delete(pid);
         }
+      }
+
+      // The finished-session map only exists so a resume can still find its
+      // encryption keys. The disk copy is pruned at the same age, so anything
+      // older than that cannot serve a resume - it was pure growth.
+      const expiredFinished = selectExpiredFinishedSessions(
+        Array.from(sessionIdToFinishedSession.entries()).map(([sessionId, session]) => ({
+          sessionId,
+          finishedAt: session.finishedAt,
+        })),
+        Date.now(),
+        SESSION_MAX_AGE_MS,
+      );
+      for (const sessionId of expiredFinished) {
+        sessionIdToFinishedSession.delete(sessionId);
+      }
+      if (expiredFinished.length > 0) {
+        logger.debug(`[DAEMON RUN] Dropped ${expiredFinished.length} finished session(s) past the resume window`);
       }
 
       // Check if daemon needs update by detecting whether `dist/index.mjs` was

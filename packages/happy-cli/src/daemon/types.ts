@@ -28,4 +28,9 @@ export interface TrackedSession {
   message?: string;
   /** tmux session identifier (format: session:window) */
   tmuxSessionId?: string;
+  /**
+   * When the process exited, for entries kept only so a resume can still find
+   * their encryption keys. Absent on live sessions.
+   */
+  finishedAt?: number;
 }
