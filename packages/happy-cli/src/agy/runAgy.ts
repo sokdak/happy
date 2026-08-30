@@ -215,7 +215,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   }
 
   session.rpcHandlerManager.registerHandler('abort', handleAbort);
-  registerKillSessionHandler(session.rpcHandlerManager, async () => {
+  registerKillSessionHandler(session, async () => {
     shouldExit = true;
     messageQueue.close();
     await handleAbort();

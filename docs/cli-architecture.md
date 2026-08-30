@@ -100,6 +100,7 @@ graph LR
         E8[HAPPY_DISABLED_AGENTS]
         E9[HAPPY_LOG_RETENTION_DAYS]
         E10[HAPPY_CODEX_MODEL]
+        E11[HAPPY_SESSION_IDLE_TIMEOUT_HOURS]
     end
 
     E1 -.-> settings & access & daemon & logs
@@ -119,6 +120,11 @@ Configuration lives in `src/configuration.ts`:
   name one. There is no built-in default: without this variable, and without an
   explicit pick, the model is left out of the request and Codex uses its own
   `~/.codex/config.toml`. A user's explicit choice always wins over this.
+- `HAPPY_SESSION_IDLE_TIMEOUT_HOURS` ends a daemon-started session that has run no
+  turn for that long (default 24, `0` never ends one). A running turn is never
+  interrupted however long it takes, and the session ends through the same
+  graceful path as the app's "Kill Session" so the server stops showing it as
+  active. Sessions started from a terminal are never reaped.
 - `HAPPY_LOG_RETENTION_DAYS` sets how long `logs/` is kept (default 14, `0` disables
   pruning). Expired files are deleted in the background on start, oldest first, off
   the startup path — so a directory that has grown to six figures is cleared by the

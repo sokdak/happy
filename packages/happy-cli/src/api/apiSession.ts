@@ -1,3 +1,4 @@
+import { createIdleWatchdog, resolveIdleTimeoutMs, type IdleWatchdog } from '@/session/idleWatchdog';
 import { logger } from '@/ui/logger'
 import { EventEmitter } from 'node:events'
 import { io, Socket } from 'socket.io-client'
@@ -200,6 +201,7 @@ export class ApiSessionClient extends EventEmitter {
     private agentState: AgentState | null;
     private agentStateVersion: number;
     private socket: Socket<ServerToClientEvents, ClientToServerEvents>;
+    private idleWatchdog: IdleWatchdog | null = null;
     private pendingMessages: UserMessage[] = [];
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null;
     private pendingFileEvents: FileEventMessage[] = [];
@@ -913,6 +915,11 @@ export class ApiSessionClient extends EventEmitter {
         if (process.env.DEBUG) { // too verbose for production
             logger.debug(`[API] Sending keep alive message: ${thinking}`);
         }
+
+        // Every agent runs this on a timer with its current thinking state, so
+        // it is the one place that sees "is this session doing anything" for
+        // all of them without per-agent wiring.
+        this.idleWatchdog?.observe(thinking);
         this.socket.volatile.emit('session-alive', {
             sid: this.sessionId,
             time: Date.now(),
@@ -961,6 +968,32 @@ export class ApiSessionClient extends EventEmitter {
     /**
      * Returns the latest session metadata known to the client.
      */
+    /**
+     * Arm the idle reaper for this session.
+     *
+     * Only daemon-started sessions are reaped. A session running in a terminal
+     * is in front of someone who can see it and end it; one the daemon spawned
+     * for the app has no such owner, and those are the ones that accumulated.
+     */
+    armIdleWatchdog(onIdle: () => void): void {
+        if (this.metadata?.startedBy !== 'daemon') {
+            return;
+        }
+
+        const timeoutMs = resolveIdleTimeoutMs();
+        if (timeoutMs <= 0) {
+            logger.debug('[API] Session idle timeout disabled');
+            return;
+        }
+
+        logger.debug(`[API] Session will be ended after ${Math.round(timeoutMs / 60000)} idle minutes`);
+        this.idleWatchdog = createIdleWatchdog({ timeoutMs, onIdle });
+    }
+
+    idleMs(): number | null {
+        return this.idleWatchdog?.idleMs() ?? null;
+    }
+
     getMetadata(): Metadata | null {
         return this.metadata;
     }
@@ -1137,6 +1170,7 @@ export class ApiSessionClient extends EventEmitter {
     close(): Promise<void> {
         if (this.closePromise) return this.closePromise;
         logger.debug('[API] socket.close() called');
+        this.idleWatchdog?.stop();
         this.closing = true;
         this.closeController.abort(new Error('API session is closing'));
         this.claudeWorkflowTracker.dispose();

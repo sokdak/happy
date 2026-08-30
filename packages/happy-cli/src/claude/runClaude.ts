@@ -1015,7 +1015,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Browser-side "Archive" button routes through this RPC and DOES
     // want the metadata stamped — it's the user explicitly choosing to
     // retire the session, not just disconnecting.
-    registerKillSessionHandler(session.rpcHandlerManager, () => cleanup({ archive: true, exitCode: 0 }));
+    registerKillSessionHandler(session, () => cleanup({ archive: true, exitCode: 0 }));
 
     // Create claude loop
     const exitCode = await loop({
