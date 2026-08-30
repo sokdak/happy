@@ -23,7 +23,8 @@ import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
 import { startOfflineReconnection, connectionState } from '@/utils/serverConnectionErrors';
 import { claudeLocal } from '@/claude/claudeLocal';
-import { createSessionScanner } from '@/claude/utils/sessionScanner';
+import { createSessionScanner, type ScannerTranscriptEvent } from '@/claude/utils/sessionScanner';
+import { createClaudeAiTitleApplier } from '@/claude/claudeAiTitle';
 import {
     CLAUDE_GOAL_ACTION_CONFIRMATIONS,
     claudeGoalActionCapabilities,
@@ -220,13 +221,34 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         agentGoalStatus: latestClaudeGoalStatus ?? goalStatus,
                     }));
                 };
+                const applyClaudeAiTitle = createClaudeAiTitleApplier({
+                    getClaudeSessionId: currentClaudeSessionId,
+                    getCurrentTitle: () => session.getMetadata()?.summary?.text ?? null,
+                    applyTitle: (title) => {
+                        // Same persistence path as the change_title MCP tool:
+                        // the synthetic summary's side effect writes
+                        // metadata.summary.
+                        session.sendClaudeSessionMessage({
+                            type: 'summary',
+                            summary: title,
+                            leafUuid: randomUUID(),
+                        });
+                    },
+                });
+                const handleClaudeTranscriptEvent = (event: ScannerTranscriptEvent) => {
+                    if (event.type === 'ai_title') {
+                        applyClaudeAiTitle(event);
+                        return;
+                    }
+                    updateClaudeGoalState(event);
+                };
                 const scanner = await createSessionScanner({
                     sessionId: null,
                     workingDirectory,
                     onMessage: (msg) => {
                         void session.sendClaudeSessionMessageFromLocalTranscript(msg);
                     },
-                    onTranscriptEvent: updateClaudeGoalState,
+                    onTranscriptEvent: handleClaudeTranscriptEvent,
                 });
                 if (offlineSessionId) scanner.onNewSession(offlineSessionId);
                 return { session, scanner };
@@ -432,6 +454,29 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             agentGoalStatus: latestClaudeGoalStatus ?? goalStatus,
         }));
     };
+    // Claude Code names the conversation itself and writes an `ai-title`
+    // transcript line. Adopt it as the Happy session title, but only when the
+    // session has none — an explicit change_title always wins.
+    const applyClaudeAiTitle = createClaudeAiTitleApplier({
+        getClaudeSessionId: currentClaudeSessionId,
+        getCurrentTitle: () => session.getMetadata()?.summary?.text ?? null,
+        applyTitle: (title) => {
+            // Same persistence path as the change_title MCP tool: the
+            // synthetic summary's side effect writes metadata.summary.
+            session.sendClaudeSessionMessage({
+                type: 'summary',
+                summary: title,
+                leafUuid: randomUUID(),
+            });
+        },
+    });
+    const handleClaudeTranscriptEvent = (event: ScannerTranscriptEvent) => {
+        if (event.type === 'ai_title') {
+            applyClaudeAiTitle(event);
+            return;
+        }
+        updateClaudeGoalState(event);
+    };
 
     // Remote-mode session scanner: catches user-typed prompts that
     // appeared in the Claude JSONL while we weren't looking — typically
@@ -460,7 +505,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             if (consumeAppPrompt(content)) return;
             session.sendClaudeSessionMessage(raw);
         },
-        onTranscriptEvent: updateClaudeGoalState,
+        onTranscriptEvent: handleClaudeTranscriptEvent,
     });
 
     // Start Happy MCP server

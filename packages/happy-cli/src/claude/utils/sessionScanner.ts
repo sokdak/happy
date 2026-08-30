@@ -1,6 +1,7 @@
 import { InvalidateSync } from "@/utils/sync";
 import { RawJSONLines, RawJSONLinesSchema } from "../types";
 import { parseClaudeGoalStatusTranscriptEvent, type ClaudeGoalStatusTranscriptEvent } from "../claudeGoalStatus";
+import { parseClaudeAiTitleTranscriptEvent, type ClaudeAiTitleTranscriptEvent } from "../claudeAiTitle";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { logger } from "@/ui/logger";
@@ -18,7 +19,6 @@ const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
     'change',
     'queue-operation',
     'last-prompt',
-    'ai-title',
     'relocated',
     'mode',
     'permission-mode',
@@ -26,7 +26,9 @@ const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
     'worktree-state',
 ]);
 
-export type ScannerTranscriptEvent = ClaudeGoalStatusTranscriptEvent;
+export type ScannerTranscriptEvent =
+    | ClaudeGoalStatusTranscriptEvent
+    | ClaudeAiTitleTranscriptEvent;
 
 type SessionLogEntry =
     | { kind: 'message'; key: string; message: RawJSONLines }
@@ -115,7 +117,7 @@ export async function createSessionScanner(opts: {
                     opts.onMessage(entry.message);
                     sentMessages++;
                 } else {
-                    logger.debug(`[SESSION_SCANNER] Sending new transcript event: type=${entry.event.type}, uuid=${entry.event.uuid}`);
+                    logger.debug(`[SESSION_SCANNER] Sending new transcript event: type=${entry.event.type}, key=${entry.key}`);
                     opts.onTranscriptEvent?.(entry.event);
                     sentTranscriptEvents++;
                 }
@@ -240,6 +242,11 @@ function messageKey(message: RawJSONLines): string {
 }
 
 function transcriptEventKey(event: ScannerTranscriptEvent): string {
+    // ai-title lines carry no uuid — key them by session + title so an
+    // unchanged line dedupes across rescans while a rename emits again.
+    if (event.type === 'ai_title') {
+        return `event:aititle:${event.sourceRevision}`;
+    }
     return `event:${event.uuid}`;
 }
 
@@ -292,13 +299,21 @@ async function readSessionEntries(
                 continue;
             }
 
-            const transcriptEvent = parseClaudeGoalStatusTranscriptEvent(message);
+            const transcriptEvent = parseClaudeGoalStatusTranscriptEvent(message)
+                ?? parseClaudeAiTitleTranscriptEvent(message);
             if (transcriptEvent) {
                 entries.push({
                     kind: 'transcript-event',
                     key: transcriptEventKey(transcriptEvent),
                     event: transcriptEvent,
                 });
+                continue;
+            }
+
+            // An 'ai-title' line that did not parse above is missing the title
+            // or the session id — still a known bookkeeping line, so skip it
+            // silently instead of letting it reach the schema check below.
+            if (message?.type === 'ai-title') {
                 continue;
             }
 

@@ -249,6 +249,26 @@ function emitClaudeGoalStatus(
     });
 }
 
+function emitClaudeAiTitle(
+    scannerOptions: { onTranscriptEvent: (event: unknown) => void },
+    event: { aiTitle: string; sourceSessionId?: string },
+) {
+    const sourceSessionId = event.sourceSessionId ?? 'claude-session-1';
+    scannerOptions.onTranscriptEvent({
+        type: 'ai_title',
+        aiTitle: event.aiTitle,
+        sourceSessionId,
+        sourceRevision: `${sourceSessionId}:${event.aiTitle}`,
+    });
+}
+
+function summaryMessages(sessionClient: { sendClaudeSessionMessage: { mock: { calls: unknown[][] } } }) {
+    return sessionClient.sendClaudeSessionMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message): message is Record<string, unknown> =>
+            !!message && typeof message === 'object' && (message as Record<string, unknown>).type === 'summary');
+}
+
 describe('runClaude remote JSONL scanner', () => {
     const processEvents = ['SIGTERM', 'SIGINT', 'uncaughtException', 'unhandledRejection'] as const;
     const originalListeners = new Map<string, Array<(...args: any[]) => void>>();
@@ -540,6 +560,78 @@ describe('runClaude remote JSONL scanner', () => {
         }) as never);
         await expect(runPromise).rejects.toThrow('process.exit');
         exitSpy.mockRestore();
+    });
+
+    it('titles the session from an ai-title transcript event', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+        const agentStateWritesBefore = harness.updateAgentState.mock.calls.length;
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+
+        expect(summaryMessages(harness.sessionClient)).toEqual([
+            { type: 'summary', summary: 'Generated session title', leafUuid: expect.any(String) },
+        ]);
+        // Titling must not disturb goal state.
+        expect(harness.updateAgentState.mock.calls).toHaveLength(agentStateWritesBefore);
+
+        await harness.finish();
+    });
+
+    it('does not overwrite a title the session already has', async () => {
+        const harness = await startRemoteRunClaudeHarness({
+            metadata: {
+                claudeSessionId: 'claude-session-1',
+                slashCommands: ['goal'],
+                summary: { text: 'Human picked title', updatedAt: 1 },
+            },
+        });
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+
+        expect(summaryMessages(harness.sessionClient)).toHaveLength(0);
+
+        await harness.finish();
+    });
+
+    it('ignores ai-title events from a different Claude session', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+
+        emitClaudeAiTitle(harness.scannerOptions, {
+            aiTitle: 'Someone else session title',
+            sourceSessionId: 'other-claude-session',
+        });
+
+        expect(summaryMessages(harness.sessionClient)).toHaveLength(0);
+
+        await harness.finish();
+    });
+
+    it('applies only the first of two ai-title events seen in one scan', async () => {
+        // A cold scan replays every ai-title line in the transcript back to
+        // back, long before the metadata write for the first one lands, so
+        // the "only title an untitled session" rule cannot rely on metadata
+        // alone.
+        const harness = await startRemoteRunClaudeHarness();
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'First title' });
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Second title' });
+
+        expect(summaryMessages(harness.sessionClient)).toEqual([
+            { type: 'summary', summary: 'First title', leafUuid: expect.any(String) },
+        ]);
+
+        await harness.finish();
+    });
+
+    it('applies a repeated ai-title event only once', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+
+        expect(summaryMessages(harness.sessionClient)).toHaveLength(1);
+
+        await harness.finish();
     });
 
     it('registers Claude goal-action and queues clear as an isolated command without optimistic state changes', async () => {

@@ -4,6 +4,8 @@ import { Session } from "./session";
 import { Future } from "@/utils/future";
 import { createSessionScanner } from "./utils/sessionScanner";
 import { launchFailureMessage } from "./utils/launchFailureMessage";
+import { createClaudeAiTitleApplier } from "./claudeAiTitle";
+import { randomUUID } from "node:crypto";
 
 export type LauncherResult = { type: 'switch' } | { type: 'exit', code: number };
 
@@ -15,6 +17,23 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
     };
 
     let scannerMessageChain = Promise.resolve();
+
+    // Claude Code titles the conversation itself via an `ai-title` transcript
+    // line. Adopt it only when the session has no title yet — an explicit
+    // change_title always wins.
+    const applyClaudeAiTitle = createClaudeAiTitleApplier({
+        getClaudeSessionId: () => session.client.getMetadata()?.claudeSessionId ?? null,
+        getCurrentTitle: () => session.client.getMetadata()?.summary?.text ?? null,
+        applyTitle: (title) => {
+            // Same persistence path as the change_title MCP tool: the
+            // synthetic summary's side effect writes metadata.summary.
+            session.client.sendClaudeSessionMessage({
+                type: 'summary',
+                summary: title,
+                leafUuid: randomUUID(),
+            });
+        },
+    });
 
     // Create scanner
     const scanner = await createSessionScanner({
@@ -30,6 +49,11 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
                         logger.debug('[local]: failed to send Claude transcript message', error);
                     }
                 });
+            }
+        },
+        onTranscriptEvent: (event) => {
+            if (event.type === 'ai_title') {
+                applyClaudeAiTitle(event);
             }
         }
     });
