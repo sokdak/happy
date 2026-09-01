@@ -213,6 +213,11 @@ jobs:
           DIST_TAG: ${{ steps.package.outputs.dist_tag }}
           VERSION_EXISTS: ${{ steps.registry.outputs.version_exists }}
           PUBLISH_REGISTRY_EXPECTED: ${{ steps.publish.outputs.registry_expected }}
+          # npm needed 6-8 minutes to expose the ~105MB CLI tarball on the last
+          # two real publishes. The previous 12 x 5s budget gave up long before
+          # that, so a successful publish was reported as a failed job.
+          PROPAGATION_TIMEOUT_SECONDS: '900'
+          PROPAGATION_INTERVAL_SECONDS: '15'
         run: |
           set -euo pipefail
           if [[ "$VERSION_EXISTS" != 'true' && "$PUBLISH_REGISTRY_EXPECTED" != 'true' ]]; then
@@ -220,16 +225,19 @@ jobs:
             exit 0
           fi
 
-          for attempt in {1..12}; do
+          deadline=$(( SECONDS + PROPAGATION_TIMEOUT_SECONDS ))
+          attempt=0
+          while (( SECONDS < deadline )); do
+            attempt=$(( attempt + 1 ))
             registry_version="$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null || true)"
             tagged_version="$(npm view "$PACKAGE_NAME" "dist-tags.$DIST_TAG" 2>/dev/null || true)"
             if [[ "$registry_version" == "$PACKAGE_VERSION" && "$tagged_version" == "$PACKAGE_VERSION" ]]; then
               node scripts/verify-fork-cli-package.cjs smoke-install "$PACKAGE_NAME@$PACKAGE_VERSION" "$PACKAGE_VERSION"
               exit 0
             fi
-            echo "Waiting for npm propagation (attempt $attempt/12)..."
-            sleep 5
+            echo "Waiting for npm propagation (attempt $attempt, $(( deadline - SECONDS ))s of $PROPAGATION_TIMEOUT_SECONDS remaining)..."
+            sleep "$PROPAGATION_INTERVAL_SECONDS"
           done
 
-          echo "npm did not expose $PACKAGE_NAME@$PACKAGE_VERSION on dist-tag $DIST_TAG" >&2
+          echo "npm did not expose $PACKAGE_NAME@$PACKAGE_VERSION on dist-tag $DIST_TAG within ${PROPAGATION_TIMEOUT_SECONDS}s" >&2
           exit 1
