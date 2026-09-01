@@ -59,3 +59,18 @@ test('registry smoke does not receive the npm token', () => {
   assert.doesNotMatch(finalVerification, /NODE_AUTH_TOKEN|NPM_TOKEN/);
   assert.match(finalVerification, /REGISTRY_EXPECTED/);
 });
+
+test('registry verification waits long enough for the published tarball to appear', () => {
+  const finalVerification = workflow.slice(workflow.indexOf('- name: Verify the exact registry version'));
+  const budget = Number(/PROPAGATION_TIMEOUT_SECONDS: '(\d+)'/.exec(finalVerification)?.[1]);
+  const interval = Number(/PROPAGATION_INTERVAL_SECONDS: '(\d+)'/.exec(finalVerification)?.[1]);
+  // npm took 6-8 minutes to expose the ~105MB CLI tarball on the last two real
+  // publishes, both of which this step failed while the publish itself had
+  // succeeded. Keep the budget comfortably above that observed latency.
+  assert.ok(
+    budget >= 600,
+    `propagation budget is ${budget}s, under the 6-8 minute latency observed on real publishes`,
+  );
+  assert.ok(interval >= 10, `polling every ${interval}s is more aggressive than npm needs`);
+  assert.match(finalVerification, /PROPAGATION_TIMEOUT_SECONDS/);
+});
