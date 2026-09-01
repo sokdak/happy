@@ -13,7 +13,8 @@ interface QueueItem<T> {
 
 /**
  * A mode-aware message queue that stores messages with their modes.
- * Returns consistent batches of messages with the same mode.
+ * Delivers one message per call, in FIFO order, so each user message keeps its
+ * own turn boundary even when several pile up while an agent turn is running.
  */
 export class MessageQueue2<T> {
     public queue: QueueItem<T>[] = []; // Made public for testing
@@ -261,7 +262,7 @@ export class MessageQueue2<T> {
     }
 
     /**
-     * Wait for messages and return all messages with the same mode as a single string
+     * Wait for a message and return the next one in the queue.
      * Returns { message: string, mode: T } or null if aborted/closed
      */
     async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, attachments?: PendingAttachment[] } | null> {
@@ -286,47 +287,24 @@ export class MessageQueue2<T> {
     }
 
     /**
-     * Collect a batch of messages with the same mode, respecting isolation requirements
+     * Take the next queued message. One queued message is one turn: messages
+     * that pile up while a turn is running keep their own boundaries instead of
+     * being joined into a single prompt, so every question gets its own answer.
      */
     private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, attachments?: PendingAttachment[] } | null {
-        if (this.queue.length === 0) {
+        const item = this.queue.shift();
+        if (!item) {
             return null;
         }
 
-        const firstItem = this.queue[0];
-        const sameModeMessages: string[] = [];
-        const collectedAttachments: PendingAttachment[] = [];
-        let mode = firstItem.mode;
-        let isolate = firstItem.isolate ?? false;
-        const targetModeHash = firstItem.modeHash;
-
-        // If the first message requires isolation, only process it alone
-        if (firstItem.isolate) {
-            const item = this.queue.shift()!;
-            sameModeMessages.push(item.message);
-            if (item.attachments) collectedAttachments.push(...item.attachments);
-            logger.debug(`[MessageQueue2] Collected isolated message with mode hash: ${targetModeHash}`);
-        } else {
-            // Collect all messages with the same mode until we hit an isolated message
-            while (this.queue.length > 0 &&
-                this.queue[0].modeHash === targetModeHash &&
-                !this.queue[0].isolate) {
-                const item = this.queue.shift()!;
-                sameModeMessages.push(item.message);
-                if (item.attachments) collectedAttachments.push(...item.attachments);
-            }
-            logger.debug(`[MessageQueue2] Collected batch of ${sameModeMessages.length} messages with mode hash: ${targetModeHash}`);
-        }
-
-        // Join all messages with newlines
-        const combinedMessage = sameModeMessages.join('\n');
+        logger.debug(`[MessageQueue2] Collected message with mode hash: ${item.modeHash}${item.isolate ? ' (isolated)' : ''}. Remaining: ${this.queue.length}`);
 
         return {
-            message: combinedMessage,
-            mode,
-            hash: targetModeHash,
-            isolate,
-            attachments: collectedAttachments.length > 0 ? collectedAttachments : undefined,
+            message: item.message,
+            mode: item.mode,
+            hash: item.modeHash,
+            isolate: item.isolate ?? false,
+            attachments: item.attachments && item.attachments.length > 0 ? item.attachments : undefined,
         };
     }
 
