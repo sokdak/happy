@@ -10,7 +10,7 @@ const UPSTREAM_MODEL_IDS = [
 ] as const
 
 const FORK_MODEL_IDS = [
-    'claude-fable-5[1m]',
+    'claude-fable-5-1[1m]',
     'claude-opus-5[1m]',
     'claude-sonnet-5[1m]',
     'claude-haiku-4-5',

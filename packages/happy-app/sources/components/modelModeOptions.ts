@@ -141,7 +141,7 @@ export function getGeminiPermissionModes(translate: Translate): PermissionMode[]
 export function getClaudeModelModes(): ModelMode[] {
     return [
         { key: 'claude-opus-5[1m]', name: 'Opus 5 [1M]', description: '1M context' },
-        { key: 'claude-fable-5[1m]', name: 'Fable 5 [1M]', description: '1M context' },
+        { key: 'claude-fable-5-1[1m]', name: 'Fable 5.1 [1M]', description: '1M context' },
         { key: 'claude-sonnet-5[1m]', name: 'Sonnet 5 [1M]', description: '1M context' },
         { key: 'claude-haiku-4-5', name: 'Haiku 4.5', description: null },
     ];

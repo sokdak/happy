@@ -933,7 +933,7 @@ describe('runClaude remote JSONL scanner', () => {
             content: { text: 'first turn' },
             meta: {
                 permissionMode: 'bypassPermissions',
-                model: 'claude-fable-5[1m]',
+                model: 'claude-fable-5-1[1m]',
                 fallbackModel: 'claude-haiku-4-5',
                 effort: 'max',
                 customSystemPrompt: 'one-turn system prompt',
@@ -944,7 +944,7 @@ describe('runClaude remote JSONL scanner', () => {
         });
         expect(harness.loopOptions.messageQueue.queue[0].mode).toMatchObject({
             permissionMode: 'bypassPermissions',
-            model: 'claude-fable-5[1m]',
+            model: 'claude-fable-5-1[1m]',
             fallbackModel: 'claude-haiku-4-5',
             effort: 'max',
             customSystemPrompt: 'one-turn system prompt',
@@ -963,7 +963,7 @@ describe('runClaude remote JSONL scanner', () => {
         });
         expect(harness.loopOptions.messageQueue.queue[1].mode).toMatchObject({
             permissionMode: 'bypassPermissions',
-            model: 'claude-fable-5[1m]',
+            model: 'claude-fable-5-1[1m]',
             fallbackModel: 'claude-haiku-4-5',
             effort: 'max',
             customSystemPrompt: undefined,
