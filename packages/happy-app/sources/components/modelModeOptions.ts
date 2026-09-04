@@ -506,8 +506,14 @@ const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 // per-model: sol and terra reach `ultra`, luna stops at `max`. `ultra` is
 // documented as maximum reasoning with automatic task delegation, so it is a
 // different kind of run rather than one more notch — but it is a level these
-// two models accept, so the picker offers it rather than deciding for you.
+// models accept, so the picker offers it rather than deciding for you.
+//
+// astra is the one row NOT taken from that registry: it is absent from it as
+// of codex-cli 0.147.0, whose model table ends at gpt-5.6-pro, so it reaches
+// Happy through a gateway instead. Its range is operator-confirmed to match
+// sol/terra. Re-check it against models.json once astra lands there.
 const CODEX_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
+    'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],

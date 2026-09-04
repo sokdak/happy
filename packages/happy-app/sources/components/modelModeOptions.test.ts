@@ -158,6 +158,8 @@ describe('modelModeOptions', () => {
         // Straight from codex-rs/models-manager/models.json: sol and terra
         // publish ultra, luna does not. The difference is the whole point of
         // asking per model rather than per flavor.
+        expect(getEffortLevelsForModel('codex', 'gpt-6-astra').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-5.6-sol').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-5.6-terra').map((level) => level.key))
@@ -171,13 +173,17 @@ describe('modelModeOptions', () => {
         expect(keys).toEqual(['low', 'medium', 'high', 'xhigh']);
     });
 
-    it('gives gpt-6 astra the conservative range until its registry row is known', () => {
-        // Astra is not in codex-rs/models-manager/models.json as of
-        // codex-cli 0.147.0, so it deliberately has no CODEX_EFFORTS_BY_MODEL
-        // row: the catalog offers the model, the picker offers the set every
-        // gpt-5 accepts rather than guessing the top of its range.
-        expect(getEffortLevelsForModel('codex', 'gpt-6-astra').map((level) => level.key))
-            .toEqual(['low', 'medium', 'high', 'xhigh']);
+    it('gives every curated codex model its own levels, not the fallback', () => {
+        // The fallback exists for a workspace's own model, not for a row in the
+        // shipped catalog: a catalog model silently capped at xhigh is a bug.
+        const named = getCodexModelModes()
+            .map((model) => model.key)
+            .filter((key) => key !== 'default');
+
+        for (const key of named) {
+            expect(getEffortLevelsForModel('codex', key).map((level) => level.key))
+                .not.toEqual(['low', 'medium', 'high', 'xhigh']);
+        }
     });
 
     it('offers claude the SDK effort union for every model', () => {
