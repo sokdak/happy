@@ -105,11 +105,12 @@ describe('modelModeOptions', () => {
         const models = getCodexModelModes();
         expect(models.map((model) => model.key)).toEqual([
             'default',
+            'gpt-6-astra',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
         ]);
-        expect(models[1].name).toBe('GPT-5.6 Sol');
+        expect(models[1].name).toBe('GPT-6 Astra');
     });
 
     it('adds a configured custom codex model without expanding the shared catalog', () => {
@@ -118,12 +119,13 @@ describe('modelModeOptions', () => {
 
         expect(withCustom.map((model) => model.key)).toEqual([
             'default',
+            'gpt-6-astra',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(4);
+        expect(models).toHaveLength(5);
         expect(includeConfiguredModel('claude', models, 'my-workspace-model')).toBe(models);
     });
 
@@ -167,6 +169,15 @@ describe('modelModeOptions', () => {
     it('falls back to the conservative codex range for an unknown model', () => {
         const keys = getEffortLevelsForModel('codex', 'my-workspace-model').map((level) => level.key);
         expect(keys).toEqual(['low', 'medium', 'high', 'xhigh']);
+    });
+
+    it('gives gpt-6 astra the conservative range until its registry row is known', () => {
+        // Astra is not in codex-rs/models-manager/models.json as of
+        // codex-cli 0.147.0, so it deliberately has no CODEX_EFFORTS_BY_MODEL
+        // row: the catalog offers the model, the picker offers the set every
+        // gpt-5 accepts rather than guessing the top of its range.
+        expect(getEffortLevelsForModel('codex', 'gpt-6-astra').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh']);
     });
 
     it('offers claude the SDK effort union for every model', () => {

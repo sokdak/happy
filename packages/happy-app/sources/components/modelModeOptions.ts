@@ -155,6 +155,7 @@ export function getCodexModelModes(): ModelMode[] {
         // allowed-model list rejects outright (sokdak/happy-helm#17). The
         // metadata path already prepends the same row.
         { key: 'default', name: 'default model', description: null },
+        { key: 'gpt-6-astra', name: 'GPT-6 Astra', description: null },
         { key: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', description: null },
         { key: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', description: null },
         { key: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', description: null },
