@@ -76,6 +76,26 @@ flowchart TD
 - Ensures auth and machine setup when needed (`authAndSetupMachineIfNeeded`).
 - Starts the daemon or runs an agent directly based on subcommand/context.
 
+## Codex turn completion and queued input
+
+The Codex runner processes queued messages one at a time. A final answer
+(`item/completed` with `phase: final_answer`) finishes an answer item, while
+`turn/completed` finishes the turn. The CLI displays the answer immediately
+but waits for the turn's terminal event before sending the next `turn/start`.
+Legacy `task_complete` and `turn_aborted` events remain supported. A thread's
+`idle` notification has no turn ID and does not release the queue.
+
+Terminal events are matched to the foreground thread and the turn ID returned
+by `turn/start`. Events received before that acknowledgement are held until
+the ID is known; stale events cannot finish a later request or clear its active
+turn. Raw and legacy completion notifications share UI deduplication. If a
+terminal event never arrives, the existing timeout interrupts or restarts the
+app-server before the queue advances.
+
+This behavior follows the [Codex App Server lifecycle](https://learn.chatgpt.com/docs/app-server#lifecycle-overview).
+It is implemented in `packages/happy-cli`, so deploying a Helm server/web image
+alone does not update an installed CLI/daemon.
+
 ## Local state and configuration
 
 ```mermaid

@@ -67,6 +67,12 @@ type AbortTurnResult = {
 
 type LegacyPatchChanges = Record<string, Record<string, unknown>>;
 
+type TurnCompletion = {
+    event: EventMsg;
+    turnId: string | null;
+    source: string;
+};
+
 export type ApprovalHandler = (params: {
     type: 'exec' | 'patch' | 'mcp';
     callId: string;
@@ -244,10 +250,13 @@ export class CodexAppServerClient {
     } | null = null;
 
     // Turn completion tracking for the currently active sendTurnAndWait call.
-    // A completion event only resolves once we have seen task_started for this turn.
+    // Bind terminal notifications to the turn/start acknowledgement. Fast turns
+    // can finish before that reply, and older turns can still emit late events.
     private pendingTurnCompletion: {
         resolve: (aborted: boolean) => void;
         turnId: string | null;
+        startAcknowledged: boolean;
+        earlyTerminals: TurnCompletion[];
     } | null = null;
 
     // Tracks in-flight interruptTurn() RPCs so sendTurnAndWait can wait for them
@@ -305,6 +314,24 @@ export class CodexAppServerClient {
         return typeof status === 'string' && status.length > 0 ? status : null;
     }
 
+    private isCurrentThread(params: any): boolean {
+        const threadId = stringOrNull(params?.threadId ?? params?.thread_id ?? params?.msg?.thread_id ?? params?.msg?.threadId);
+        return !threadId || !this._threadId || threadId === this._threadId;
+    }
+
+    private handleTurnStarted(turnId: string | null): boolean {
+        const activeTurnId = this.pendingTurnCompletion?.turnId ?? this._turnId;
+        if (turnId && (
+            (activeTurnId && activeTurnId !== turnId)
+            || (this.completedTurnIds.has(turnId) && this.pendingTurnCompletion?.turnId !== turnId)
+        )) {
+            return false;
+        }
+        if (turnId) this._turnId = turnId;
+        this.markPendingTurnStarted(turnId);
+        return true;
+    }
+
     private shouldHandleRawNotification(method: string): boolean {
         const isRawNotification = method === 'thread/started'
             || method === 'thread/goal/updated'
@@ -336,35 +363,37 @@ export class CodexAppServerClient {
         error: unknown,
         source: string,
     ): void {
-        if (turnId && this.completedTurnIds.has(turnId)) {
-            logger.debug(`[CodexAppServer] Ignoring duplicate ${source} for completed turn ${turnId}`);
-            return;
-        }
-        if (turnId) {
-            this.completedTurnIds.add(turnId);
-        }
-
         const aborted = status === 'cancelled' || status === 'canceled' || status === 'aborted' || status === 'interrupted';
-
-        this.tryResolvePendingTurn(aborted, turnId, source);
-        this._turnId = null;
-
-        if (aborted) {
-            this.eventHandler?.({
-                type: 'turn_aborted',
-                ...(turnId ? { turn_id: turnId } : {}),
-                ...(status ? { status } : {}),
-                ...(error !== undefined && error !== null ? { error } : {}),
-            });
-            return;
-        }
-
-        this.eventHandler?.({
-            type: 'task_complete',
+        this.emitTurnCompletion({
+            type: aborted ? 'turn_aborted' : 'task_complete',
             ...(turnId ? { turn_id: turnId } : {}),
             ...(status ? { status } : {}),
             ...(error !== undefined && error !== null ? { error } : {}),
-        });
+        }, turnId, source);
+    }
+
+    private emitTurnCompletion(event: EventMsg, turnId: string | null, source: string): void {
+        const pending = this.pendingTurnCompletion;
+        if (pending && !pending.startAcknowledged) {
+            pending.earlyTerminals.push({ event, turnId, source });
+            return;
+        }
+
+        const activeTurnId = pending?.turnId ?? this._turnId;
+        if (activeTurnId && turnId && activeTurnId !== turnId) {
+            logger.debug(`[CodexAppServer] Ignoring ${source} for turn ${turnId}; awaiting ${activeTurnId}`);
+            return;
+        }
+
+        const duplicate = !!turnId && this.completedTurnIds.has(turnId);
+        // UI deduplication must not strand a new waiter explicitly bound by
+        // turn/start to the same ID. Unbound/old events cannot settle that call.
+        if (duplicate && (!pending || pending.turnId !== turnId)) return;
+        if (turnId) this.completedTurnIds.add(turnId);
+        this.resolvePendingTurn(event.type === 'turn_aborted');
+        this._turnId = null;
+        // Settle all internal state before invoking potentially reentrant code.
+        if (!duplicate) this.eventHandler?.(event);
     }
 
     private handleRawNotification(method: string, params: any): boolean {
@@ -374,10 +403,7 @@ export class CodexAppServerClient {
 
         if (method === 'turn/started') {
             const turnId = this.extractTurnId(params);
-            if (turnId) {
-                this._turnId = turnId;
-            }
-            this.markPendingTurnStarted(turnId);
+            if (!this.handleTurnStarted(turnId)) return true;
             this.eventHandler?.({
                 type: 'task_started',
                 ...(turnId ? { turn_id: turnId } : {}),
@@ -396,10 +422,8 @@ export class CodexAppServerClient {
         }
 
         if (method === 'thread/status/changed') {
-            const statusType = params?.status?.type;
-            if (statusType === 'idle' && this.pendingTurnCompletion) {
-                this.emitRawTurnCompletion(this._turnId, 'completed', null, method);
-            }
+            // Thread status has no turn ID. A delayed idle notification cannot
+            // establish that the currently pending turn has completed.
             return true;
         }
 
@@ -591,14 +615,8 @@ export class CodexAppServerClient {
                 });
             }
 
-            if (item.phase === 'final_answer' && this.pendingTurnCompletion) {
-                this.emitRawTurnCompletion(
-                    this.extractTurnId(params),
-                    'completed',
-                    null,
-                    `${method}:final_answer`,
-                );
-            }
+            // An answer item can finish before the turn (including another
+            // final answer). Only a terminal turn event advances the FIFO.
             return true;
         }
 
@@ -1017,24 +1035,6 @@ export class CodexAppServerClient {
         }
     }
 
-    private tryResolvePendingTurn(aborted: boolean, turnId: string | null, source: string): void {
-        const pending = this.pendingTurnCompletion;
-        if (!pending) return;
-
-        // Guard against stale completion notifications from a *different* turn.
-        // We use turn ID matching instead of the `started` flag because Codex
-        // can skip the turn/started notification entirely for fast turns,
-        // which would cause us to discard a valid turn/completed and hang forever.
-        if (pending.turnId && turnId && pending.turnId !== turnId) {
-            logger.debug(
-                `[CodexAppServer] Ignoring ${source} for turn ${turnId}; awaiting ${pending.turnId}`,
-            );
-            return;
-        }
-
-        this.resolvePendingTurn(aborted);
-    }
-
     private async waitForTurnCompletion(timeoutMs: number): Promise<boolean> {
         if (!this.hasPendingTurnCompletion()) {
             return true;
@@ -1166,12 +1166,23 @@ export class CodexAppServerClient {
         // turn/start returns immediately; turn completes via events.
         // We don't await completion here — the caller's event handler
         // tracks task_complete / turn_aborted.
+        const pendingForCall = this.pendingTurnCompletion;
+        const epoch = this.processEpoch;
         const result = await this.request('turn/start', params) as { turn?: { id?: string | null } };
+        if (this.processEpoch !== epoch || this.pendingTurnCompletion !== pendingForCall) return;
         const turnId = result?.turn?.id;
         if (typeof turnId === 'string' && turnId.length > 0) {
             this._turnId = turnId;
-            if (this.pendingTurnCompletion) {
-                this.pendingTurnCompletion.turnId = turnId;
+            if (pendingForCall) {
+                pendingForCall.turnId = turnId;
+            }
+        }
+        if (pendingForCall) {
+            pendingForCall.startAcknowledged = true;
+            const earlyTerminals = pendingForCall.earlyTerminals.splice(0);
+            for (const terminal of earlyTerminals) {
+                if (this.pendingTurnCompletion !== pendingForCall) break;
+                this.emitTurnCompletion(terminal.event, terminal.turnId, terminal.source);
             }
         }
     }
@@ -1233,6 +1244,8 @@ export class CodexAppServerClient {
         const pendingForCall = {
             resolve: resolveCompletion,
             turnId: null as string | null,
+            startAcknowledged: false,
+            earlyTerminals: [] as TurnCompletion[],
         };
         this.pendingTurnCompletion = pendingForCall;
 
@@ -1673,39 +1686,29 @@ export class CodexAppServerClient {
     }
 
     private handleNotification(method: string, params: any): void {
+        // Child-thread tool/activity items are still forwarded, but their
+        // lifecycle must never change the foreground turn's completion state.
+        const legacyType = params?.msg?.type;
+        const isLifecycle = method === 'turn/started' || method === 'turn/completed'
+            || method === 'thread/status/changed'
+            || ((method === 'codex/event' || method.startsWith('codex/event/'))
+                && (legacyType === 'task_started' || legacyType === 'task_complete' || legacyType === 'turn_aborted'));
+        if (isLifecycle && !this.isCurrentThread(params)) return;
+
         // codex/event notifications: either `codex/event` or `codex/event/<type>`
         if (method === 'codex/event' || method.startsWith('codex/event/')) {
             this.notificationProtocol = 'legacy';
             const msg = params?.msg;
             if (msg) {
-                // Extract turn_id from task_started events
-                if (msg.type === 'task_started' && msg.turn_id) {
-                    this._turnId = msg.turn_id;
-                }
                 if (msg.type === 'task_started') {
-                    this.markPendingTurnStarted(msg.turn_id ?? msg.turnId ?? null);
+                    if (!this.handleTurnStarted(stringOrNull(msg.turn_id ?? msg.turnId))) return;
                 }
                 const isTerminal = msg.type === 'task_complete' || msg.type === 'turn_aborted';
                 const terminalTurnId = isTerminal ? msg.turn_id ?? msg.turnId ?? null : null;
-                if (isTerminal && terminalTurnId && this.completedTurnIds.has(terminalTurnId)) {
-                    logger.debug(`[CodexAppServer] Ignoring duplicate codex/event/${msg.type} for completed turn ${terminalTurnId}`);
-                    return;
-                }
-                // Mark before invoking user code: the callback can synchronously
-                // re-enter this client with the other notification protocol.
-                if (isTerminal && terminalTurnId) {
-                    this.completedTurnIds.add(terminalTurnId);
-                }
-                // Fire event handler first (so consumer processes the event)
-                this.eventHandler?.(msg);
-                // Then resolve turn completion promise
                 if (isTerminal) {
-                    this.tryResolvePendingTurn(
-                        msg.type === 'turn_aborted',
-                        terminalTurnId,
-                        `codex/event/${msg.type}`,
-                    );
-                    this._turnId = null;
+                    this.emitTurnCompletion(msg, terminalTurnId, `codex/event/${msg.type}`);
+                } else {
+                    this.eventHandler?.(msg);
                 }
             }
             return;
@@ -1723,10 +1726,7 @@ export class CodexAppServerClient {
             // Mark the turn as started so the completion guard lets it through.
             if (method === 'turn/started') {
                 const turnId = this.extractTurnId(params);
-                if (turnId) {
-                    this._turnId = turnId;
-                }
-                this.markPendingTurnStarted(turnId);
+                this.handleTurnStarted(turnId);
             }
             // turn/completed is a fallback signal — for mid-inference interrupts,
             // Codex may only signal completion here (not via codex/event turn_aborted).
