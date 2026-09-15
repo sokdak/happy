@@ -1014,10 +1014,10 @@ export async function runCodex(opts: {
                     // sendTurnAndWait returns only after interrupt settlement and
                     // any required reconnect+thread resume, so the ready event in
                     // finally cannot race the timed-out backend generation.
-                    messageBuffer.addMessage('Turn timed out waiting for Codex', 'status');
+                    messageBuffer.addMessage('Codex stopped after no progress was received', 'status');
                     session.sendSessionEvent({
                         type: 'message',
-                        message: 'Codex error: the turn timed out and was stopped. Try sending your message again.',
+                        message: 'Codex error: the turn was stopped after too long without progress. Try sending your message again.',
                     });
                 } else if (result.aborted) {
                     // Turn was aborted (user abort or permission cancel).

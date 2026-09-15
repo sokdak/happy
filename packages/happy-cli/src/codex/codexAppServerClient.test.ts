@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxConfig } from '@/persistence';
 
 const {
@@ -478,6 +478,124 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(terminalEvents).toHaveLength(1);
 
         await client.disconnect();
+    });
+
+    describe('turn inactivity timeout', () => {
+        beforeEach(() => vi.useFakeTimers());
+        afterEach(() => {
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        });
+
+        async function startTurn(turnTimeoutMs?: number) {
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            const internals = client as unknown as {
+                _threadId: string;
+                request: (method: string, params: unknown) => Promise<unknown>;
+                handleNotification: (method: string, params: unknown) => void;
+                resolvePendingTurn: (aborted: boolean) => void;
+            };
+            internals._threadId = 'thread-idle';
+            vi.spyOn(internals, 'request').mockResolvedValue({ turn: { id: 'turn-idle' } });
+            const abort = vi.spyOn(client, 'abortTurnWithFallback').mockImplementation(async () => {
+                internals.resolvePendingTurn(true);
+                return { hadActiveTurn: true, aborted: true, forcedRestart: false, resumedThread: false };
+            });
+            const result = client.sendTurnAndWait('keep working', { turnTimeoutMs });
+            await vi.advanceTimersByTimeAsync(0);
+            return {
+                client, abort, result,
+                notify: (method: string, params: unknown) => internals.handleNotification(method, params),
+            };
+        }
+
+        it.each([
+            ['item/agentMessage/delta', { delta: 'answer' }],
+            ['item/reasoning/textDelta', { delta: 'thinking' }],
+            ['item/reasoning/summaryTextDelta', { delta: 'summary' }],
+            ['item/commandExecution/outputDelta', { delta: 'test output' }],
+            ['item/mcpToolCall/progress', { message: 'processing' }],
+            ['item/started', { item: { id: 'tool', type: 'commandExecution' } }],
+            ['item/completed', { item: { id: 'tool', type: 'commandExecution' } }],
+            ['turn/plan/updated', { plan: [{ step: 'testing', status: 'inProgress' }] }],
+            ['codex/event', { msg: { type: 'agent_message_delta', delta: 'answer', turn_id: 'turn-idle' } }],
+            ['codex/event/agent_reasoning_delta', { msg: { type: 'agent_reasoning_delta', delta: 'thinking' } }],
+            ['codex/event', { msg: { type: 'exec_command_end', turn_id: 'turn-idle' } }],
+            ['codex/event', { msg: { type: 'exec_command_output_delta', chunk: [65], turn_id: 'turn-idle' } }],
+        ])('keeps a turn running beyond 10 minutes with %s progress', async (method, payload) => {
+            const turn = await startTurn();
+            // Raw deltas must count even when display events use the legacy protocol.
+            turn.notify('codex/event', { msg: { type: 'task_started', turn_id: 'turn-idle' } });
+            for (let i = 0; i < 4; i++) {
+                await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+                turn.notify(method, { threadId: 'thread-idle', turnId: 'turn-idle', ...payload });
+                expect(turn.abort).not.toHaveBeenCalled();
+            }
+            turn.notify('turn/completed', {
+                threadId: 'thread-idle', turn: { id: 'turn-idle', status: 'completed' },
+            });
+            await expect(turn.result).resolves.toEqual({ aborted: false, timedOut: false });
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it('interrupts only after a full idle interval following the last progress', async () => {
+            const turn = await startTurn(5000);
+            await vi.advanceTimersByTimeAsync(4000);
+            turn.notify('item/agentMessage/delta', {
+                threadId: 'thread-idle', turnId: 'turn-idle', delta: 'working',
+            });
+            await vi.advanceTimersByTimeAsync(4999);
+            expect(turn.abort).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            await expect(turn.result).resolves.toEqual({ aborted: true, timedOut: true });
+            expect(turn.abort).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it.each([
+            ['thread/status/changed', { threadId: 'thread-idle', status: { type: 'active' } }],
+            ['thread/tokenUsage/updated', { threadId: 'thread-idle', turnId: 'turn-idle', tokenUsage: {} }],
+            ['mcpServer/startupStatus/updated', { status: 'ready' }],
+            ['item/agentMessage/delta', { threadId: 'other-thread', turnId: 'turn-idle', delta: 'unrelated' }],
+            ['item/agentMessage/delta', { threadId: 'thread-idle', turnId: 'old-turn', delta: 'late' }],
+            ['item/agentMessage/delta', { threadId: 'thread-idle', delta: 'unscoped' }],
+            ['item/agentMessage/delta', { threadId: 'thread-idle', turnId: 'turn-idle', delta: '' }],
+            ['codex/event', { msg: { type: 'token_count', turn_id: 'turn-idle' } }],
+            ['codex/event', { msg: { type: 'agent_message_delta', turn_id: 'old-turn', delta: 'late' } }],
+            ['codex/event', { msg: { type: 'agent_message_delta', thread_id: 'other-thread', delta: 'unrelated' } }],
+            ['codex/event', { threadId: 'thread-idle', msg: { type: 'agent_message_delta', thread_id: 'other-thread', delta: 'unrelated' } }],
+            ['codex/event', { turnId: 'old-turn', msg: { type: 'agent_message_delta', turn_id: 'turn-idle', delta: 'late' } }],
+        ])('does not extend the deadline for unrelated or idle %s events: %j', async (method, params) => {
+            const turn = await startTurn(5000);
+            await vi.advanceTimersByTimeAsync(4000);
+            turn.notify(method, params);
+            await vi.advanceTimersByTimeAsync(1000);
+            await expect(turn.result).resolves.toEqual({ aborted: true, timedOut: true });
+            expect(turn.abort).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not rearm an expired timer when progress arrives during recovery', async () => {
+            const turn = await startTurn(5000);
+            let finishRecovery!: () => void;
+            const recovering = new Promise<void>((resolve) => { finishRecovery = resolve; });
+            turn.abort.mockImplementationOnce(async () => {
+                await recovering;
+                turn.notify('turn/completed', {
+                    threadId: 'thread-idle', turn: { id: 'turn-idle', status: 'interrupted' },
+                });
+                return { hadActiveTurn: true, aborted: true, forcedRestart: false, resumedThread: false };
+            });
+            await vi.advanceTimersByTimeAsync(5000);
+            turn.notify('item/agentMessage/delta', {
+                threadId: 'thread-idle', turnId: 'turn-idle', delta: 'late progress',
+            });
+            await vi.advanceTimersByTimeAsync(10000);
+            expect(turn.abort).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(0);
+            finishRecovery();
+            await expect(turn.result).resolves.toEqual({ aborted: true, timedOut: true });
+        });
     });
 
     it('interrupts and finishes reconnecting before a timed-out turn resolves', async () => {

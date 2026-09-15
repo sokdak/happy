@@ -73,6 +73,29 @@ type TurnCompletion = {
     source: string;
 };
 
+// Only work events extend the idle deadline. Connection/status notifications
+// can keep arriving even when the model or a tool is stuck.
+const RAW_TURN_PROGRESS_METHODS = new Set([
+    'item/started', 'item/completed',
+    'item/agentMessage/delta', 'item/plan/delta',
+    'item/reasoning/summaryTextDelta', 'item/reasoning/summaryPartAdded', 'item/reasoning/textDelta',
+    'item/commandExecution/outputDelta', 'item/fileChange/outputDelta',
+    'item/mcpToolCall/progress', 'turn/plan/updated', 'turn/diff/updated',
+]);
+
+const LEGACY_TURN_PROGRESS_TYPES = new Set([
+    'agent_message', 'agent_message_delta',
+    'agent_reasoning', 'agent_reasoning_delta',
+    'agent_reasoning_raw_content', 'agent_reasoning_raw_content_delta', 'agent_reasoning_section_break',
+    'exec_command_begin', 'exec_command_output_delta', 'exec_command_end',
+    'patch_apply_begin', 'patch_apply_end', 'mcp_tool_call_begin', 'mcp_tool_call_end',
+    'web_search_begin', 'web_search_end', 'plan_update', 'turn_diff',
+    'item_started', 'item_completed',
+    'collab_agent_spawn_begin', 'collab_agent_spawn_end',
+    'collab_agent_interaction_begin', 'collab_agent_interaction_end',
+    'collab_waiting_begin', 'collab_waiting_end',
+]);
+
 export type ApprovalHandler = (params: {
     type: 'exec' | 'patch' | 'mcp';
     callId: string;
@@ -257,6 +280,7 @@ export class CodexAppServerClient {
         turnId: string | null;
         startAcknowledged: boolean;
         earlyTerminals: TurnCompletion[];
+        refreshIdleTimeout?: () => void;
     } | null = null;
 
     // Tracks in-flight interruptTurn() RPCs so sendTurnAndWait can wait for them
@@ -317,6 +341,29 @@ export class CodexAppServerClient {
     private isCurrentThread(params: any): boolean {
         const threadId = stringOrNull(params?.threadId ?? params?.thread_id ?? params?.msg?.thread_id ?? params?.msg?.threadId);
         return !threadId || !this._threadId || threadId === this._threadId;
+    }
+
+    private recordTurnProgress(method: string, params: any): void {
+        const pending = this.pendingTurnCompletion;
+        if (!pending?.startAcknowledged || !this.isCurrentThread(params)) return;
+
+        const legacy = method === 'codex/event' || method.startsWith('codex/event/');
+        const event = legacy ? params?.msg : params;
+        if (legacy && !this.isCurrentThread(event)) return;
+        const eventTurnId = this.extractTurnId(event);
+        const envelopeTurnId = this.extractTurnId(params);
+        if ([eventTurnId, envelopeTurnId].some(id => id && id !== pending.turnId)) return;
+        // Raw work events carry a turn ID. Legacy messages can omit it.
+        if (!legacy && !eventTurnId) return;
+
+        const type = legacy ? event?.type : method;
+        if (!(legacy ? LEGACY_TURN_PROGRESS_TYPES : RAW_TURN_PROGRESS_METHODS).has(type)) return;
+        if (/delta$/i.test(type)) {
+            // Legacy command output uses chunk (bytes); text events use delta.
+            const delta = event?.delta ?? event?.chunk;
+            if ((typeof delta !== 'string' && !Array.isArray(delta)) || delta.length === 0) return;
+        }
+        pending.refreshIdleTimeout?.();
     }
 
     private handleTurnStarted(turnId: string | null): boolean {
@@ -1187,8 +1234,8 @@ export class CodexAppServerClient {
         }
     }
 
-    /** Default timeout for waiting on turn completion (ms). 10 minutes. */
-    private static readonly TURN_TIMEOUT_MS = 10 * 60 * 1000;
+    /** Stop only after 10 minutes without progress from the active turn. */
+    private static readonly TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
     /**
      * Send a user turn and wait for it to complete (task_complete or turn_aborted).
@@ -1204,6 +1251,7 @@ export class CodexAppServerClient {
         sandbox?: SandboxMode;
         effort?: ReasoningEffort;
         extraInputItems?: InputItem[];
+        /** Maximum time without turn progress, not total turn duration. */
         turnTimeoutMs?: number;
         /** Override the post-timeout interrupt grace period, primarily for tests. */
         timeoutAbortGracePeriodMs?: number;
@@ -1226,7 +1274,7 @@ export class CodexAppServerClient {
             await new Promise(resolve => setTimeout(resolve, 0));
         }
 
-        const timeoutMs = opts?.turnTimeoutMs ?? CodexAppServerClient.TURN_TIMEOUT_MS;
+        const timeoutMs = opts?.turnTimeoutMs ?? CodexAppServerClient.TURN_IDLE_TIMEOUT_MS;
         const explicitDisconnectGeneration = this.explicitDisconnectGeneration;
         let timer: ReturnType<typeof setTimeout> | null = null;
         const timeoutState: {
@@ -1246,6 +1294,11 @@ export class CodexAppServerClient {
             turnId: null as string | null,
             startAcknowledged: false,
             earlyTerminals: [] as TurnCompletion[],
+            refreshIdleTimeout: () => {
+                if (this.pendingTurnCompletion === pendingForCall && !timeoutState.timedOut) {
+                    timer?.refresh();
+                }
+            },
         };
         this.pendingTurnCompletion = pendingForCall;
 
@@ -1258,14 +1311,15 @@ export class CodexAppServerClient {
             throw err;
         }
 
-        // The timeout covers completion after turn/start has been acknowledged.
+        // Measure inactivity after turn/start has been acknowledged. Work events
+        // refresh this timer, so a progressing turn has no total-duration cap.
         // If a terminal notification already won the race, no timer is needed.
         if (this.pendingTurnCompletion) {
             timer = setTimeout(() => {
                 if (this.pendingTurnCompletion !== pendingForCall) return;
 
                 timeoutState.timedOut = true;
-                logger.warn(`[CodexAppServer] Turn timed out after ${timeoutMs}ms — interrupting it before returning ready`);
+                logger.warn(`[CodexAppServer] Turn idle for ${timeoutMs}ms without progress — interrupting it before returning ready`);
                 const recovery = this.abortTurnWithFallback({
                     gracePeriodMs: opts?.timeoutAbortGracePeriodMs,
                     forceRestartOnTimeout: true,
@@ -1686,6 +1740,9 @@ export class CodexAppServerClient {
     }
 
     private handleNotification(method: string, params: any): void {
+        // Observe both protocols before display-event deduplication: raw deltas
+        // still demonstrate progress when legacy notifications are also enabled.
+        this.recordTurnProgress(method, params);
         // Child-thread tool/activity items are still forwarded, but their
         // lifecycle must never change the foreground turn's completion state.
         const legacyType = params?.msg?.type;
