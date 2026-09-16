@@ -54,7 +54,9 @@ function compareNumericCore(left, right) {
 
 function mainVersionOrder(version) {
   const parsed = numericVersionCore(version);
-  const match = /^main\.([1-9]\d*)(?:\.sha\.([0-9a-f]{12}))?$/.exec(parsed.prerelease ?? '');
+  // Accept both protected SHA identifiers and older numeric ones whose leading
+  // zeroes npm stripped. Promotion order still depends only on core and run.
+  const match = /^main\.([1-9]\d*)(?:\.sha\.([0-9a-f]{12}|g[0-9a-f]{12}|0|[1-9]\d{0,10}))?$/.exec(parsed.prerelease ?? '');
   if (!match) {
     throw new Error(`The main dist-tag contains an unsupported version: ${version}`);
   }

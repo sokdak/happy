@@ -54,6 +54,20 @@ test('prepares a unique SHA-coupled main prerelease from the real CLI manifest',
   assert.equal(JSON.stringify(prepared).includes('@sokdak/happy-wire'), false);
 });
 
+test('keeps numeric SHA prefixes non-numeric so npm preserves leading zeroes', (t) => {
+  for (const prefix of ['059616004524', '000000000000', '123456789012']) {
+    const { rootDir, manifestPath } = fixture(t);
+    const result = prepareForkCliPackage({
+      rootDir,
+      mode: 'main',
+      runNumber: '9',
+      sourceSha: prefix + 'a'.repeat(28),
+    });
+    assert.equal(result.version, `${realManifest.version}-main.9.sha.g${prefix}`);
+    assert.equal(readManifest(manifestPath).version, result.version);
+  }
+});
+
 test('prepares an exact stable version and reserves latest for that path', (t) => {
   const { rootDir, manifestPath } = fixture(t);
   const result = prepareForkCliPackage({

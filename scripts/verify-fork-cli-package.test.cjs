@@ -14,6 +14,24 @@ const {
   verifyForkCliTarball,
 } = require('./verify-fork-cli-package.cjs');
 
+test('advances main from numeric SHA versions normalized by npm without allowing rollback', () => {
+  for (const suffix of ['59616004524', '0', '123456789012', 'g059616004524']) {
+    const current = `1.2.2-main.8.sha.${suffix}`;
+    assert.doesNotThrow(() => assertDistTagPromotion('main', '1.2.2-main.9.sha.e6a9ebdf24b8', current));
+    assert.doesNotThrow(() => assertDistTagPromotion('main', '1.2.2-main.9.sha.g000000000001', current));
+    assert.throws(
+      () => assertDistTagPromotion('main', '1.2.2-main.7.sha.e6a9ebdf24b8', current),
+      /Refusing to move dist-tag main backward/,
+    );
+  }
+  for (const suffix of ['abc123', '05961600452', '1234567890123']) {
+    assert.throws(
+      () => assertDistTagPromotion('main', '1.2.2-main.9.sha.e6a9ebdf24b8', `1.2.2-main.8.sha.${suffix}`),
+      /unsupported version/,
+    );
+  }
+});
+
 test('only advances main and latest dist-tags monotonically', () => {
   assert.doesNotThrow(() => assertDistTagPromotion(
     'main',

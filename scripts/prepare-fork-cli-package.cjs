@@ -110,7 +110,10 @@ function prepareForkCliPackage(options) {
   if (mode === 'main') {
     const runNumber = normalizeRunNumber(options.runNumber);
     const sourceSha = normalizeSourceSha(options.sourceSha);
-    version = `${manifest.version}-main.${runNumber}.sha.${sourceSha.slice(0, 12)}`;
+    const shortSha = sourceSha.slice(0, 12);
+    // Numeric semver identifiers cannot retain leading zeroes on npm.
+    const shaIdentifier = /^\d+$/.test(shortSha) ? `g${shortSha}` : shortSha;
+    version = `${manifest.version}-main.${runNumber}.sha.${shaIdentifier}`;
     distTag = 'main';
   } else if (mode === 'stable') {
     const expectedVersion = stableVersionFromReference(options.expectedVersion);
