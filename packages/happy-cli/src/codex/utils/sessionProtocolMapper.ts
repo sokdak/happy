@@ -589,6 +589,49 @@ function mcpToolDetails(invocation: Record<string, unknown>) {
     return { name: `mcp__${server}__${tool}`, title: `${server}.${tool}`, args };
 }
 
+/**
+ * Codex wraps an MCP result in a Rust-style Result (`{ Ok }` / `{ Err }`) and
+ * reports failures as `{ message }`, so the raw value is never what a reader
+ * wants: String() yields "[object Object]" and JSON keeps the wrapper. Unwrap
+ * first, then render a string as-is and anything else as pretty JSON.
+ */
+function mcpToolOutputText(result: unknown, error: unknown): string | null {
+    const unwrap = (value: unknown): unknown => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return value;
+        }
+        const record = value as Record<string, unknown>;
+        if ('Err' in record) {
+            return unwrap(record.Err);
+        }
+        if ('Ok' in record) {
+            return unwrap(record.Ok);
+        }
+        if (typeof record.message === 'string') {
+            return record.message;
+        }
+        return record;
+    };
+
+    const value = unwrap(error !== undefined && error !== null ? error : result);
+    if (value === undefined || value === null) {
+        return null;
+    }
+    if (typeof value === 'string') {
+        return value;
+    }
+    // An MCP result with no content carries nothing worth showing.
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.content) && record.content.length === 0) {
+        return null;
+    }
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch {
+        return String(value);
+    }
+}
+
 function emitHistoricalToolCall(
     envelopes: SessionEnvelope[],
     turn: ThreadTurn,
@@ -739,9 +782,7 @@ export function mapCodexThreadItemToSessionEnvelopes(
         case 'mcpToolCall': {
             const envelopes: SessionEnvelope[] = [];
             const { name, title, args } = mcpToolDetails(item);
-            const output = item.error !== undefined && item.error !== null
-                ? String(item.error)
-                : (item.result !== undefined && item.result !== null ? String(item.result) : null);
+            const output = mcpToolOutputText(item.result, item.error);
             emitHistoricalToolCall(
                 envelopes,
                 turn,
