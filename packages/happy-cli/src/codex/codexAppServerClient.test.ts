@@ -1706,6 +1706,62 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it.each(['raw', 'legacy', 'mixed'] as const)('renders MCP calls from %s notifications through the session mapper', async (protocol) => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const { mapCodexMcpMessageToSessionEnvelopes } = await import('./utils/sessionProtocolMapper');
+        const proc = createMockProcess();
+        mockSpawn.mockReturnValue(proc);
+        const client = new CodexAppServerClient();
+        const events: Array<Record<string, unknown>> = [];
+        client.setEventHandler((event) => events.push(event));
+        const invocation = { server: 'docs', tool: 'search', arguments: { query: 'MCP' } };
+        const notify = (completed: boolean) => {
+            if (protocol !== 'raw') {
+                pushJsonLine(proc.stdout, {
+                    method: 'codex/event',
+                    params: { msg: {
+                        type: completed ? 'mcp_tool_call_end' : 'mcp_tool_call_begin',
+                        call_id: 'call-1', invocation,
+                        ...(completed ? { result: { Ok: { content: [] } } } : {}),
+                    } },
+                });
+            }
+            if (protocol !== 'legacy') {
+                pushJsonLine(proc.stdout, {
+                    method: completed ? 'item/completed' : 'item/started',
+                    params: { threadId: 'thread-1', turnId: 'turn-1', item: {
+                        id: 'call-1', type: 'mcpToolCall', ...invocation,
+                        status: completed ? 'completed' : 'inProgress',
+                        ...(completed ? { result: { content: [] }, error: null, durationMs: 12 } : {}),
+                    } },
+                });
+            }
+        };
+        await client.connect();
+        try {
+            notify(false);
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(events).toHaveLength(1);
+            const state = { currentTurnId: 'turn-1' };
+            const started = mapCodexMcpMessageToSessionEnvelopes(events[0], state);
+            const call = protocol === 'raw' ? 'thread-1:call-1' : 'call-1';
+            expect(started.envelopes).toHaveLength(1);
+            expect(started.envelopes[0]).toMatchObject({
+                turn: 'turn-1',
+                ev: { t: 'tool-call-start', call, name: 'mcp__docs__search', args: { query: 'MCP' } },
+            });
+
+            notify(true);
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(events).toHaveLength(2);
+            const ended = mapCodexMcpMessageToSessionEnvelopes(events[1], state);
+            expect(ended.envelopes).toHaveLength(1);
+            expect(ended.envelopes[0]).toMatchObject({ turn: 'turn-1', ev: { t: 'tool-call-end', call } });
+        } finally {
+            await client.disconnect();
+        }
+    });
+
     it('maps raw goal notifications into legacy goal events', async () => {
         const proc = createMockProcess({
             pid: 3002,

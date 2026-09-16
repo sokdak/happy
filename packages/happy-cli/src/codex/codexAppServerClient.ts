@@ -546,6 +546,22 @@ export class CodexAppServerClient {
             return true;
         }
 
+        if (item.type === 'mcpToolCall' && (method === 'item/started' || method === 'item/completed')) {
+            const itemId = typeof item.id === 'string' ? item.id : '';
+            const callId = itemId ? formatScopedItemKey(stringOrNull(params?.threadId) ?? this._threadId, itemId) : '';
+            this.eventHandler?.({
+                type: method === 'item/started' ? 'mcp_tool_call_begin' : 'mcp_tool_call_end',
+                call_id: callId,
+                callId,
+                invocation: { server: item.server, tool: item.tool, arguments: item.arguments },
+                status: item.status,
+                result: item.result,
+                error: item.error,
+                duration_ms: item.durationMs ?? null,
+            });
+            return true;
+        }
+
         if (item.type === 'fileChange') {
             const itemId = typeof item.id === 'string' ? item.id : '';
             const threadId = stringOrNull(params?.threadId) ?? this._threadId;

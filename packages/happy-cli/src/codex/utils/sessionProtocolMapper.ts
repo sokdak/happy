@@ -579,6 +579,16 @@ export function isCodexTurnInProgress(turn: ThreadTurn): boolean {
     return status === 'inProgress' || status === 'running' || status === 'active' || status === 'pending';
 }
 
+function mcpToolDetails(invocation: Record<string, unknown>) {
+    const server = pickString(invocation.server) ?? 'unknown';
+    const tool = pickString(invocation.tool) ?? 'unknown';
+    const input = invocation.arguments;
+    const args: Record<string, unknown> = input && typeof input === 'object' && !Array.isArray(input)
+        ? input as Record<string, unknown>
+        : (input == null ? {} : { arguments: input });
+    return { name: `mcp__${server}__${tool}`, title: `${server}.${tool}`, args };
+}
+
 function emitHistoricalToolCall(
     envelopes: SessionEnvelope[],
     turn: ThreadTurn,
@@ -728,7 +738,7 @@ export function mapCodexThreadItemToSessionEnvelopes(
         }
         case 'mcpToolCall': {
             const envelopes: SessionEnvelope[] = [];
-            const title = `${item.server}.${item.tool}`;
+            const { name, title, args } = mcpToolDetails(item);
             const output = item.error !== undefined && item.error !== null
                 ? String(item.error)
                 : (item.result !== undefined && item.result !== null ? String(item.result) : null);
@@ -736,13 +746,9 @@ export function mapCodexThreadItemToSessionEnvelopes(
                 envelopes,
                 turn,
                 item,
-                'McpTool',
+                name,
                 title,
-                {
-                    server: item.server,
-                    tool: item.tool,
-                    arguments: item.arguments,
-                },
+                args,
                 output,
                 { startedAt, completedAt },
             );
@@ -1191,6 +1197,33 @@ export function mapCodexMcpMessageToSessionEnvelopes(message: Record<string, unk
         const envelopes: SessionEnvelope[] = [];
         maybeEmitSubagentStart(subagent, opts, startedSubagents, activeSubagents, subagentTitles, envelopes);
         envelopes.push(createEnvelope('agent', { t: 'text', text, thinking: true }, opts));
+        return {
+            currentTurnId: state.currentTurnId,
+            startedSubagents,
+            activeSubagents,
+            providerSubagentToSessionSubagent,
+            subagentTitles,
+            collabReceiverThreadIdsByCall,
+            collabToolByCall,
+            envelopes,
+        };
+    }
+
+    if (type === 'mcp_tool_call_begin' || type === 'mcp_tool_call_end') {
+        const call = pickCallId(message);
+        const envelopes: SessionEnvelope[] = [];
+        maybeEmitSubagentStart(subagent, opts, startedSubagents, activeSubagents, subagentTitles, envelopes);
+        if (type === 'mcp_tool_call_begin') {
+            const invocation = message.invocation && typeof message.invocation === 'object'
+                ? message.invocation as Record<string, unknown>
+                : {};
+            const { name, title, args } = mcpToolDetails(invocation);
+            envelopes.push(createEnvelope('agent', {
+                t: 'tool-call-start', call, name, title, description: title, args,
+            }, opts));
+        } else {
+            envelopes.push(createEnvelope('agent', { t: 'tool-call-end', call }, opts));
+        }
         return {
             currentTurnId: state.currentTurnId,
             startedSubagents,
