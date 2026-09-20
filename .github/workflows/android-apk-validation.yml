@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - '.github/workflows/android-apk-release.yml'
       - '.github/workflows/android-apk-validation.yml'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -53,6 +54,9 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The default also installs the obsolete, unavailable `tools` package.
+          packages: platform-tools
 
       - name: Install Android SDK packages
         shell: bash
