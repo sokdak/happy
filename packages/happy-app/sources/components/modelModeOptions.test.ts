@@ -106,6 +106,8 @@ describe('modelModeOptions', () => {
         expect(models.map((model) => model.key)).toEqual([
             'default',
             'gpt-6-astra',
+            'gpt-6-sol',
+            'gpt-6-luna',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
@@ -120,12 +122,14 @@ describe('modelModeOptions', () => {
         expect(withCustom.map((model) => model.key)).toEqual([
             'default',
             'gpt-6-astra',
+            'gpt-6-sol',
+            'gpt-6-luna',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(5);
+        expect(models).toHaveLength(7);
         expect(includeConfiguredModel('claude', models, 'my-workspace-model')).toBe(models);
     });
 
@@ -155,11 +159,14 @@ describe('modelModeOptions', () => {
     });
 
     it('offers every codex model the levels its own registry publishes', () => {
-        // Straight from codex-rs/models-manager/models.json: sol and terra
-        // publish ultra, luna does not. The difference is the whole point of
-        // asking per model rather than per flavor.
+        // Sol and Terra publish ultra, Luna does not. The difference is the
+        // whole point of asking per model rather than per flavor.
         expect(getEffortLevelsForModel('codex', 'gpt-6-astra').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+        expect(getEffortLevelsForModel('codex', 'gpt-6-sol').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+        expect(getEffortLevelsForModel('codex', 'gpt-6-luna').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
         expect(getEffortLevelsForModel('codex', 'gpt-5.6-sol').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-5.6-terra').map((level) => level.key))

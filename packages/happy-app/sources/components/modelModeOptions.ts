@@ -156,6 +156,8 @@ export function getCodexModelModes(): ModelMode[] {
         // metadata path already prepends the same row.
         { key: 'default', name: 'default model', description: null },
         { key: 'gpt-6-astra', name: 'GPT-6 Astra', description: null },
+        { key: 'gpt-6-sol', name: 'GPT-6 Sol', description: null },
+        { key: 'gpt-6-luna', name: 'GPT-6 Luna', description: null },
         { key: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', description: null },
         { key: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', description: null },
         { key: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', description: null },
@@ -514,6 +516,8 @@ const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 // sol/terra. Re-check it against models.json once astra lands there.
 const CODEX_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
     'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    'gpt-6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
     'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
