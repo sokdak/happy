@@ -10,9 +10,10 @@ import type {
 const STORAGE_KEY = 'codium.plugin.anthropic.apiKey'
 
 const MODELS: ModelDescriptor[] = [
+    { id: 'claude-opus-5-5',     label: 'Opus 5.5 (1M)', group: 'Anthropic', description: 'Opus 5.5 with a 1M-token context window.' },
     { id: 'claude-fable-5-1[1m]', label: 'Fable 5.1 (1M)', group: 'Anthropic', description: 'Fable 5.1 with a 1M-token context window.' },
     { id: 'claude-opus-5[1m]',    label: 'Opus 5 (1M)',    group: 'Anthropic', description: 'Opus 5 with a 1M-token context window.' },
-    { id: 'claude-opus-4-8',   label: 'Opus 4.8',   group: 'Anthropic', description: 'Latest Opus generation.' },
+    { id: 'claude-opus-4-8',   label: 'Opus 4.8',   group: 'Anthropic', description: 'Earlier Opus generation.' },
     { id: 'claude-opus-4-7',   label: 'Opus 4.7',   group: 'Anthropic', description: 'Previous Opus generation.' },
     { id: 'claude-opus-4-6',   label: 'Opus 4.6',   group: 'Anthropic', description: 'Deepest reasoning, slowest.' },
     { id: 'claude-sonnet-5[1m]',  label: 'Sonnet 5 (1M)',  group: 'Anthropic', description: 'Sonnet 5 with a 1M-token context window.' },

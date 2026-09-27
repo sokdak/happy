@@ -12,6 +12,7 @@ describe('anthropicPlugin', () => {
         if (!capability || capability.type !== 'llm-inference') return
 
         expect(capability.models.map((model) => model.id)).toEqual([
+            'claude-opus-5-5',
             'claude-fable-5-1[1m]',
             'claude-opus-5[1m]',
             'claude-opus-4-8',
