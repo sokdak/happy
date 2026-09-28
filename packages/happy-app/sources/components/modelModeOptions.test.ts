@@ -136,7 +136,7 @@ describe('modelModeOptions', () => {
     it('offers only the 1M Claude 5 models and Haiku', () => {
         const models = getClaudeModelModes();
         expect(models.map((model) => model.key)).toEqual([
-            'claude-opus-5-5',
+            'claude-opus-5-5[1m]',
             'claude-opus-5[1m]',
             'claude-fable-5-1[1m]',
             'claude-sonnet-5[1m]',
@@ -150,10 +150,9 @@ describe('modelModeOptions', () => {
             'Haiku 4.5',
         ]);
         expect(models.filter((model) => model.key.endsWith('[1m]')).map((model) => model.description))
-            .toEqual(['1M context', '1M context', '1M context']);
-        expect(models[0].description).toBe('1M context');
+            .toEqual(['1M context', '1M context', '1M context', '1M context']);
         // The 256k variants are not offered: every Claude 5 row is the 1M one.
-        expect(models.some((model) => ['claude-opus-5', 'claude-fable-5-1', 'claude-sonnet-5'].includes(model.key)))
+        expect(models.some((model) => ['claude-opus-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-sonnet-5'].includes(model.key)))
             .toBe(false);
         // No `default model` row, and no alias keys: an alias would silently
         // resolve to an older model than the row claims.
