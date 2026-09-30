@@ -39,6 +39,14 @@ export const AGENT_MODELS: AgentModel[] = [
         model: 'opus',
     },
     {
+        id: 'claude-opus-5-5[1m]',
+        engine: 'claude',
+        label: 'Opus 5.5 (1M)',
+        group: 'Anthropic',
+        model: 'claude-opus-5-5[1m]',
+        description: 'Opus 5.5 with a 1M-token context window.',
+    },
+    {
         id: 'claude-fable-5-1[1m]',
         engine: 'claude',
         label: 'Fable 5.1 (1M)',
