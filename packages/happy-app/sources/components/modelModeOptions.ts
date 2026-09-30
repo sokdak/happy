@@ -156,6 +156,7 @@ export function getCodexModelModes(): ModelMode[] {
         // allowed-model list rejects outright (sokdak/happy-helm#17). The
         // metadata path already prepends the same row.
         { key: 'default', name: 'default model', description: null },
+        { key: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', description: null },
         { key: 'gpt-6-astra', name: 'GPT-6 Astra', description: null },
         { key: 'gpt-6-sol', name: 'GPT-6 Sol', description: null },
         { key: 'gpt-6-luna', name: 'GPT-6 Luna', description: null },
@@ -511,11 +512,13 @@ const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 // different kind of run rather than one more notch — but it is a level these
 // models accept, so the picker offers it rather than deciding for you.
 //
-// astra is the one row NOT taken from that registry: it is absent from it as
-// of codex-cli 0.147.0, whose model table ends at gpt-5.6-pro, so it reaches
-// Happy through a gateway instead. Its range is operator-confirmed to match
-// sol/terra. Re-check it against models.json once astra lands there.
+// The gpt-6.x rows are the ones NOT taken from that registry: codex-cli
+// 0.147.0 publishes no gpt-6 entry at all, its model table ending at
+// gpt-5.6-pro, so they reach Happy through a gateway instead. Their ranges are
+// operator-confirmed to follow the same sol/terra-vs-luna split as 5.6.
+// Re-check them against models.json once gpt-6 lands there.
 const CODEX_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
+    'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
