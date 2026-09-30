@@ -29,15 +29,18 @@ export type AgentDefaultConfig = {
 };
 
 const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
-    // Auto is the reviewed everyday mode for both shipped code agents. The
-    // old CLI fallback is applied only when a machine version is known below;
-    // a user override is kept separate and is never rewritten here.
-    claude: { permissionMode: 'auto', modelMode: 'claude-opus-5[1m]', effortLevel: 'medium' },
+    // Yolo is the shipped everyday mode for both code agents: it skips the
+    // permission prompt outright, so a new session acts without asking. The two
+    // agents spell it differently - Claude's `bypassPermissions`, Codex's own
+    // `yolo`. Both predate `auto`, so the old-CLI fallback below no longer
+    // fires for the defaults; a user override is kept separate and is never
+    // rewritten here.
+    claude: { permissionMode: 'bypassPermissions', modelMode: 'claude-opus-5-5[1m]', effortLevel: 'medium' },
     // `default` means "send no model and let Codex use its own config". Naming a
     // model here made the app send it explicitly on every new session, so a
     // deployment whose gateway only allows other models failed its first turn
     // no matter what the CLI defaulted to.
-    codex: { permissionMode: 'auto', modelMode: 'default', effortLevel: 'medium' },
+    codex: { permissionMode: 'yolo', modelMode: 'default', effortLevel: 'medium' },
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },
     agy: { permissionMode: 'default', modelMode: 'Gemini 3.1 Pro (High)', effortLevel: null },

@@ -211,12 +211,12 @@ describe('modelModeOptions', () => {
     });
 
     it('uses code defaults for agent defaults', () => {
-        expect(getDefaultPermissionModeKey('claude')).toBe('auto');
+        expect(getDefaultPermissionModeKey('claude')).toBe('bypassPermissions');
         // The default has to be a row the picker actually offers.
-        expect(getDefaultModelKey('claude')).toBe('claude-opus-5[1m]');
+        expect(getDefaultModelKey('claude')).toBe('claude-opus-5-5[1m]');
         expect(getClaudeModelModes().some((model) => model.key === getDefaultModelKey('claude'))).toBe(true);
         expect(getDefaultEffortKey('claude')).toBe('medium');
-        expect(getDefaultPermissionModeKey('codex')).toBe('auto');
+        expect(getDefaultPermissionModeKey('codex')).toBe('yolo');
         expect(getDefaultModelKey('codex')).toBe('default');
         expect(getCodexModelModes().some((model) => model.key === getDefaultModelKey('codex'))).toBe(true);
         expect(getDefaultEffortKey('codex')).toBe('medium');

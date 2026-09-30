@@ -12,7 +12,7 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta).toEqual({
-            permissionMode: 'auto',
+            permissionMode: 'yolo',
             // The codex code default is now the `default` row, which goes on
             // the wire as an explicit reset: Codex reads its own config
             // instead of running whatever model Happy would have guessed.
@@ -21,26 +21,18 @@ describe('resolveMessageModeMeta', () => {
         });
     });
 
-    it('uses Default for an unset Codex code default on an old CLI', () => {
+    // `yolo` predates the 1.2.1-beta.2 `auto` gate, so an unset Codex default
+    // resolves the same way on either side of it - unlike `auto`, which used
+    // to be downgraded to `default` on an old CLI.
+    it.each(['1.2.0', '1.2.1-beta.2'])('uses Yolo for an unset Codex code default on CLI %s', (version) => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
             modelMode: null,
             effortLevel: null,
-            metadata: { flavor: 'codex', version: '1.2.0' },
+            metadata: { flavor: 'codex', version },
         } as any);
 
-        expect(meta.permissionMode).toBe('default');
-    });
-
-    it('uses Auto for an unset Codex code default on a new CLI', () => {
-        const meta = resolveMessageModeMeta({
-            permissionMode: null,
-            modelMode: null,
-            effortLevel: null,
-            metadata: { flavor: 'codex', version: '1.2.1-beta.2' },
-        } as any);
-
-        expect(meta.permissionMode).toBe('auto');
+        expect(meta.permissionMode).toBe('yolo');
     });
 
     it('keeps an explicit Codex YOLO override on an old CLI', () => {
@@ -227,7 +219,7 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta).toEqual({
-            permissionMode: 'auto',
+            permissionMode: 'yolo',
             model: 'my-workspace-model',
             effort: 'medium',
         });
@@ -246,7 +238,7 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta).toEqual({
-            permissionMode: 'auto',
+            permissionMode: 'yolo',
             model: 'my-workspace-model',
             effort: 'medium',
         });
