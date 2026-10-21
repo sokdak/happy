@@ -177,7 +177,8 @@ export function AgentQuestionModal({ pending, sessionId, visible, onClose }: Age
                                             onChangeText={value => handleCustomChange(question.id, value)}
                                             placeholder={t('agentQuestion.ownAnswerPlaceholder')}
                                             placeholderTextColor={theme.colors.textSecondary}
-                                            multiline
+                                            multiline={question.isSecret !== true}
+                                            secureTextEntry={question.isSecret === true}
                                             editable={!submitting}
                                             // Focus the first question's field so the keyboard is
                                             // ready for a written answer without another tap.

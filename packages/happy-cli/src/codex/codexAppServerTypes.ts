@@ -249,6 +249,29 @@ export type ApprovalResponse = {
     decision: ReviewDecision;
 };
 
+// Native app-server questions are independent of execution approvals.
+export type ToolRequestUserInputQuestion = {
+    id: string;
+    header: string;
+    question: string;
+    isOther?: boolean;
+    isSecret?: boolean;
+    options: Array<{ label: string; description: string }> | null;
+};
+
+export type ToolRequestUserInputParams = {
+    threadId: string;
+    turnId: string;
+    itemId: string;
+    questions: ToolRequestUserInputQuestion[];
+    isBlocking?: boolean;
+    autoResolutionMs?: number | null;
+};
+
+export type ToolRequestUserInputResponse = {
+    answers: Record<string, { answers: string[] }>;
+};
+
 export type McpServerElicitationAction = "accept" | "decline" | "cancel";
 
 export type McpServerElicitationRequestResponse = {
@@ -318,7 +341,7 @@ export type JsonRpcRequest = {
 
 export type JsonRpcResponse = {
     jsonrpc?: "2.0";
-    id: number;
+    id: number | string;
     result?: unknown;
     error?: { code: number; message: string; data?: unknown };
 };

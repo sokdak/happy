@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ActivityIndicator, Platform, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -18,6 +18,8 @@ export interface InlineQuestion {
     options: InlineQuestionOption[];
     multiSelect?: boolean | null;
     required?: boolean | null;
+    allowCustom?: boolean | null;
+    isSecret?: boolean | null;
 }
 
 export type InlineQuestionAnswers = Record<string, string[]>;
@@ -27,6 +29,7 @@ interface InlineQuestionFormProps {
     canInteract: boolean;
     submittedAnswers?: InlineQuestionAnswers | null;
     onSubmit: (answers: InlineQuestionAnswers) => Promise<void>;
+    onCancel?: () => Promise<void>;
 }
 
 // This is the shared choice form used by both Claude's AskUserQuestion tool and
@@ -37,6 +40,8 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
     const { theme } = useUnistyles();
     const [selections, setSelections] = React.useState<Map<string, Set<number>>>(new Map());
     const [isSubmitting, setIsSubmitting] = React.useState(false);
+    const [customAnswers, setCustomAnswers] = React.useState<Record<string, string>>({});
+    const [submitError, setSubmitError] = React.useState(false);
     const [locallySubmittedAnswers, setLocallySubmittedAnswers] = React.useState<InlineQuestionAnswers | null>(null);
     const questionKey = questions.map(question => question.id).join('\u0000');
 
@@ -44,17 +49,22 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
         setSelections(new Map());
         setLocallySubmittedAnswers(null);
         setIsSubmitting(false);
+        setCustomAnswers({});
+        setSubmitError(false);
     }, [questionKey]);
 
     const submittedAnswers = props.submittedAnswers ?? locallySubmittedAnswers;
     const canInteract = props.canInteract && submittedAnswers === null;
     const allQuestionsAnswered = questions.every((question) => {
         if (question.required === false) return true;
-        return (selections.get(question.id)?.size ?? 0) > 0;
+        return (selections.get(question.id)?.size ?? 0) > 0 || (
+            question.allowCustom === true && Boolean(customAnswers[question.id]?.trim())
+        );
     });
 
     const handleOptionToggle = React.useCallback((question: InlineQuestion, optionIndex: number) => {
         if (!canInteract) return;
+        if (!question.multiSelect) setCustomAnswers(previous => ({ ...previous, [question.id]: '' }));
 
         setSelections(previous => {
             const next = new Map(previous);
@@ -75,28 +85,46 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
     }, [canInteract]);
 
     const handleSubmit = React.useCallback(async () => {
-        if (!allQuestionsAnswered || isSubmitting) return;
+        if (!canInteract || !allQuestionsAnswered || isSubmitting) return;
 
         const answers: InlineQuestionAnswers = {};
         for (const question of questions) {
             const selected = selections.get(question.id);
-            if (!selected || selected.size === 0) continue;
-            answers[question.id] = Array.from(selected)
+            const values = Array.from(selected ?? [])
                 .map(optionIndex => question.options[optionIndex]?.label)
                 .filter((label): label is string => Boolean(label));
+            const custom = question.allowCustom === true ? customAnswers[question.id]?.trim() : '';
+            if (custom) values.push(custom);
+            if (values.length > 0) answers[question.id] = values;
         }
 
         setIsSubmitting(true);
+        setSubmitError(false);
         setLocallySubmittedAnswers(answers);
         try {
             await onSubmit(answers);
         } catch (error) {
             setLocallySubmittedAnswers(null);
+            setSubmitError(true);
             console.error('Failed to submit question answer:', error);
         } finally {
             setIsSubmitting(false);
         }
-    }, [allQuestionsAnswered, isSubmitting, onSubmit, questions, selections]);
+    }, [allQuestionsAnswered, canInteract, customAnswers, isSubmitting, onSubmit, questions, selections]);
+
+    const handleCancel = React.useCallback(async () => {
+        if (!canInteract || isSubmitting || !props.onCancel) return;
+        setIsSubmitting(true);
+        setSubmitError(false);
+        try {
+            await props.onCancel();
+            setLocallySubmittedAnswers({});
+        } catch {
+            setSubmitError(true);
+        } finally {
+            setIsSubmitting(false);
+        }
+    }, [canInteract, isSubmitting, props.onCancel]);
 
     if (submittedAnswers) {
         return (
@@ -106,7 +134,9 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
                         <View key={question.id} style={styles.submittedItem}>
                             <Text style={styles.submittedHeader}>{question.header}:</Text>
                             <Text style={styles.submittedValue}>
-                                {submittedAnswers[question.id]?.join(', ') || '—'}
+                                {question.isSecret && submittedAnswers[question.id]?.length
+                                    ? '••••••'
+                                    : submittedAnswers[question.id]?.join(', ') || '—'}
                             </Text>
                         </View>
                     ))}
@@ -166,12 +196,35 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
                                     );
                                 })}
                             </View>
+                            {question.allowCustom === true && (
+                                <TextInput
+                                    accessibilityLabel={t('agentQuestion.ownAnswer')}
+                                    style={styles.customInput}
+                                    placeholder={t('agentQuestion.ownAnswerPlaceholder')}
+                                    placeholderTextColor={theme.colors.textSecondary}
+                                    value={customAnswers[question.id] ?? ''}
+                                    onChangeText={value => {
+                                        setCustomAnswers(previous => ({ ...previous, [question.id]: value }));
+                                        if (!question.multiSelect) {
+                                            setSelections(previous => new Map(previous).set(question.id, new Set()));
+                                        }
+                                    }}
+                                    secureTextEntry={question.isSecret === true}
+                                    editable={canInteract && !isSubmitting}
+                                />
+                            )}
                         </View>
                     );
                 })}
 
+                {submitError && <Text style={styles.errorText}>{t('agentQuestion.submitFailed')}</Text>}
                 {canInteract && (
                     <View style={styles.actionsContainer}>
+                        {props.onCancel && (
+                            <TouchableOpacity onPress={handleCancel} disabled={isSubmitting} style={styles.submitButton}>
+                                <Text style={styles.submitButtonText}>{t('common.cancel')}</Text>
+                            </TouchableOpacity>
+                        )}
                         <TouchableOpacity
                             style={[
                                 styles.submitButton,
@@ -228,6 +281,18 @@ const styles = StyleSheet.create((theme) => ({
     },
     optionsContainer: {
         gap: 4,
+    },
+    customInput: {
+        color: theme.colors.text,
+        borderWidth: 1,
+        borderColor: theme.colors.divider,
+        borderRadius: 8,
+        padding: 12,
+        minHeight: 44,
+    },
+    errorText: {
+        color: theme.colors.textDestructive,
+        fontSize: 13,
     },
     optionButton: {
         flexDirection: 'row',
