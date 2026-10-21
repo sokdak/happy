@@ -21,6 +21,16 @@ export default defineConfig({
             {
                 extends: true,
                 test: {
+                    name: 'integration-codex-local',
+                    fileParallelism: false,
+                    maxWorkers: 1,
+                    include: ['src/codex/turnSteering.integration.test.ts'],
+                    sequence: { groupOrder: 1 },
+                },
+            },
+            {
+                extends: true,
+                test: {
                     name: 'integration-empty',
                     fileParallelism: false,
                     hookTimeout: 120_000,

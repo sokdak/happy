@@ -58,6 +58,8 @@ type PendingRequest = {
     epoch: number;
 };
 
+export type CodexTurnTarget = { threadId: string; turnId: string };
+
 type AbortTurnResult = {
     hadActiveTurn: boolean;
     aborted: boolean;
@@ -1250,6 +1252,28 @@ export class CodexAppServerClient {
         }
     }
 
+    /** Append input to this exact turn without creating another turn. */
+    async steerTurn(prompt: string, target: CodexTurnTarget, extraInputItems: InputItem[] = []): Promise<boolean> {
+        if (this.pendingAbort || this.pendingInterrupt
+            || !this.pendingTurnCompletion?.startAcknowledged
+            || this._threadId !== target.threadId || this._turnId !== target.turnId) {
+            return false;
+        }
+        const input: InputItem[] = [];
+        if (prompt.length > 0 || extraInputItems.length === 0) input.push({ type: 'text', text: prompt });
+        input.push(...extraInputItems);
+        const result = await this.request('turn/steer', {
+            threadId: target.threadId,
+            expectedTurnId: target.turnId,
+            input,
+        }) as { turnId: string };
+        if (result.turnId !== target.turnId) throw new Error('Codex accepted input for an unexpected turn');
+        // An accepted steer remains accepted even if turn/completed arrived
+        // before the acknowledgement. Re-queueing it would deliver it twice.
+        this.pendingTurnCompletion?.refreshIdleTimeout?.();
+        return true;
+    }
+
     /** Stop only after 10 minutes without progress from the active turn. */
     private static readonly TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -1267,6 +1291,7 @@ export class CodexAppServerClient {
         sandbox?: SandboxMode;
         effort?: ReasoningEffort;
         extraInputItems?: InputItem[];
+        onTurnStarted?: (target: CodexTurnTarget) => void;
         /** Maximum time without turn progress, not total turn duration. */
         turnTimeoutMs?: number;
         /** Override the post-timeout interrupt grace period, primarily for tests. */
@@ -1320,6 +1345,9 @@ export class CodexAppServerClient {
 
         try {
             await this.sendTurn(prompt, opts);
+            if (this.pendingTurnCompletion === pendingForCall && this._threadId && this._turnId) {
+                opts?.onTurnStarted?.({ threadId: this._threadId, turnId: this._turnId });
+            }
         } catch (err) {
             if (this.pendingTurnCompletion === pendingForCall) {
                 this.pendingTurnCompletion = null;
