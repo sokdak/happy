@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxConfig } from '@/persistence';
+import type { ApiSessionClient } from '@/api/apiSession';
+import type { AgentState } from '@/api/types';
 
 const {
     mockExecSync,
@@ -2661,6 +2663,137 @@ describe('CodexAppServerClient sandbox integration', () => {
         ]));
 
         await client.disconnect();
+    });
+
+    describe('native user input', () => {
+        const question = {
+            threadId: 'thread', turnId: 'turn', itemId: 'item',
+            questions: [{ id: 'q', header: 'Storage', question: 'Where?', isOther: true, isSecret: false, options: [{ label: 'Local', description: 'On disk' }] }],
+        };
+
+        it.each([99, 'question-99'])('waits for an answer and returns it on the original JSON-RPC id %s', async id => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: msg => { requests.push(msg); } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            let resolve!: (response: { answers: Record<string, { answers: string[] }> }) => void;
+            const handler = vi.fn(() => new Promise<{ answers: Record<string, { answers: string[] }> }>(r => { resolve = r; }));
+            client.setUserInputHandler(handler);
+            await client.connect();
+            try {
+                pushJsonLine(proc.stdout, { id, method: 'item/tool/requestUserInput', params: question });
+                await waitFor(() => handler.mock.calls.length === 1);
+                expect(handler).toHaveBeenCalledWith(expect.objectContaining({ ...question, callId: `thread:item:question:${id}` }));
+                expect(requests.some(msg => msg.result?.answers)).toBe(false);
+                resolve({ answers: { q: { answers: ['Local'] } } });
+                await waitFor(() => requests.some(msg => msg.result?.answers));
+                expect(requests).toContainEqual({ jsonrpc: '2.0', id, result: { answers: { q: { answers: ['Local'] } } } });
+            } finally { await client.disconnect(); }
+        });
+
+        it('routes a native request through the Happy card, communication RPC, and back to Codex', async () => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: msg => { requests.push(msg); } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const { CodexUserInputHandler } = await import('./utils/userInputHandler');
+            let state: AgentState = {};
+            let reply!: (data: unknown) => Promise<unknown>;
+            const send = vi.fn();
+            const session = {
+                rpcHandlerManager: { registerHandler: (_: string, handler: typeof reply) => { reply = handler; } },
+                updateAgentState: (update: (current: AgentState) => AgentState) => { state = update(state); },
+                sendSessionProtocolMessage: send,
+            } as unknown as ApiSessionClient;
+            const client = new CodexAppServerClient();
+            client.setUserInputHandler(new CodexUserInputHandler(session).handle);
+            await client.connect();
+            try {
+                pushJsonLine(proc.stdout, { id: 99, method: 'item/tool/requestUserInput', params: question });
+                await waitFor(() => Object.keys(state.communications ?? {}).length === 1);
+                const id = Object.keys(state.communications!)[0];
+                expect(send).toHaveBeenCalledWith(expect.objectContaining({ ev: expect.objectContaining({ t: 'tool-call-start', call: state.communications![id].toolUseId }) }));
+                await reply({ id, kind: 'form', status: 'answered', answers: { q: { options: [], custom: 'Remote storage' } } });
+                await waitFor(() => requests.some(msg => msg.id === 99 && msg.result?.answers));
+                expect(requests).toContainEqual({ jsonrpc: '2.0', id: 99, result: { answers: { q: { answers: ['Remote storage'] } } } });
+                expect(state.completedCommunications?.[id].status).toBe('answered');
+            } finally { await client.disconnect(); }
+        });
+
+        it.each(['resolved', 'completed', 'interrupted', 'disconnected', 'exited'] as const)('cancels %s questions without sending late replies', async action => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: msg => { requests.push(msg); } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            let signal: AbortSignal | undefined;
+            let resolve!: (response: { answers: {} }) => void;
+            client.setUserInputHandler(params => {
+                signal = params.signal;
+                return new Promise(r => { resolve = r; });
+            });
+            await client.connect();
+            try {
+                pushJsonLine(proc.stdout, { id: 99, method: 'item/tool/requestUserInput', params: question });
+                await waitFor(() => !!signal);
+                // A resolution from a different thread must not dismiss this request.
+                pushJsonLine(proc.stdout, { method: 'serverRequest/resolved', params: { threadId: 'other', requestId: 99 } });
+                await new Promise(r => setTimeout(r, 0));
+                expect(signal!.aborted).toBe(false);
+                if (action === 'resolved') pushJsonLine(proc.stdout, { method: 'serverRequest/resolved', params: { threadId: 'thread', requestId: 99 } });
+                if (action === 'completed') pushJsonLine(proc.stdout, { method: 'turn/completed', params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } } });
+                if (action === 'interrupted') await client.interruptTurn();
+                if (action === 'disconnected') await client.disconnect();
+                if (action === 'exited') proc.emit('exit', 1, null);
+                await waitFor(() => signal!.aborted);
+                resolve({ answers: {} });
+                await new Promise(r => setTimeout(r, 0));
+                expect(requests.some(msg => msg.id === 99 && msg.result)).toBe(false);
+            } finally { await client.disconnect(); }
+        });
+
+        it.each([undefined, true, false])('pauses the idle deadline only for blocking questions (isBlocking: %s)', async isBlocking => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if (msg.method === 'turn/start') pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn' } } });
+            } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            const abort = vi.spyOn(client, 'abortTurnWithFallback').mockImplementation(async () => {
+                (client as any).resolvePendingTurn(true);
+                return { hadActiveTurn: true, aborted: true, forcedRestart: false, resumedThread: false };
+            });
+            let resolve!: (response: { answers: {} }) => void;
+            client.setUserInputHandler(() => new Promise(r => { resolve = r; }));
+            await client.connect();
+            (client as any)._threadId = 'thread';
+            vi.useFakeTimers();
+            try {
+                const turn = client.sendTurnAndWait('hello', { turnTimeoutMs: 50 });
+                await vi.advanceTimersByTimeAsync(0);
+                pushJsonLine(proc.stdout, { id: 99, method: 'item/tool/requestUserInput', params: { ...question, threadId: 'child', isBlocking } });
+                await vi.advanceTimersByTimeAsync(0);
+                if (isBlocking !== false) {
+                    await vi.advanceTimersByTimeAsync(500);
+                    expect(abort).not.toHaveBeenCalled();
+                    resolve({ answers: {} });
+                    await vi.advanceTimersByTimeAsync(49);
+                    expect(abort).not.toHaveBeenCalled();
+                    await vi.advanceTimersByTimeAsync(1);
+                } else {
+                    await vi.advanceTimersByTimeAsync(50);
+                }
+                await expect(turn).resolves.toEqual({ aborted: true, timedOut: true });
+                expect(abort).toHaveBeenCalledTimes(1);
+            } finally {
+                await client.disconnect();
+                vi.clearAllTimers();
+                vi.useRealTimers();
+            }
+        });
     });
 
     it('responds to MCP elicitation requests with an action payload', async () => {

@@ -5,6 +5,7 @@ import { ApiClient } from '@/api/api';
 import { CodexAppServerClient } from './codexAppServerClient';
 import type { ReasoningEffort } from './codexAppServerTypes';
 import { CodexPermissionHandler } from './utils/permissionHandler';
+import { CodexUserInputHandler } from './utils/userInputHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
@@ -209,6 +210,7 @@ export async function runCodex(opts: {
     // Permission handler declared here so it can be updated in onSessionSwap callback
     // (assigned later at line ~385 after client setup)
     let permissionHandler: CodexPermissionHandler;
+    let userInputHandler: CodexUserInputHandler;
     let client!: CodexAppServerClient;
     let reasoningProcessor!: ReasoningProcessor;
     let abortInProgress: Promise<void> | null = null;
@@ -224,6 +226,7 @@ export async function runCodex(opts: {
             if (permissionHandler) {
                 permissionHandler.updateSession(newSession);
             }
+            userInputHandler?.updateSession(newSession);
         }
     });
     session = initialSession;
@@ -584,6 +587,9 @@ export async function runCodex(opts: {
     // process that died while a tool prompt was open — see the matching
     // call in claudeRemoteLauncher for the full rationale.
     permissionHandler.reset('Previous CLI process exited before responding');
+    userInputHandler = new CodexUserInputHandler(session, () => currentTurnId);
+    userInputHandler.reset();
+    client.setUserInputHandler(userInputHandler.handle);
     reasoningProcessor = new ReasoningProcessor((message) => {
         const envelopes = mapCodexProcessorMessageToSessionEnvelopes(message, { currentTurnId });
         for (const envelope of envelopes) {
@@ -1073,6 +1079,7 @@ export async function runCodex(opts: {
     } finally {
         // Clean up resources when main loop exits
         logger.debug('[codex]: Final cleanup start');
+        userInputHandler.reset();
         logActiveHandles('cleanup-start');
 
         // Cancel offline reconnection if still running

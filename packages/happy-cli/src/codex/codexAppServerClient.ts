@@ -46,6 +46,8 @@ import type {
     InputItem,
     ReasoningEffort,
     McpServerElicitationRequestResponse,
+    ToolRequestUserInputParams,
+    ToolRequestUserInputResponse,
 } from './codexAppServerTypes';
 import type { SandboxConfig } from '@/persistence';
 import { initializeSandbox, wrapForMcpTransport } from '@/sandbox/manager';
@@ -114,6 +116,11 @@ export type ApprovalHandler = (params: {
     serverName?: string;
     message?: string;
 }) => Promise<ReviewDecision>;
+
+export type UserInputHandler = (params: ToolRequestUserInputParams & {
+    callId: string;
+    signal: AbortSignal;
+}) => Promise<ToolRequestUserInputResponse>;
 
 function stringOrNull(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null;
@@ -305,6 +312,11 @@ export class CodexAppServerClient {
     // Handlers set by the consumer (runCodex.ts)
     private eventHandler: ((msg: EventMsg) => void) | null = null;
     private approvalHandler: ApprovalHandler | null = null;
+    private userInputHandler: UserInputHandler | null = null;
+    private pendingUserInputs = new Map<number | string, {
+        controller: AbortController;
+        params: ToolRequestUserInputParams;
+    }>();
 
     constructor(sandboxConfig?: SandboxConfig) {
         this.sandboxConfig = sandboxConfig;
@@ -328,6 +340,18 @@ export class CodexAppServerClient {
 
     setApprovalHandler(handler: ApprovalHandler): void {
         this.approvalHandler = handler;
+    }
+
+    setUserInputHandler(handler: UserInputHandler): void {
+        this.userInputHandler = handler;
+    }
+
+    private cancelUserInputs(matches: (params: ToolRequestUserInputParams) => boolean = () => true): void {
+        for (const [id, request] of this.pendingUserInputs) {
+            if (!matches(request.params)) continue;
+            this.pendingUserInputs.delete(id);
+            request.controller.abort();
+        }
     }
 
     private extractTurnId(params: any): string | null {
@@ -439,6 +463,7 @@ export class CodexAppServerClient {
         // turn/start to the same ID. Unbound/old events cannot settle that call.
         if (duplicate && (!pending || pending.turnId !== turnId)) return;
         if (turnId) this.completedTurnIds.add(turnId);
+        this.cancelUserInputs(params => (!turnId || params.turnId === turnId));
         this.resolvePendingTurn(event.type === 'turn_aborted');
         this._turnId = null;
         // Settle all internal state before invoking potentially reentrant code.
@@ -768,6 +793,7 @@ export class CodexAppServerClient {
                 this.pending.delete(id);
             }
             // Resolve pending turn completion (treat as abort)
+            this.cancelUserInputs();
             this.resolvePendingTurn(true);
         });
 
@@ -803,6 +829,7 @@ export class CodexAppServerClient {
     }
 
     private async disconnectInternal(opts?: { preserveThreadState?: boolean }): Promise<void> {
+        this.cancelUserInputs();
         const proc = this.process;
         const pid = proc?.pid;
         const epoch = this.processEpoch;
@@ -1362,6 +1389,13 @@ export class CodexAppServerClient {
             timer = setTimeout(() => {
                 if (this.pendingTurnCompletion !== pendingForCall) return;
 
+                // Waiting for a person is not a stalled model/tool. Child-thread
+                // questions can also block the foreground turn while it waits.
+                if ([...this.pendingUserInputs.values()].some(request => request.params.isBlocking !== false)) {
+                    timer?.refresh();
+                    return;
+                }
+
                 timeoutState.timedOut = true;
                 logger.warn(`[CodexAppServer] Turn idle for ${timeoutMs}ms without progress — interrupting it before returning ready`);
                 const recovery = this.abortTurnWithFallback({
@@ -1453,6 +1487,7 @@ export class CodexAppServerClient {
     }
 
     async interruptTurn(opts?: { timeoutMs?: number }): Promise<void> {
+        this.cancelUserInputs();
         if (!this._threadId) return;
         if (!this._turnId) {
             logger.debug('[CodexAppServer] interruptTurn: no active turnId, skipping');
@@ -1483,6 +1518,7 @@ export class CodexAppServerClient {
     }
 
     clearThreadState(): void {
+        this.cancelUserInputs();
         logger.debug(
             `[CodexAppServer] Clearing thread state: thread=${this._threadId ?? 'none'} turn=${this._turnId ?? 'none'}`,
         );
@@ -1535,7 +1571,7 @@ export class CodexAppServerClient {
         logger.debug(`[CodexAppServer] → ${method} (notification)`);
     }
 
-    private respond(id: number, result: unknown): void {
+    private respond(id: number | string, result: unknown): void {
         if (!this.process?.stdin?.writable) return;
         const msg: JsonRpcResponse = { jsonrpc: '2.0', id, result };
         this.process.stdin.write(JSON.stringify(msg) + '\n');
@@ -1667,7 +1703,28 @@ export class CodexAppServerClient {
         };
     }
 
-    private async handleServerRequest(id: number, method: string, params: any): Promise<void> {
+    private async handleServerRequest(id: number | string, method: string, params: any): Promise<void> {
+        if (method === 'item/tool/requestUserInput') {
+            const epoch = this.processEpoch;
+            const controller = new AbortController();
+            const request = { controller, params: params as ToolRequestUserInputParams };
+            const callId = `${formatScopedItemKey(params.threadId, params.itemId)}:question:${id}`;
+            this.pendingUserInputs.set(id, request);
+            try {
+                const response = this.userInputHandler
+                    ? await this.userInputHandler({ ...params, callId, signal: controller.signal })
+                    : { answers: {} };
+                if (epoch === this.processEpoch && !controller.signal.aborted) this.respond(id, response);
+            } catch (error) {
+                logger.debug('[CodexAppServer] User input handler error:', error);
+                if (epoch === this.processEpoch && !controller.signal.aborted) this.respond(id, { answers: {} });
+            } finally {
+                if (this.pendingUserInputs.get(id) === request) this.pendingUserInputs.delete(id);
+                this.pendingTurnCompletion?.refreshIdleTimeout?.();
+            }
+            return;
+        }
+
         if (method === 'mcpServer/elicitation/request') {
             const threadId = stringOrNull(params?.threadId) ?? this._threadId;
             const turnId = stringOrNull(params?.turnId);
@@ -1784,6 +1841,20 @@ export class CodexAppServerClient {
     }
 
     private handleNotification(method: string, params: any): void {
+        if (method === 'serverRequest/resolved') {
+            const request = this.pendingUserInputs.get(params?.requestId);
+            if (request && request.params.threadId === params?.threadId) {
+                this.pendingUserInputs.delete(params.requestId);
+                request.controller.abort();
+                this.pendingTurnCompletion?.refreshIdleTimeout?.();
+            }
+            return;
+        }
+        // Clean up child-thread questions too, before foreground lifecycle filtering.
+        if (method === 'turn/completed') {
+            const turnId = this.extractTurnId(params);
+            this.cancelUserInputs(input => input.threadId === params?.threadId && input.turnId === turnId);
+        }
         // Observe both protocols before display-event deduplication: raw deltas
         // still demonstrate progress when legacy notifications are also enabled.
         this.recordTurnProgress(method, params);

@@ -285,6 +285,7 @@ export const AgentQuestionSchema = z.object({
     multiSelect: z.boolean().nullish(),
     // Lets the user write an answer the agent did not offer.
     allowCustom: z.boolean().nullish(),
+    isSecret: z.boolean().nullish(),
     // When false the user may submit without choosing anything.
     required: z.boolean().nullish(),
 }).passthrough();
