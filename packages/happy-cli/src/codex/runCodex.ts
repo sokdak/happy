@@ -49,6 +49,7 @@ import {
 } from './codexPrompt';
 import { discoverCodexSkillCommands } from './codexSkills';
 import { CodexRemoteModeState } from './remoteModeState';
+import { CodexTurnSteering } from './codexTurnSteering';
 import {
     codexGoalActionCapabilities,
     mapCodexGoalEventToAgentGoalStatus,
@@ -260,6 +261,31 @@ export async function runCodex(opts: {
     }
 
     const messageQueue = new MessageQueue2<EnhancedMode>(hashCodexEnhancedMode);
+    const turnSteering = new CodexTurnSteering({
+        enqueue: message => {
+            const result = enqueueCodexUserText({
+                text: message.message,
+                mode: message.mode,
+                queue: messageQueue,
+                attachments: message.attachments,
+            });
+            if (result === 'clear') logger.debug('[Codex] /clear command pushed to isolated queue');
+        },
+        hasQueuedMessages: () => messageQueue.size() > 0,
+        steer: async (message, target) => {
+            const images = await prepareCodexImageInputItems(message.attachments, { sessionId: session.sessionId });
+            if (message.attachments?.length && images.inputItems.length === 0 && !message.message.trim()) {
+                session.sendSessionEvent({ type: 'message', message: 'No supported images were available to send to Codex.' });
+                return true;
+            }
+            const accepted = await client.steerTurn(message.message, target, images.inputItems);
+            if (accepted && message.message.trim()) messageBuffer.addMessage(message.message, 'user');
+            return accepted;
+        },
+        onError: error => logger.debug('[Codex] Could not steer active turn; preserving input in queue', {
+            errorName: error instanceof Error ? error.name : typeof error,
+        }),
+    });
 
     session.onFileEvent((fileEvent) => {
         const ev = fileEvent.content.data.ev;
@@ -335,15 +361,11 @@ export async function runCodex(opts: {
             appendSystemPrompt: messageAppendSystemPrompt,
             effort: modeResolution.effort,
         };
-        const enqueueResult = enqueueCodexUserText({
-            text: message.content.text,
+        turnSteering.submit({
+            message: message.content.text,
             mode: enhancedMode,
-            queue: messageQueue,
             attachments: attachmentsForThisMessage,
         });
-        if (enqueueResult === 'clear') {
-            logger.debug('[Codex] /clear command pushed to isolated queue');
-        }
     }, (error) => {
         logger.warn('[Codex] Failed to handle user message', {
             errorName: error instanceof Error ? error.name : typeof error,
@@ -998,13 +1020,14 @@ export async function runCodex(opts: {
                     includeTitleInstruction: first,
                 });
 
-                const result = await client.sendTurnAndWait(turnPrompt, {
+                const result = await turnSteering.runTurn(message.mode, onTurnStarted => client.sendTurnAndWait(turnPrompt, {
                     model: message.mode.model,
                     approvalPolicy: executionPolicy.approvalPolicy,
                     sandbox: executionPolicy.sandbox,
                     effort: message.mode.effort,
                     extraInputItems: imageInputs.inputItems,
-                });
+                    onTurnStarted,
+                }));
                 first = false;
                 if (includeAppendSystemPrompt) {
                     appendSystemPromptInjected = true;

@@ -480,6 +480,71 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    describe('turn steering', () => {
+        it.each(['raw', 'legacy'] as const)('appends input and images to the exact %s turn without starting another turn', async protocol => {
+            const h = createAbortBarrierHarness();
+            mockSpawn.mockReturnValue(h.proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            const wire = vi.spyOn(h.proc.stdin, 'write');
+            await client.connect();
+            await client.startThread({ model: 'gpt-test' });
+            let target: { threadId: string; turnId: string } | undefined;
+            const turn = client.sendTurnAndWait('Initial request', { onTurnStarted: value => { target = value; } });
+            try {
+                await waitFor(() => !!target);
+                const accepted = client.steerTurn('Use the new instructions', target!, [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=' }]);
+                const firstSteer = JSON.parse(wire.mock.calls.at(-1)![0] as string);
+                expect(firstSteer).toMatchObject({ method: 'turn/steer', params: {
+                    threadId: 'thread-abort-barrier', expectedTurnId: 'turn-old', input: [
+                        { type: 'text', text: 'Use the new instructions' },
+                        { type: 'image', url: 'data:image/png;base64,aW1hZ2U=' },
+                    ],
+                } });
+                h.push({ id: firstSteer.id, result: { turnId: 'turn-old' } });
+                await expect(accepted).resolves.toBe(true);
+                expect(h.turnStarts()).toHaveLength(1);
+                expect(client.turnId).toBe('turn-old');
+                const late = client.steerTurn('Also inspect errors', target!);
+                expect(wire).toHaveBeenCalledWith(expect.stringContaining('"expectedTurnId":"turn-old"'));
+                const last = JSON.parse(wire.mock.calls.at(-1)![0] as string);
+                expect(last).toMatchObject({ method: 'turn/steer', params: {
+                    threadId: 'thread-abort-barrier', expectedTurnId: 'turn-old', input: [{ type: 'text', text: 'Also inspect errors' }],
+                } });
+                // Completion can arrive before an accepted steering reply.
+                pushTerminalEvent(h, protocol, 'turn-old', 'completed');
+                h.push({ id: last.id, result: { turnId: 'turn-old' } });
+                await expect(late).resolves.toBe(true);
+                await expect(turn).resolves.toEqual({ aborted: false, timedOut: false });
+            } finally { await client.disconnect(); }
+        });
+
+        it('rejects stale targets locally and lets the caller preserve input after a server rejection', async () => {
+            const h = createAbortBarrierHarness();
+            mockSpawn.mockReturnValue(h.proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            const wire = vi.spyOn(h.proc.stdin, 'write');
+            await client.connect();
+            await client.startThread({ model: 'gpt-test' });
+            let target: { threadId: string; turnId: string } | undefined;
+            const turn = client.sendTurnAndWait('Initial request', { onTurnStarted: value => { target = value; } });
+            try {
+                await waitFor(() => !!target);
+                const count = wire.mock.calls.length;
+                await expect(client.steerTurn('Keep this message', { ...target!, turnId: 'stale-turn' })).resolves.toBe(false);
+                expect(wire.mock.calls.length).toBe(count);
+                const steer = client.steerTurn('Keep this message', target!);
+                const request = JSON.parse(wire.mock.calls.at(-1)![0] as string);
+                h.push({ id: request.id, error: { code: -32600, message: 'No active turn' } });
+                await expect(steer).rejects.toThrow('No active turn');
+                pushTerminalEvent(h, 'raw', 'turn-old', 'completed');
+                await turn;
+                await expect(client.steerTurn('Next request', target!)).resolves.toBe(false);
+            } finally { await client.disconnect(); }
+        });
+    });
+
     describe('turn inactivity timeout', () => {
         beforeEach(() => vi.useFakeTimers());
         afterEach(() => {
