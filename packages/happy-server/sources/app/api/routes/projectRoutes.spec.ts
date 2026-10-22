@@ -1,4 +1,5 @@
 import fastify from 'fastify';
+import * as path from 'node:path';
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Fastify } from '../types';
@@ -143,11 +144,11 @@ vi.mock('fs', async () => {
     return {
         ...actual,
         existsSync: vi.fn((filePath: string) => {
-            const ref = filePath.replace(/^\/tmp\/project-test-files\//, '');
+            const ref = path.relative('/tmp/project-test-files', filePath).split(path.sep).join('/');
             return state.uploads.has(ref);
         }),
         readFileSync: vi.fn((filePath: string) => {
-            const ref = filePath.replace(/^\/tmp\/project-test-files\//, '');
+            const ref = path.relative('/tmp/project-test-files', filePath).split(path.sep).join('/');
             return state.uploads.get(ref) ?? Buffer.alloc(0);
         }),
     };

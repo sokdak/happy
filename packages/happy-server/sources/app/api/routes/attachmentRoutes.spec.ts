@@ -1,4 +1,5 @@
 import fastify from "fastify";
+import * as path from "node:path";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Fastify } from "../types";
@@ -75,11 +76,11 @@ const {
 
     const fsMock = {
         existsSync: vi.fn((p: string) => {
-            const rel = p.replace(/^\/tmp\/test-files\//, "");
+            const rel = path.relative("/tmp/test-files", p).split(path.sep).join("/");
             return state.uploads.has(rel);
         }),
         readFileSync: vi.fn((p: string) => {
-            const rel = p.replace(/^\/tmp\/test-files\//, "");
+            const rel = path.relative("/tmp/test-files", p).split(path.sep).join("/");
             return state.uploads.get(rel) ?? Buffer.alloc(0);
         }),
     };

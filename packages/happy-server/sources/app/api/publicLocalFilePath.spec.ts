@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as path from "node:path";
 import { publicLocalFilePath } from "./publicLocalFilePath";
 
 describe("public local files", () => {
@@ -7,7 +8,7 @@ describe("public local files", () => {
     expect(publicLocalFilePath("/data/files", "public/../sessions/s1/avatar/a.enc")).toBeNull();
     expect(publicLocalFilePath("/data/files", "../private")).toBeNull();
     expect(publicLocalFilePath("/data/files", "public/avatar.webp")).toBe(
-      "/data/files/public/avatar.webp",
+      path.resolve("/data/files/public/avatar.webp"),
     );
   });
 });
