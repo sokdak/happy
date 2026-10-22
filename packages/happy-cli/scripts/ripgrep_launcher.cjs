@@ -40,7 +40,8 @@ function findSystemRipgrep() {
         try {
             const result = execFileSync(cmd, args, {
                 encoding: 'utf8',
-                stdio: 'ignore'
+                stdio: ['ignore', 'pipe', 'ignore'],
+                windowsHide: true,
             });
 
             if (result) {
@@ -93,7 +94,7 @@ function createRipgrepWrapper(binaryPath) {
                 stdio: 'inherit',
                 cwd: process.cwd()
             });
-            return result.status || 0;
+            return result.status ?? 1;
         }
     };
 }
@@ -119,7 +120,7 @@ function loadRipgrepNative() {
     const runtime = detectRuntime();
     const toolsDir = path.join(__dirname, '..', 'tools', 'unpacked');
     const nativePath = path.join(toolsDir, 'ripgrep.node');
-    const binaryPath = path.join(toolsDir, 'rg');
+    const binaryPath = path.join(toolsDir, process.platform === 'win32' ? 'rg.exe' : 'rg');
 
     // Try Node.js native addon first (preserves existing behavior)
     if (runtime === 'node') {
@@ -135,13 +136,13 @@ function loadRipgrepNative() {
     // Bun or Node.js fallback: Try system ripgrep
     const systemRipgrep = findSystemRipgrep();
     if (systemRipgrep) {
-        console.info(`Using system ripgrep: ${systemRipgrep}`);
+        console.warn(`Using system ripgrep: ${systemRipgrep}`);
         return createRipgrepWrapper(systemRipgrep);
     }
 
     // Local binary fallback
     if (fs.existsSync(binaryPath)) {
-        console.info('Using packaged ripgrep binary');
+        console.warn('Using packaged ripgrep binary');
         return createRipgrepWrapper(binaryPath);
     }
 

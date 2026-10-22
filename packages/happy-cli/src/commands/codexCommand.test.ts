@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   mockExtractCodexResumeFlag: vi.fn(),
   mockExtractNoSandboxFlag: vi.fn(),
   mockEnsureDaemonRunning: vi.fn(),
+  mockExecFileSync: vi.fn(),
 }))
 
 vi.mock('@/ui/auth', () => ({
@@ -28,6 +29,11 @@ vi.mock('@/daemon/ensureDaemonRunning', () => ({
   ensureDaemonRunning: mocks.mockEnsureDaemonRunning,
 }))
 
+vi.mock('node:child_process', () => ({
+  execFileSync: mocks.mockExecFileSync,
+}))
+
+import { CODEX_EFFORT_LEVELS } from '@/utils/effortLevels'
 import { handleCodexCommand } from './codexCommand'
 
 describe('handleCodexCommand', () => {
@@ -46,6 +52,7 @@ describe('handleCodexCommand', () => {
     }))
     mocks.mockEnsureDaemonRunning.mockResolvedValue(undefined)
     mocks.mockRunCodex.mockResolvedValue(undefined)
+    mocks.mockExecFileSync.mockReturnValue('codex-cli 0.149.1\n')
   })
 
   it('ensures the daemon is running before starting a codex session', async () => {
@@ -129,5 +136,127 @@ describe('handleCodexCommand', () => {
       model: 'gpt-5.4',
       effort: 'xhigh',
     })
+  })
+
+  describe('--help', () => {
+    // `happy codex --help` used to fall through the flag loop untouched and
+    // start a real session: authenticating, launching a daemon and creating a
+    // server-side session, all to answer a question about usage.
+    for (const flag of ['--help', '-h']) {
+      it(`prints usage and starts nothing for ${flag}`, async () => {
+        const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+        await handleCodexCommand([flag])
+
+        expect(mocks.mockAuthAndSetupMachineIfNeeded).not.toHaveBeenCalled()
+        expect(mocks.mockEnsureDaemonRunning).not.toHaveBeenCalled()
+        expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+        expect(log).toHaveBeenCalled()
+
+        log.mockRestore()
+      })
+    }
+
+    it('recognises the flag after other arguments', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+      await handleCodexCommand(['--model', 'gpt-5.5', '--help'])
+
+      expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+
+      log.mockRestore()
+    })
+
+    it('appends codex own help', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+      await handleCodexCommand(['--help'])
+
+      expect(mocks.mockExecFileSync).toHaveBeenCalledWith(
+        'codex',
+        ['--help'],
+        // Not inheriting stderr: otherwise a missing codex prints a spawn
+        // stack trace right under the "codex is not installed" message.
+        expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }),
+      )
+
+      log.mockRestore()
+    })
+
+    it('still prints happy usage when codex is not installed', async () => {
+      mocks.mockExecFileSync.mockImplementation(() => {
+        throw new Error('spawn codex ENOENT')
+      })
+      const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+      await expect(handleCodexCommand(['--help'])).resolves.toBeUndefined()
+      expect(log).toHaveBeenCalled()
+
+      log.mockRestore()
+    })
+  })
+
+  describe('--version', () => {
+    // `happy --version` was fixed to stop starting a session, but the top level
+    // dispatches on the `codex` subcommand before it ever parses --version, so
+    // `happy codex --version` still went all the way through auth, daemon and
+    // runCodex.
+    for (const flag of ['--version', '-v']) {
+      it(`prints versions and starts nothing for ${flag}`, async () => {
+        const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+        const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+        await handleCodexCommand([flag])
+
+        expect(mocks.mockAuthAndSetupMachineIfNeeded).not.toHaveBeenCalled()
+        expect(mocks.mockEnsureDaemonRunning).not.toHaveBeenCalled()
+        expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+        expect(mocks.mockExecFileSync).toHaveBeenCalledWith(
+          'codex',
+          ['--version'],
+          expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }),
+        )
+
+        stdout.mockRestore()
+        log.mockRestore()
+      })
+    }
+
+    it('still reports happy own version when codex is not installed', async () => {
+      mocks.mockExecFileSync.mockImplementation(() => {
+        throw new Error('spawn codex ENOENT')
+      })
+      const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+      await expect(handleCodexCommand(['--version'])).resolves.toBeUndefined()
+      expect(log).toHaveBeenCalled()
+      expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+
+      log.mockRestore()
+    })
+
+    it('prefers help when both flags are present', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+      await handleCodexCommand(['--version', '--help'])
+
+      expect(mocks.mockExecFileSync).toHaveBeenCalledWith('codex', ['--help'], expect.anything())
+      expect(mocks.mockRunCodex).not.toHaveBeenCalled()
+
+      log.mockRestore()
+    })
+  })
+
+  it('advertises exactly the effort levels codex can run', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => { })
+
+    await handleCodexCommand(['--help'])
+    const helpText = log.mock.calls.map((call) => String(call[0])).join('\n')
+
+    // The help text used to carry its own hand-maintained copy of the list,
+    // which is how it drifted from what codex actually accepts.
+    expect(helpText).toContain(CODEX_EFFORT_LEVELS.join(', '))
+
+    log.mockRestore()
   })
 })

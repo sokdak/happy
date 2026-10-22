@@ -4,10 +4,14 @@ import type { Machine } from './types';
 
 const {
     mockIo,
-    mockShouldReconnect
+    mockShouldReconnect,
+    mockRegisterHandler,
+    mockHasHandler,
 } = vi.hoisted(() => ({
     mockIo: vi.fn(),
-    mockShouldReconnect: vi.fn(() => true)
+    mockShouldReconnect: vi.fn(() => true),
+    mockRegisterHandler: vi.fn(),
+    mockHasHandler: vi.fn(() => false),
 }));
 
 vi.mock('socket.io-client', () => ({
@@ -37,9 +41,9 @@ vi.mock('@/api/rpc/RpcHandlerManager', () => ({
         onSocketConnect = vi.fn();
         onSocketDisconnect = vi.fn();
         handleRequest = vi.fn(async () => '');
-        registerHandler = vi.fn();
+        registerHandler = mockRegisterHandler;
         unregisterHandler = vi.fn();
-        hasHandler = vi.fn(() => false);
+        hasHandler = mockHasHandler;
     }
 }));
 

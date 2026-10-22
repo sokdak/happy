@@ -1,11 +1,12 @@
 import type { MessageMeta, PermissionMode } from '@/api/types';
 
+import { CODEX_EFFORT_LEVELS } from '@/utils/effortLevels';
+
 import type { ReasoningEffort } from './codexAppServerTypes';
+import { resolveCodexModel } from './codexModel';
 import { isRemoteCodexPermissionMode } from './executionPolicy';
 
-const VALID_REMOTE_EFFORTS: readonly ReasoningEffort[] = [
-    'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
-];
+const VALID_REMOTE_EFFORTS: readonly ReasoningEffort[] = CODEX_EFFORT_LEVELS;
 
 type Resolution<T> =
     | { kind: 'updated'; value: T }
@@ -43,7 +44,7 @@ export class CodexRemoteModeState {
     }) {
         this.initialPermissionMode = options.permissionMode;
         this.currentPermissionMode = options.permissionMode;
-        this.currentModel = options.model;
+        this.currentModel = resolveCodexModel(options.model);
         this.currentEffort = options.effort;
     }
 
@@ -67,7 +68,8 @@ export class CodexRemoteModeState {
 
         let modelResolution: Resolution<string | undefined>;
         if (meta !== undefined && Object.prototype.hasOwnProperty.call(meta, 'model')) {
-            this.currentModel = meta?.model || undefined;
+            // Resolve the app default row while preserving an explicit model pick.
+            this.currentModel = resolveCodexModel(meta?.model ?? undefined);
             modelResolution = { kind: 'updated', value: this.currentModel };
         } else {
             modelResolution = { kind: 'retained', value: this.currentModel };

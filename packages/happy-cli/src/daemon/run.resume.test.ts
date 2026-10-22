@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   spawn: vi.fn(),
   access: vi.fn(),
+  writeFile: vi.fn(),
+  availability: { claude: true, codex: true, gemini: false, openclaw: false, agy: false, detectedAt: 0 },
   persistSession: vi.fn(),
   logger: { debug: vi.fn(), debugLargeJson: vi.fn(), warn: vi.fn() },
 }));
@@ -21,13 +23,16 @@ vi.mock('os', async (importOriginal) => {
   const original = await importOriginal<typeof import('os')>();
   return { ...original, default: { ...original, homedir: () => process.env.HAPPY_HOME_DIR! } };
 });
-vi.mock('fs/promises', () => ({ default: { access: mocks.access } }));
+vi.mock('fs/promises', () => ({ default: { access: mocks.access, writeFile: mocks.writeFile } }));
 vi.mock('@/ui/logger', () => ({ logger: mocks.logger }));
 vi.mock('@/configuration', () => ({ configuration: { serverUrl: 'http://test.invalid', happyHomeDir: '/test-only' } }));
 vi.mock('@/ui/auth', () => ({ authAndSetupMachineIfNeeded: async () => ({ credentials: { token: 'test-token' }, machineId: 'machine-1' }) }));
 vi.mock('@/ui/doctor', () => ({ getEnvironmentInfo: () => ({}) }));
 vi.mock('@/utils/caffeinate', () => ({ startCaffeinate: () => false, stopCaffeinate: vi.fn() }));
-vi.mock('@/utils/detectCLI', () => ({ detectCLIAvailability: () => ({}) }));
+vi.mock('@/utils/detectCLI', async () => {
+  const { applyAgentPolicy } = await import('@/utils/agentPolicy');
+  return { detectCLIAvailability: () => applyAgentPolicy(mocks.availability) };
+});
 vi.mock('@/utils/spawnHappyCLI', () => ({ spawnHappyCLI: mocks.spawn }));
 vi.mock('@/utils/tmux', () => ({ isTmuxAvailable: async () => false }));
 vi.mock('@/resume/localHappyAgentAuth', () => ({ detectResumeSupport: () => ({}), hasLocalHappyAgentAuth: () => false }));
@@ -75,6 +80,8 @@ describe('daemon resume fallback', () => {
     mocks.persisted = {};
     mocks.persistSession.mockReset();
     mocks.access.mockResolvedValue(undefined);
+    vi.stubEnv('HAPPY_ENABLED_AGENTS', '');
+    vi.stubEnv('HAPPY_DISABLED_AGENTS', '');
     // Never register real process handlers, stop daemons, bind ports, or spawn providers.
     vi.spyOn(process, 'on').mockReturnValue(process);
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('test exit'); });
@@ -88,6 +95,7 @@ describe('daemon resume fallback', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     vi.useRealTimers();
   });
 
@@ -104,6 +112,56 @@ describe('daemon resume fallback', () => {
         HAPPY_RECONNECT_ENCRYPTION_VARIANT: 'dataKey', HAPPY_RECONNECT_SEQ: '12',
       }) }),
     );
+  });
+
+  it('enforces agent restrictions before staging credentials and drops source-agent launch fields', async () => {
+    vi.stubEnv('HAPPY_ENABLED_AGENTS', 'codex');
+    await boot();
+
+    expect(await mocks.handlers.spawnSession({
+      directory: '/project', agent: 'claude', token: 'source-claude-token',
+      modelMode: 'claude-opus-5', permissionMode: 'bypassPermissions', effortLevel: 'medium',
+      resumeClaudeSessionId: 'source-claude-session', resumeCodexThreadId: 'source-codex-thread',
+      environmentVariables: { SHARED_PROFILE: 'preserved' },
+    })).toMatchObject({ type: 'success' });
+
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      ['codex', '--happy-starting-mode', 'remote', '--started-by', 'daemon', '--effort', 'medium'],
+      expect.objectContaining({ env: expect.objectContaining({ SHARED_PROFILE: 'preserved' }) }),
+    );
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(mocks.spawn.mock.calls[0][1].env).not.toHaveProperty('HAPPY_FORK_CLAUDE_SESSION_ID');
+    expect(mocks.spawn.mock.calls[0][1].env).not.toHaveProperty('HAPPY_FORK_CODEX_THREAD_ID');
+  });
+
+  it('refuses an unreadable agent policy without staging credentials or starting a process', async () => {
+    vi.stubEnv('HAPPY_ENABLED_AGENTS', 'codxe');
+    await boot();
+    expect(await mocks.handlers.spawnSession({ directory: '/project', agent: 'codex', token: 'source-token' }))
+      .toMatchObject({ type: 'error', errorMessage: expect.stringContaining('codxe') });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('does not resume a disabled agent as a different provider', async () => {
+    vi.stubEnv('HAPPY_ENABLED_AGENTS', 'codex');
+    await boot();
+    expect(await mocks.handlers.resumeSession('old-session', { fallback }))
+      .toMatchObject({ type: 'error', errorMessage: expect.stringContaining('not enabled on this machine') });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('never adopts or signals a stored PID when stopping a session from a previous daemon', async () => {
+    mocks.persisted = { 'old-session': { ...fallback, metadata: { ...metadata, hostPid: 12344 }, savedAt: Date.now() } };
+    await boot();
+    expect(mocks.children()).toEqual([]);
+    expect(mocks.handlers.stopSession('old-session')).toBe(false);
+    expect(process.kill).not.toHaveBeenCalled();
+    expect(await mocks.handlers.resumeSession('old-session', { fallback }))
+      .toMatchObject({ type: 'error', errorMessage: expect.stringContaining('ownership cannot be verified') });
+    expect(vi.mocked(process.kill).mock.calls).toEqual([[12344, 0]]);
+    expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
   it.each(['claude', 'codex'])('refreshes a missing %s provider ID from server metadata', async (flavor) => {
@@ -352,6 +410,13 @@ describe('daemon resume fallback', () => {
         detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         env: { HAPPY_HOME_DIR: process.env.HAPPY_HOME_DIR, HAPPY_BOOT_AGENT: '0', HAPPY_EXPERIMENTAL: '0' },
       });
+      if (process.platform === 'win32') {
+        child.kill = (signal) => {
+          if (signal !== 'SIGTERM') throw new Error(`Unexpected fixture signal: ${signal}`);
+          child.send('stop');
+          return true;
+        };
+      }
       owners.push(child);
       child.on('message', (message: any) => {
         if (message.backendPid) mocks.webhook('old-session', { ...codexMetadata, hostPid: child.pid }, { ...fallback, encryptionKey: dataKey });
@@ -392,6 +457,13 @@ describe('daemon resume fallback', () => {
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         env: { HAPPY_HOME_DIR: process.env.HAPPY_HOME_DIR, HAPPY_BOOT_AGENT: '0', HAPPY_EXPERIMENTAL: '0' },
       });
+      if (process.platform === 'win32') {
+        child.kill = (signal) => {
+          if (signal !== 'SIGTERM') throw new Error(`Unexpected fixture signal: ${signal}`);
+          child.send('stop');
+          return true;
+        };
+      }
       owners.push(child);
       child.on('message', (message: any) => {
         if (message.backendPid) {

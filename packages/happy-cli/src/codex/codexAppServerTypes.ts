@@ -3,6 +3,8 @@
  * Only the essential types needed for our integration.
  */
 
+import type { CodexEffortLevel } from '@/utils/effortLevels';
+
 export type ThreadId = string;
 
 // --- Initialize ---
@@ -247,6 +249,29 @@ export type ApprovalResponse = {
     decision: ReviewDecision;
 };
 
+// Native app-server questions are independent of execution approvals.
+export type ToolRequestUserInputQuestion = {
+    id: string;
+    header: string;
+    question: string;
+    isOther?: boolean;
+    isSecret?: boolean;
+    options: Array<{ label: string; description: string }> | null;
+};
+
+export type ToolRequestUserInputParams = {
+    threadId: string;
+    turnId: string;
+    itemId: string;
+    questions: ToolRequestUserInputQuestion[];
+    isBlocking?: boolean;
+    autoResolutionMs?: number | null;
+};
+
+export type ToolRequestUserInputResponse = {
+    answers: Record<string, { answers: string[] }>;
+};
+
 export type McpServerElicitationAction = "accept" | "decline" | "cancel";
 
 export type McpServerElicitationRequestResponse = {
@@ -269,8 +294,9 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 // Mirrors codex-rs `protocol/src/openai_models.rs` ReasoningEffort. `max` and
 // `ultra` are on the wire and in the model registry — gpt-5.6 sol/terra list
 // both, luna lists max — so stopping this union at `xhigh` silently dropped
-// every effort above it.
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+// every effort above it. The list itself lives in effortLevels.ts, next to
+// Claude's, because the two vocabularies are not interchangeable.
+export type ReasoningEffort = CodexEffortLevel;
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TurnAbortReason = "interrupted" | "replaced" | "review_ended";
 
@@ -315,7 +341,7 @@ export type JsonRpcRequest = {
 
 export type JsonRpcResponse = {
     jsonrpc?: "2.0";
-    id: number;
+    id: number | string;
     result?: unknown;
     error?: { code: number; message: string; data?: unknown };
 };

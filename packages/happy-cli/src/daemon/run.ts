@@ -25,6 +25,7 @@ import { projectPath } from '@/projectPath';
 import { getTmuxUtilities, isTmuxAvailable, parseTmuxSessionIdentifier, formatTmuxSessionIdentifier } from '@/utils/tmux';
 import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { detectCLIAvailability } from '@/utils/detectCLI';
+import { resolveSpawnAgent, stripSourceAgentRequest } from '@/utils/agentPolicy';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
@@ -326,49 +327,75 @@ export async function startDaemon(): Promise<void> {
 
       try {
 
+        // One place decides which agent actually runs. An operator can pin this
+        // machine to a subset (HAPPY_ENABLED_AGENTS / HAPPY_DISABLED_AGENTS) while
+        // a stale web client still asks for a disabled one. This has to happen
+        // before the auth token below is staged, otherwise we would write a
+        // Claude token and then launch Codex.
+        const agentResolution = resolveSpawnAgent(options.agent, detectCLIAvailability);
+        if (agentResolution.type === 'error') {
+          logger.debug(`[DAEMON RUN] Refusing to spawn: ${agentResolution.errorMessage}`);
+          return { type: 'error', errorMessage: agentResolution.errorMessage };
+        }
+        const resolvedAgent = agentResolution.agent;
+        if (agentResolution.coercedFrom) {
+          logger.debug(`[DAEMON RUN] Agent '${agentResolution.coercedFrom}' is not enabled on this machine; spawning '${resolvedAgent}' instead`);
+        }
+
+        // Coercion changes which CLI runs, so the rest of the request has to be
+        // re-read in that light. `token` was minted for the agent the client
+        // asked for, and the model / permission names come from that agent's
+        // vocabulary: carrying them over writes a Claude credential into
+        // CODEX_HOME and launches Codex with `--model claude-opus-5`. Drop them
+        // so the target agent falls back to its own local credential and
+        // defaults.
+        const spawnOptions = agentResolution.coercedFrom
+          ? stripSourceAgentRequest(options, resolvedAgent)
+          : options;
+
         // Build environment variables for session spawning
         // Authentication tokens are resolved here
 
         // Resolve authentication token if provided
         const authEnv: Record<string, string> = {};
-        if (options.token) {
-          if (options.agent === 'codex') {
+        if (spawnOptions.token) {
+          if (resolvedAgent === 'codex') {
 
             // Create a temporary directory for Codex
             const codexHomeDir = tmp.dirSync();
 
             // Write the token to the temporary directory
-            await fs.writeFile(join(codexHomeDir.name, 'auth.json'), options.token);
+            await fs.writeFile(join(codexHomeDir.name, 'auth.json'), spawnOptions.token);
 
             // Set the environment variable for Codex
             authEnv.CODEX_HOME = codexHomeDir.name;
           } else { // Assuming claude
-            authEnv.CLAUDE_CODE_OAUTH_TOKEN = options.token;
+            authEnv.CLAUDE_CODE_OAUTH_TOKEN = spawnOptions.token;
           }
         }
 
         let extraEnv: Record<string, string> = {
           ...authEnv,
-          ...sanitizeSessionEnvironment(options.environmentVariables ?? {}),
+          ...sanitizeSessionEnvironment(spawnOptions.environmentVariables ?? {}),
         };
-        if (options.parentSessionId) {
-          extraEnv.HAPPY_FORKED_FROM_SESSION_ID = options.parentSessionId;
+        if (spawnOptions.parentSessionId) {
+          extraEnv.HAPPY_FORKED_FROM_SESSION_ID = spawnOptions.parentSessionId;
         }
-        if (options.forkedFromMessageId) {
-          extraEnv.HAPPY_FORKED_FROM_MESSAGE_ID = options.forkedFromMessageId;
+        if (spawnOptions.forkedFromMessageId) {
+          extraEnv.HAPPY_FORKED_FROM_MESSAGE_ID = spawnOptions.forkedFromMessageId;
         }
-        if (options.isSideChat) {
+        if (spawnOptions.isSideChat) {
           extraEnv.HAPPY_SIDE_CHAT = '1';
         }
         // For fork: spawned Happy CLI needs to know which Claude JSONL to
         // backfill into the fresh Happy session row. Without this, the
         // SDK reads the JSONL silently as context but never re-emits the
         // historical messages, so the app shows an empty chat.
-        if (options.resumeClaudeSessionId) {
-          extraEnv.HAPPY_FORK_CLAUDE_SESSION_ID = options.resumeClaudeSessionId;
+        if (spawnOptions.resumeClaudeSessionId) {
+          extraEnv.HAPPY_FORK_CLAUDE_SESSION_ID = spawnOptions.resumeClaudeSessionId;
         }
-        if (options.resumeCodexThreadId) {
-          extraEnv.HAPPY_FORK_CODEX_THREAD_ID = options.resumeCodexThreadId;
+        if (spawnOptions.resumeCodexThreadId) {
+          extraEnv.HAPPY_FORK_CODEX_THREAD_ID = spawnOptions.resumeCodexThreadId;
         }
         logger.debug(`[DAEMON RUN] Environment variable keys (before expansion) (${Object.keys(extraEnv).length}): ${Object.keys(extraEnv).join(', ')}`);
 
@@ -435,11 +462,10 @@ export async function startDaemon(): Promise<void> {
 
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
-          // Determine agent command - support claude, codex, gemini, openclaw, and agy
-          const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : (options.agent === 'openclaw' ? 'openclaw' : (options.agent === 'agy' ? 'agy' : 'claude')));
+          const agent = resolvedAgent;
           const resumeId = agent === 'claude'
-            ? options.resumeClaudeSessionId
-            : (agent === 'codex' ? options.resumeCodexThreadId : undefined);
+            ? spawnOptions.resumeClaudeSessionId
+            : (agent === 'codex' ? spawnOptions.resumeCodexThreadId : undefined);
           const resumeFragment = resumeId
             ? ` --resume ${shellescape(resumeId)}`
             : '';
@@ -448,7 +474,7 @@ export async function startDaemon(): Promise<void> {
             '--happy-starting-mode', 'remote',
             '--started-by', 'daemon',
           ];
-          appendDaemonSpawnModeArgs(launchArgs, options, agent);
+          appendDaemonSpawnModeArgs(launchArgs, spawnOptions, agent);
           const modeFragment = launchArgs.map(shellescape).join(' ');
           const fullCommand = `node --no-warnings --no-deprecation ${shellescape(cliPath)} ${modeFragment}${resumeFragment}`;
           const sanitizedTmuxCommand = wrapTmuxCommandWithSessionEnvironmentSanitizer(fullCommand, extraEnv);
@@ -531,45 +557,23 @@ export async function startDaemon(): Promise<void> {
         if (!useTmux) {
           logger.debug(`[DAEMON RUN] Using regular process spawning`);
 
-          // Construct arguments for the CLI - support claude, codex, and gemini
-          let agentCommand: string;
-          switch (options.agent) {
-            case 'claude':
-            case undefined:
-              agentCommand = 'claude';
-              break;
-            case 'codex':
-              agentCommand = 'codex';
-              break;
-            case 'gemini':
-              agentCommand = 'gemini';
-              break;
-            case 'openclaw':
-              agentCommand = 'openclaw';
-              break;
-            case 'agy':
-              agentCommand = 'agy';
-              break;
-            default:
-              return {
-                type: 'error',
-                errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
-              };
-          }
+          // The agent name is the CLI subcommand; resolveSpawnAgent already
+          // rejected anything this CLI cannot launch.
+          const agentCommand: string = resolvedAgent;
           const args = [
             agentCommand,
             '--happy-starting-mode', 'remote',
             '--started-by', 'daemon'
           ];
-          appendDaemonSpawnModeArgs(args, options, agentCommand);
+          appendDaemonSpawnModeArgs(args, spawnOptions, agentCommand);
 
           // Resume ids attach the new Happy session to a pre-existing provider
           // conversation created by the fork / duplicate RPC.
-          if (options.resumeClaudeSessionId && agentCommand === 'claude') {
-            args.push('--resume', options.resumeClaudeSessionId);
+          if (spawnOptions.resumeClaudeSessionId && agentCommand === 'claude') {
+            args.push('--resume', spawnOptions.resumeClaudeSessionId);
           }
-          if (options.resumeCodexThreadId && agentCommand === 'codex') {
-            args.push('--resume', options.resumeCodexThreadId);
+          if (spawnOptions.resumeCodexThreadId && agentCommand === 'codex') {
+            args.push('--resume', spawnOptions.resumeCodexThreadId);
           }
 
           // TODO: In future, sessionId could be used with --resume to continue existing sessions
@@ -822,6 +826,18 @@ export async function startDaemon(): Promise<void> {
               tracked.happySessionMetadataFromLocalWebhook = serverMetadata;
             }
           }
+        }
+
+        // Resuming must obey the same machine policy as a new launch. A
+        // provider conversation cannot be transferred to a different agent.
+        const resumeAgent = metadata.flavor ?? 'claude';
+        const agentResolution = resolveSpawnAgent(resumeAgent, detectCLIAvailability);
+        if (agentResolution.type === 'error') return agentResolution;
+        if (agentResolution.coercedFrom) {
+          return {
+            type: 'error',
+            errorMessage: `Cannot resume ${resumeAgent} session ${happySessionId}: this agent is not enabled on this machine. Check HAPPY_ENABLED_AGENTS / HAPPY_DISABLED_AGENTS.`,
+          };
         }
 
         const launch = buildResumeLaunch(

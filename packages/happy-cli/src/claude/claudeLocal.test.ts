@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { claudeLocal } from './claudeLocal';
 
 // Use vi.hoisted to ensure mock functions are available when vi.mock factory runs
@@ -56,8 +56,11 @@ vi.mock('@/sandbox/manager', () => ({
 
 describe('claudeLocal --continue handling', () => {
     let onSessionFound: any;
+    const hostPlatform = process.platform;
 
     beforeEach(() => {
+        // The sandbox branch exercised here is supported on Unix hosts.
+        Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
         // Mock spawn to resolve immediately
         mockSpawn.mockReturnValue({
             stdio: [null, null, null, null],
@@ -84,6 +87,10 @@ describe('claudeLocal --continue handling', () => {
         vi.clearAllMocks();
         mockInitializeSandbox.mockResolvedValue(mockSandboxCleanup);
         mockWrapCommand.mockResolvedValue('wrapped claude command');
+    });
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', { value: hostPlatform, configurable: true });
     });
 
     it('should convert --continue to --resume with last session ID', async () => {

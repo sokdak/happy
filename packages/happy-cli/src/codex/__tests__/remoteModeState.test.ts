@@ -93,7 +93,7 @@ describe('CodexRemoteModeState', () => {
 
         expect(state.resolve({ model: null, effort: null })).toMatchObject({
             permissionMode: 'auto',
-            model: undefined,
+            model: 'gpt-6.1-sol',
             effort: undefined,
         });
     });
@@ -115,6 +115,20 @@ describe('CodexRemoteModeState', () => {
             effort: 'medium',
             permission: { kind: 'ignored', incoming: 'plan' },
             effortResolution: { kind: 'ignored', incoming: 'impossible' },
+        });
+    });
+
+    it('resolves the app\'s `default` model row to GPT-6.1 Sol', () => {
+        // The app sentinel must resolve to the shared default model name.
+        const state = new CodexRemoteModeState({
+            permissionMode: 'auto',
+            model: 'gpt-5.6-sol',
+            effort: 'medium',
+        });
+
+        expect(state.resolve({ model: 'default' })).toMatchObject({
+            model: 'gpt-6.1-sol',
+            modelResolution: { kind: 'updated', value: 'gpt-6.1-sol' },
         });
     });
 });

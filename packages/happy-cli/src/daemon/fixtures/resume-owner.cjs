@@ -8,5 +8,10 @@ const finish = () => {
   backend.once('exit', () => process.exit(0));
   backend.kill('SIGTERM');
 };
-process.on('message', (message) => { if (message === 'finish') finish(); });
+process.on('message', (message) => {
+  if (message === 'finish') finish();
+  // Windows forcibly terminates a process on kill('SIGTERM'). Use IPC in the
+  // bookkeeping fixture to model the same delayed shutdown used on Unix.
+  if (message === 'stop') process.send({ stopping: true });
+});
 process.on('disconnect', finish);

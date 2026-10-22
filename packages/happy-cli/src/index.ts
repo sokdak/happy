@@ -29,6 +29,7 @@ import { handleSandboxCommand } from './commands/sandbox'
 import { handleServerCommand } from './commands/server'
 import { spawnHappyCLI } from './utils/spawnHappyCLI'
 import { claudeCliPath } from './claude/claudeLocal'
+import { CLAUDE_EFFORT_LEVELS } from './utils/effortLevels'
 import { execFileSync } from 'node:child_process'
 import { extractNoSandboxFlag } from './utils/sandboxFlags'
 import { handleResumeCommand } from '@/resume/handleResumeCommand'
@@ -47,10 +48,6 @@ import { sanitizeSessionEnvironment } from './daemon/sessionEnvironment'
 
   // Check if first argument is a subcommand
   const subcommand = args[0]
-  
-  // Log which subcommand was detected (for debugging)
-  if (!args.includes('--version')) {
-  }
 
   if (subcommand === 'doctor') {
     // Check for clean subcommand
@@ -636,8 +633,6 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
         unknownArgs.push(arg)
       } else if (arg === '-v' || arg === '--version') {
         showVersion = true
-        // Also pass through to claude (will show after our version)
-        unknownArgs.push(arg)
       } else if (arg === '--happy-starting-mode') {
         options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
       } else if (arg === '--yolo') {
@@ -648,7 +643,7 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
       } else if (arg === '--permission-mode') {
         options.permissionMode = args[++i] as StartOptions['permissionMode']
       } else if (arg === '--effort') {
-        options.effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']).parse(args[++i])
+        options.effort = z.enum(CLAUDE_EFFORT_LEVELS).parse(args[++i])
       } else if (arg === '--started-by') {
         options.startedBy = args[++i] as 'daemon' | 'terminal'
       } else if (arg === '--js-runtime') {
@@ -755,9 +750,15 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 `)
       
       // Run claude --help and display its output
-      // Use execFileSync directly with claude CLI for runtime-agnostic compatibility
+      // The launcher is JavaScript; Windows cannot execute a .cjs file directly.
       try {
-        const claudeHelp = execFileSync(claudeCliPath, ['--help'], { encoding: 'utf8', windowsHide: true })
+        // stdio: execFileSync forwards the child's stderr to ours by default,
+        // so a missing claude printed a spawn stack trace under the message below.
+        const claudeHelp = execFileSync(process.execPath, [claudeCliPath, '--help'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        })
         console.log(claudeHelp)
       } catch (e) {
         console.log(chalk.yellow('Could not retrieve claude help. Make sure claude is installed.'))
@@ -769,7 +770,23 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     // Show version
     if (showVersion) {
       console.log(`happy version: ${packageJson.version}`)
-      // Don't exit - continue to pass --version to Claude Code
+
+      // Ask the agent directly instead of falling through to the session path
+      // with --version still in its arguments. That path authenticated, started
+      // a daemon and created a server-side session on every version check --
+      // side effects nobody asks for by typing `happy --version`, and one more
+      // source of sessions nobody opened. `--help` above already works this way.
+      try {
+        process.stdout.write(execFileSync(process.execPath, [claudeCliPath, '--version'], {
+          encoding: 'utf8',
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }))
+      } catch {
+        console.log(chalk.yellow('Could not retrieve claude version. Make sure claude is installed.'))
+      }
+
+      process.exit(0)
     }
 
     // Normal flow - auth and machine setup

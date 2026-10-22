@@ -81,7 +81,10 @@ describe('desktop credential reuse', () => {
     expect(first.serverUrl).toBe(serverUrl);
     expect(first.machineId).not.toBe('agent-machine');
     expect(JSON.parse(await readFile(mocks.configuration.privateKeyFile, 'utf8'))).toEqual(source);
-    expect((await stat(mocks.configuration.privateKeyFile)).mode & 0o777).toBe(0o600);
+    // Windows uses ACLs and reports synthetic mode bits for regular files.
+    if (process.platform !== 'win32') {
+      expect((await stat(mocks.configuration.privateKeyFile)).mode & 0o777).toBe(0o600);
+    }
     expect(await importDesktopCredentials()).toEqual(first);
     expect((await readdir(directory)).filter(name => name.startsWith('.desktop-link-'))).toEqual([]);
   });

@@ -23,7 +23,8 @@ import { projectPath } from '../projectPath';
 import { resolve } from 'node:path';
 import { startOfflineReconnection, connectionState } from '@/utils/serverConnectionErrors';
 import { claudeLocal } from '@/claude/claudeLocal';
-import { createSessionScanner } from '@/claude/utils/sessionScanner';
+import { createSessionScanner, type ScannerTranscriptEvent } from '@/claude/utils/sessionScanner';
+import { createClaudeAiTitleApplier } from '@/claude/claudeAiTitle';
 import {
     CLAUDE_GOAL_ACTION_CONFIRMATIONS,
     claudeGoalActionCapabilities,
@@ -32,7 +33,7 @@ import {
     type ClaudeGoalStatusTranscriptEvent,
 } from '@/claude/claudeGoalStatus';
 import { Session } from './session';
-import { applySandboxPermissionPolicy, normalizeRemotePermissionMode, resolveInitialClaudePermissionMode, resolveRemoteClaudePermissionMode } from './utils/permissionMode';
+import { applyClaudePermissionModeToArgs, applySandboxPermissionPolicy, normalizeRemotePermissionMode, resolveInitialClaudePermissionMode, resolveRemoteClaudePermissionMode } from './utils/permissionMode';
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import type { Session as ApiSession } from '@/api/types';
 import { getProjectPath } from './utils/path';
@@ -57,13 +58,10 @@ export interface StartOptions {
     jsRuntime?: JsRuntime
 }
 
-// No default permission mode. "Default" in the picker means "whatever this
-// harness is already configured to do", so the mode is left unset and Claude
-// applies its own settings. Substituting a value here — this used to be
-// 'yolo' — silently overrode every user's Claude config with full access.
-// The model works the same way: no default. This used to be 'opus', which
-// pinned every remote turn to the 200K model even when the user's own Claude
-// config (settings.json, ANTHROPIC_MODEL) said e.g. claude-opus-5[1m] (#1721).
+// Preserve this fork's full-access default while respecting explicit options
+// and Claude CLI permission flags. Leave the model unset so Claude can use its
+// configured model (settings.json or ANTHROPIC_MODEL).
+const DEFAULT_CLAUDE_PERMISSION_MODE: PermissionMode = 'bypassPermissions';
 const DEFAULT_CLAUDE_EFFORT: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium';
 type ClaudeGoalCommand = NonNullable<ReturnType<typeof parseClaudeGoalActionParams>>;
 type PendingClaudeGoalAction = {
@@ -104,7 +102,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     const sandboxConfig = options.noSandbox ? undefined : settings?.sandboxConfig;
     const sandboxEnabled = Boolean(sandboxConfig?.enabled);
     const initialPermissionMode = applySandboxPermissionPolicy(
-        resolveInitialClaudePermissionMode(options.permissionMode, options.claudeArgs),
+        resolveInitialClaudePermissionMode(options.permissionMode ?? DEFAULT_CLAUDE_PERMISSION_MODE, options.claudeArgs),
         sandboxEnabled,
     );
     const dangerouslySkipPermissions =
@@ -220,13 +218,34 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                         agentGoalStatus: latestClaudeGoalStatus ?? goalStatus,
                     }));
                 };
+                const applyClaudeAiTitle = createClaudeAiTitleApplier({
+                    getClaudeSessionId: currentClaudeSessionId,
+                    getCurrentTitle: () => session.getMetadata()?.summary?.text ?? null,
+                    applyTitle: (title) => {
+                        // Same persistence path as the change_title MCP tool:
+                        // the synthetic summary's side effect writes
+                        // metadata.summary.
+                        session.sendClaudeSessionMessage({
+                            type: 'summary',
+                            summary: title,
+                            leafUuid: randomUUID(),
+                        });
+                    },
+                });
+                const handleClaudeTranscriptEvent = (event: ScannerTranscriptEvent) => {
+                    if (event.type === 'ai_title') {
+                        applyClaudeAiTitle(event);
+                        return;
+                    }
+                    updateClaudeGoalState(event);
+                };
                 const scanner = await createSessionScanner({
                     sessionId: null,
                     workingDirectory,
                     onMessage: (msg) => {
                         void session.sendClaudeSessionMessageFromLocalTranscript(msg);
                     },
-                    onTranscriptEvent: updateClaudeGoalState,
+                    onTranscriptEvent: handleClaudeTranscriptEvent,
                 });
                 if (offlineSessionId) scanner.onNewSession(offlineSessionId);
                 return { session, scanner };
@@ -245,7 +264,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
                 onThinkingChange: () => {},
                 abort: new AbortController().signal,
                 claudeEnvVars: options.claudeEnvVars,
-                claudeArgs: options.claudeArgs,
+                claudeArgs: applyClaudePermissionModeToArgs(initialPermissionMode, options.claudeArgs),
                 mcpServers: {},
                 allowedTools: [],
                 sandboxConfig,
@@ -432,6 +451,29 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             agentGoalStatus: latestClaudeGoalStatus ?? goalStatus,
         }));
     };
+    // Claude Code names the conversation itself and writes an `ai-title`
+    // transcript line. Adopt it as the Happy session title, but only when the
+    // session has none — an explicit change_title always wins.
+    const applyClaudeAiTitle = createClaudeAiTitleApplier({
+        getClaudeSessionId: currentClaudeSessionId,
+        getCurrentTitle: () => session.getMetadata()?.summary?.text ?? null,
+        applyTitle: (title) => {
+            // Same persistence path as the change_title MCP tool: the
+            // synthetic summary's side effect writes metadata.summary.
+            session.sendClaudeSessionMessage({
+                type: 'summary',
+                summary: title,
+                leafUuid: randomUUID(),
+            });
+        },
+    });
+    const handleClaudeTranscriptEvent = (event: ScannerTranscriptEvent) => {
+        if (event.type === 'ai_title') {
+            applyClaudeAiTitle(event);
+            return;
+        }
+        updateClaudeGoalState(event);
+    };
 
     // Remote-mode session scanner: catches user-typed prompts that
     // appeared in the Claude JSONL while we weren't looking — typically
@@ -460,7 +502,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             if (consumeAppPrompt(content)) return;
             session.sendClaudeSessionMessage(raw);
         },
-        onTranscriptEvent: updateClaudeGoalState,
+        onTranscriptEvent: handleClaudeTranscriptEvent,
     });
 
     // Start Happy MCP server
@@ -543,17 +585,15 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
     let currentEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined = options.effort ?? DEFAULT_CLAUDE_EFFORT; // Track current Claude effort (thinking depth)
 
-    const resetCurrentModeDefaults = () => {
-        // Model and effort are deliberately NOT reset here. The app sends them
-        // only when the user changes the picker, so resetting them on abort
-        // silently desyncs the picker from what the next turn actually runs.
-        currentPermissionMode = initialPermissionMode;
-        currentFallbackModel = undefined;
+    const resetTransientModeStateAfterAbort = () => {
+        // Abort only the active turn. Permission, model, fallback model, and
+        // effort are session choices; resetting any of them silently desyncs
+        // the next turn from the app. Prompt and tool overrides are transient.
         currentCustomSystemPrompt = undefined;
         currentAppendSystemPrompt = undefined;
         currentAllowedTools = undefined;
         currentDisallowedTools = undefined;
-        logger.debug('[loop] Reset current mode defaults after abort');
+        logger.debug(`[loop] Reset transient mode state after abort; preserving permission=${currentPermissionMode ?? 'default'}, model=${currentModel ?? 'default'}, fallbackModel=${currentFallbackModel ?? 'none'}, effort=${currentEffort ?? 'default'}`);
     };
     const currentEnhancedMode = (): EnhancedMode => ({
         // Deliberately not coerced to 'default': undefined means "no override",
@@ -626,7 +666,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Exit when session is archived from web/mobile
     session.on('archived', () => {
         logger.debug('[loop] Session archived from web/mobile, cleaning up...');
-        cleanup();
+        void cleanup({ archive: true, exitCode: 0 });
     });
 
     // Handle file events — each download promise resolves to its own decoded
@@ -851,89 +891,126 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     //
     // Crashes (uncaughtException / unhandledRejection) keep archiving
     // because the session is genuinely toast at that point.
-    const cleanup = async (opts: { archive?: boolean } = { archive: true }) => {
-        logger.debug(`[START] Received termination signal, cleaning up (archive=${opts.archive ?? true})...`);
-
+    const resetClaudeWorkflowsForShutdown = async () => {
         try {
-            // Update lifecycle state to archived before closing — only
-            // when explicitly archiving. On Ctrl-C / SIGTERM we leave
-            // lifecycleState alone so the server treats this exactly
-            // like a network blip: active=false via missed keepalives,
-            // but the session stays visible and resumable in the app.
-            if (session) {
-                if (opts.archive ?? true) {
-                    session.updateMetadata((currentMetadata) => ({
-                        ...currentMetadata,
-                        lifecycleState: 'archived',
-                        lifecycleStateSince: Date.now(),
-                        archivedBy: 'cli',
-                        archiveReason: 'User terminated'
-                    }));
-                }
-
-                // Cleanup session resources (intervals, callbacks)
-                currentSession?.cleanup();
-
-                // Send session death message
-                session.sendSessionDeath();
-
-                // Belt-and-braces: also POST /v1/sessions/<id>/archive so
-                // the server flips active=false even if the socket emit
-                // didn't drain before close. The HTTP endpoint touches
-                // only `active` and `lastActiveAt` — it doesn't write
-                // archive metadata — so this is safe in the archive=false
-                // case too, and matches the "session goes inactive but
-                // stays resumable" semantics we want for Ctrl-C.
-                try {
-                    await api.deactivateSession(session.sessionId);
-                } catch (err) {
-                    logger.debug('[START] deactivateSession during cleanup failed:', err);
-                }
-
-                await session.flush();
-                await session.close();
-            }
-
-            // Stop Happy MCP server
-            happyServer.stop();
-
-            // Stop Hook server and cleanup settings file
-            hookServer.stop();
-            cleanupHookSettingsFile(hookSettingsPath);
-
-            // Stop the remote JSONL scanner (file watchers + intervals).
-            await remoteScanner.cleanup();
-
-            logger.debug('[START] Cleanup complete, exiting');
-            process.exit(0);
+            await session.resetClaudeWorkflows({ seal: true });
         } catch (error) {
-            logger.debug('[START] Error during cleanup:', error);
-            process.exit(1);
+            logger.debug('[START] Failed to reset Claude workflows during cleanup:', error);
         }
     };
 
+    const flushAndCloseSession = async () => {
+        try {
+            await session.flush();
+        } catch (error) {
+            logger.debug('[START] Failed to flush session during cleanup:', error);
+        }
+        try {
+            await session.close();
+        } catch (error) {
+            logger.debug('[START] Failed to close session during cleanup:', error);
+        }
+    };
+
+    let cleanupPromise: Promise<void> | null = null;
+    const cleanup = (request: { archive: boolean; exitCode: number }): Promise<void> => {
+        if (cleanupPromise) return cleanupPromise;
+        let resolveCleanup!: () => void;
+        let rejectCleanup!: (reason?: unknown) => void;
+        cleanupPromise = new Promise<void>((resolve, reject) => {
+            resolveCleanup = resolve;
+            rejectCleanup = reject;
+        });
+
+        void (async () => {
+            logger.debug(`[START] Cleaning up (archive=${request.archive}, exitCode=${request.exitCode})...`);
+
+            try {
+                // Update lifecycle state to archived before closing — only
+                // when explicitly archiving. On Ctrl-C / SIGTERM we leave
+                // lifecycleState alone so the server treats this exactly
+                // like a network blip: active=false via missed keepalives,
+                // but the session stays visible and resumable in the app.
+                if (session) {
+                    if (request.archive) {
+                        session.updateMetadata((currentMetadata) => ({
+                            ...currentMetadata,
+                            lifecycleState: 'archived',
+                            lifecycleStateSince: Date.now(),
+                            archivedBy: 'cli',
+                            archiveReason: 'User terminated'
+                        }));
+                    }
+
+                    // Seal ingestion synchronously and publish the final empty
+                    // workflow snapshot before any other shutdown work.
+                    await resetClaudeWorkflowsForShutdown();
+
+                    // Cleanup session resources (intervals, callbacks)
+                    currentSession?.cleanup();
+
+                    // Send session death message
+                    session.sendSessionDeath();
+
+                    // Belt-and-braces: also POST /v1/sessions/<id>/archive so
+                    // the server flips active=false even if the socket emit
+                    // didn't drain before close. The HTTP endpoint touches
+                    // only `active` and `lastActiveAt` — it doesn't write
+                    // archive metadata — so this is safe in the archive=false
+                    // case too, and matches the "session goes inactive but
+                    // stays resumable" semantics we want for Ctrl-C.
+                    try {
+                        await api.deactivateSession(session.sessionId);
+                    } catch (err) {
+                        logger.debug('[START] deactivateSession during cleanup failed:', err);
+                    }
+
+                    await flushAndCloseSession();
+                }
+
+                // Stop Happy MCP server
+                happyServer.stop();
+
+                // Stop Hook server and cleanup settings file
+                hookServer.stop();
+                cleanupHookSettingsFile(hookSettingsPath);
+
+                // Stop the remote JSONL scanner (file watchers + intervals).
+                await remoteScanner.cleanup();
+
+                logger.debug('[START] Cleanup complete, exiting');
+            } catch (error) {
+                logger.debug('[START] Error during cleanup:', error);
+            }
+
+            // Keep exit outside the cleanup try/catch so a mocked or throwing
+            // process.exit cannot trigger a second exit attempt.
+            process.exit(request.exitCode);
+        })().then(resolveCleanup, rejectCleanup);
+        return cleanupPromise;
+    };
     // Handle termination signals — Ctrl-C / SIGTERM are user-initiated
     // exits, treat as "I'll come back to this session later" rather than
     // "archive forever".
-    process.on('SIGTERM', () => { void cleanup({ archive: false }); });
-    process.on('SIGINT', () => { void cleanup({ archive: false }); });
+    process.on('SIGTERM', () => { void cleanup({ archive: false, exitCode: 0 }); });
+    process.on('SIGINT', () => { void cleanup({ archive: false, exitCode: 0 }); });
 
     // Crashes archive on the way out so the session shows up correctly
     // in the app rather than masquerading as live.
     process.on('uncaughtException', (error) => {
         logger.debug('[START] Uncaught exception:', error);
-        void cleanup({ archive: true });
+        void cleanup({ archive: true, exitCode: 0 });
     });
 
     process.on('unhandledRejection', (reason) => {
         logger.debug('[START] Unhandled rejection:', reason);
-        void cleanup({ archive: true });
+        void cleanup({ archive: true, exitCode: 0 });
     });
 
     // Browser-side "Archive" button routes through this RPC and DOES
     // want the metadata stamped — it's the user explicitly choosing to
     // retire the session, not just disconnecting.
-    registerKillSessionHandler(session.rpcHandlerManager, () => cleanup({ archive: true }));
+    registerKillSessionHandler(session, () => cleanup({ archive: true, exitCode: 0 }));
 
     // Create claude loop
     const exitCode = await loop({
@@ -956,7 +1033,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // Store reference for hook server callback
             currentSession = sessionInstance;
         },
-        onAbort: resetCurrentModeDefaults,
+        onAbort: resetTransientModeStateAfterAbort,
         mcpServers: {
             'happy': {
                 type: 'http' as const,
@@ -971,30 +1048,5 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         jsRuntime: options.jsRuntime
     });
 
-    // Cleanup session resources (intervals, callbacks) - prevents memory leak
-    // Note: currentSession is set by onSessionReady callback during loop()
-    (currentSession as Session | null)?.cleanup();
-
-    // Send session death message
-    session.sendSessionDeath();
-
-    // Wait for socket to flush
-    logger.debug('Waiting for socket to flush...');
-    await session.flush();
-
-    // Close session
-    logger.debug('Closing session...');
-    await session.close();
-
-    // Stop Happy MCP server
-    happyServer.stop();
-    logger.debug('Stopped Happy MCP server');
-
-    // Stop Hook server and cleanup settings file
-    hookServer.stop();
-    cleanupHookSettingsFile(hookSettingsPath);
-    logger.debug('Stopped Hook server and cleaned up settings file');
-
-    // Exit with the code from Claude
-    process.exit(exitCode);
+    await cleanup({ archive: false, exitCode });
 }

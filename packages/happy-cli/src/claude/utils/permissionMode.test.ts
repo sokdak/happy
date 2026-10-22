@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { applySandboxPermissionPolicy, extractPermissionModeFromClaudeArgs, mapToClaudeMode, normalizeRemotePermissionMode, resolveInitialClaudePermissionMode, resolveRemoteClaudePermissionMode } from './permissionMode';
+import {
+    applyClaudePermissionModeToArgs,
+    applySandboxPermissionPolicy,
+    extractPermissionModeFromClaudeArgs,
+    mapToClaudeMode,
+    normalizeRemotePermissionMode,
+    resolveInitialClaudePermissionMode,
+    resolveRemoteClaudePermissionMode,
+} from './permissionMode';
 import { MessageMetaSchema, type PermissionMode } from '@/api/types';
 
 describe('mapToClaudeMode', () => {
@@ -62,6 +70,42 @@ describe('mapToClaudeMode', () => {
     // letting Claude apply its own configuration.
     it('keeps an unset mode unset rather than inventing one', () => {
         expect(mapToClaudeMode(undefined)).toBeUndefined();
+    });
+});
+
+describe('applyClaudePermissionModeToArgs', () => {
+    it.each<PermissionMode>(['yolo', 'bypassPermissions'])(
+        'adds --dangerously-skip-permissions for explicit %s mode',
+        (mode) => {
+            expect(applyClaudePermissionModeToArgs(mode, ['--verbose'])).toEqual([
+                '--verbose',
+                '--dangerously-skip-permissions',
+            ]);
+        },
+    );
+
+    it('does not duplicate an existing bypass flag', () => {
+        expect(applyClaudePermissionModeToArgs('yolo', [
+            '--dangerously-skip-permissions',
+            '--verbose',
+        ])).toEqual([
+            '--dangerously-skip-permissions',
+            '--verbose',
+        ]);
+    });
+
+    it.each<PermissionMode>(['auto', 'default', 'acceptEdits', 'plan', 'read-only', 'safe-yolo'])(
+        'leaves local args unchanged for %s mode',
+        (mode) => {
+            const args = ['--verbose'];
+
+            expect(applyClaudePermissionModeToArgs(mode, args)).toEqual(args);
+            expect(args).toEqual(['--verbose']);
+        },
+    );
+
+    it('keeps absent args absent when no bypass was selected', () => {
+        expect(applyClaudePermissionModeToArgs(undefined)).toBeUndefined();
     });
 });
 

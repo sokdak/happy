@@ -7,6 +7,34 @@ import {
 } from '../utils/sessionProtocolMapper';
 
 describe('mapCodexMcpMessageToSessionEnvelopes', () => {
+    it.each([
+        { result: { Ok: { content: [] } } },
+        { result: { Err: 'MCP server disconnected' } },
+        { status: 'failed', error: { message: 'MCP server disconnected' } },
+    ])('closes the matching MCP card when a call finishes: %j', (completion) => {
+        const mapped = mapCodexMcpMessageToSessionEnvelopes({
+            type: 'mcp_tool_call_end', call_id: 'mcp-1', ...completion,
+        }, { currentTurnId: 'turn-1' });
+        expect(mapped.envelopes).toHaveLength(1);
+        expect(mapped.envelopes[0]).toMatchObject({
+            turn: 'turn-1', ev: { t: 'tool-call-end', call: 'mcp-1' },
+        });
+    });
+
+    it('preserves MCP subagent context and permits calls without arguments', () => {
+        const mapped = mapCodexMcpMessageToSessionEnvelopes({
+            type: 'mcp_tool_call_begin', call_id: 'mcp-1',
+            invocation: { server: 'docs', tool: 'list', arguments: null },
+            agent_thread_id: 'child-thread',
+        }, { currentTurnId: 'turn-1' });
+        expect(mapped.envelopes).toHaveLength(2);
+        expect(mapped.envelopes[0].ev.t).toBe('start');
+        expect(mapped.envelopes[1]).toMatchObject({
+            subagent: mapped.envelopes[0].subagent,
+            ev: { t: 'tool-call-start', call: 'mcp-1', name: 'mcp__docs__list', args: {} },
+        });
+    });
+
     it('keeps replies visible across repeated continuations without task_started', () => {
         let state = mapCodexMcpMessageToSessionEnvelopes({ type: 'task_started' }, { currentTurnId: null });
         const turns = new Set([state.currentTurnId]);
@@ -627,6 +655,19 @@ describe('mapCodexProcessorMessageToSessionEnvelopes', () => {
 });
 
 describe('mapCodexThreadToSessionEnvelopes', () => {
+    it('uses the same MCP tool name and arguments in history and live calls', () => {
+        const invocation = { server: 'docs', tool: 'search', arguments: { query: 'MCP' } };
+        const history = mapCodexThreadToSessionEnvelopes({
+            turns: [{ id: 'turn-1', items: [{ id: 'mcp-1', type: 'mcpToolCall', ...invocation }] }],
+        });
+        const live = mapCodexMcpMessageToSessionEnvelopes({
+            type: 'mcp_tool_call_begin', call_id: 'mcp-1', invocation,
+        }, { currentTurnId: 'turn-1' });
+        const historicalStart = history.find((envelope) => envelope.ev.t === 'tool-call-start');
+        expect(historicalStart?.ev).toMatchObject({ name: 'mcp__docs__search', args: { query: 'MCP' } });
+        expect(historicalStart?.ev).toEqual(live.envelopes[0]?.ev);
+    });
+
     it('backfills Codex thread turns as session envelopes with codex item ids', () => {
         const envelopes = mapCodexThreadToSessionEnvelopes({
             turns: [{
@@ -734,6 +775,58 @@ describe('mapCodexThreadToSessionEnvelopes', () => {
             turn: 'turn-1',
             ev: { t: 'tool-call-end', call: 'cmd-1' },
         });
+    });
+
+    it.each([
+        {
+            label: 'structured Ok content',
+            item: { result: { Ok: { content: [{ type: 'text', text: 'Title changed' }] } } },
+            expected: JSON.stringify({ content: [{ type: 'text', text: 'Title changed' }] }, null, 2),
+        },
+        {
+            label: 'Err string',
+            item: { result: { Err: 'MCP server disconnected' } },
+            expected: 'MCP server disconnected',
+        },
+        {
+            label: 'error message object',
+            item: { status: 'failed', error: { message: 'MCP server disconnected' } },
+            expected: 'MCP server disconnected',
+        },
+        {
+            label: 'bare structured result',
+            item: { result: { content: [{ type: 'text', text: 'Title changed' }] } },
+            expected: JSON.stringify({ content: [{ type: 'text', text: 'Title changed' }] }, null, 2),
+        },
+    ])('backfills a readable mcp tool result: $label', ({ item, expected }) => {
+        const envelopes = mapCodexThreadToSessionEnvelopes({
+            turns: [{
+                id: 'turn-1',
+                startedAt: 100,
+                items: [{ id: 'mcp-1', type: 'mcpToolCall', server: 'happy', tool: 'change_title', ...item }],
+            }],
+        });
+
+        const output = envelopes.find((envelope) => envelope.ev.t === 'text');
+        expect(output?.ev).toMatchObject({ t: 'text', text: expected });
+        expect(expected).not.toContain('[object Object]');
+    });
+
+    it.each([
+        { label: 'empty Ok content', item: { result: { Ok: { content: [] } } } },
+        { label: 'no result at all', item: { status: 'completed' } },
+    ])('backfills no output text for an mcp tool call with nothing to show: $label', ({ item }) => {
+        const envelopes = mapCodexThreadToSessionEnvelopes({
+            turns: [{
+                id: 'turn-1',
+                startedAt: 100,
+                items: [{ id: 'mcp-1', type: 'mcpToolCall', server: 'happy', tool: 'change_title', ...item }],
+            }],
+        });
+
+        expect(envelopes.map((envelope) => envelope.ev.t)).toEqual([
+            'turn-start', 'tool-call-start', 'tool-call-end', 'turn-end',
+        ]);
     });
 
     it('backfills Codex collab-agent items with session subagent linkage', () => {

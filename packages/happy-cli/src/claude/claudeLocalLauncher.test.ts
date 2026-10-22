@@ -31,6 +31,7 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import { claudeLocalLauncher } from './claudeLocalLauncher';
+import { RawJSONLinesSchema } from './types';
 
 type QueueHandler = (message: string, mode: { permissionMode: 'default' }) => void;
 type ScannerOptions = {
@@ -78,6 +79,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessage: vi.fn(),
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {}),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -153,6 +155,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessage: vi.fn(),
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {}),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -225,6 +228,7 @@ describe('claudeLocalLauncher', () => {
                 sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
                 closeClaudeSessionTurn: vi.fn(),
                 sendSessionEvent: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {}),
                 rpcHandlerManager: {
                     registerHandler: vi.fn(),
                 },
@@ -255,5 +259,144 @@ describe('claudeLocalLauncher', () => {
             type: 'message',
             message: `Process exited unexpectedly: ${sdkFailure.message}`,
         });
+    });
+
+    it('invokes the final workflow reset after scanner cleanup drains its last message', async () => {
+        const events: string[] = [];
+        // A system transcript line carrying the uuid RawJSONLinesSchema
+        // requires — i.e. something the real scanner would actually forward.
+        const finalDrainMessage = {
+            type: 'system',
+            uuid: 'f0c1d9e4-0f5a-4a1b-9d21-7c3f8b2a6e10',
+            content: 'final drained transcript line',
+        };
+        mockCreateSessionScanner.mockImplementation(async (options: ScannerOptions) => ({
+            onNewSession: vi.fn(),
+            cleanup: vi.fn(async () => {
+                events.push('cleanup');
+                // The real scanner only forwards lines that survive
+                // RawJSONLinesSchema, so a fixture the schema would reject
+                // proves nothing about production behavior.
+                expect(RawJSONLinesSchema.safeParse(finalDrainMessage).success).toBe(true);
+                options.onMessage(finalDrainMessage);
+            }),
+        }));
+        mockClaudeLocal.mockResolvedValueOnce(undefined);
+
+        const session = {
+            sessionId: 'claude-session-final-drain',
+            path: '/tmp/project',
+            client: {
+                sendClaudeSessionMessage: vi.fn(),
+                sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {
+                    events.push('send');
+                }),
+                closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows: vi.fn(async () => {
+                    events.push('reset');
+                }),
+                rpcHandlerManager: {
+                    registerHandler: vi.fn(),
+                },
+            },
+            queue: {
+                reset: vi.fn(),
+                setOnMessage: vi.fn(),
+                size: vi.fn(() => 0),
+            },
+            addSessionFoundCallback: vi.fn(),
+            removeSessionFoundCallback: vi.fn(),
+            onAbort: vi.fn(),
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            consumeOneTimeFlags: vi.fn(),
+            claudeEnvVars: undefined,
+            claudeArgs: undefined,
+            mcpServers: {},
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook-settings.json',
+            sandboxConfig: undefined,
+        };
+
+        await expect(claudeLocalLauncher(session as any)).resolves.toEqual({ type: 'exit', code: 0 });
+
+        expect(session.client.resetClaudeWorkflows).toHaveBeenCalledTimes(3);
+        expect(events.lastIndexOf('reset')).toBeGreaterThan(events.lastIndexOf('cleanup'));
+        expect(events.lastIndexOf('reset')).toBeGreaterThan(events.lastIndexOf('send'));
+    });
+
+    it('does not block Claude startup or cleanup on workflow reset failures', async () => {
+        const stalledReset = createDeferred<void>();
+        const resetClaudeWorkflows = vi.fn()
+            .mockReturnValueOnce(stalledReset.promise)
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValue(undefined);
+        mockClaudeLocal.mockResolvedValueOnce(undefined);
+
+        const session = {
+            sessionId: 'claude-session-offline-reset',
+            path: '/tmp/project',
+            client: {
+                sendClaudeSessionMessage: vi.fn(),
+                sendClaudeSessionMessageFromLocalTranscript: vi.fn(async () => {}),
+                closeClaudeSessionTurn: vi.fn(),
+                resetClaudeWorkflows,
+                rpcHandlerManager: {
+                    registerHandler: vi.fn(),
+                },
+            },
+            queue: {
+                reset: vi.fn(),
+                setOnMessage: vi.fn(),
+                size: vi.fn(() => 0),
+            },
+            addSessionFoundCallback: vi.fn(),
+            removeSessionFoundCallback: vi.fn(),
+            onAbort: vi.fn(),
+            onSessionFound: vi.fn(),
+            onThinkingChange: vi.fn(),
+            consumeOneTimeFlags: vi.fn(),
+            claudeEnvVars: undefined,
+            claudeArgs: undefined,
+            mcpServers: {},
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook-settings.json',
+            sandboxConfig: undefined,
+        };
+
+        await expect(claudeLocalLauncher(session as any)).resolves.toEqual({ type: 'exit', code: 0 });
+
+        expect(mockClaudeLocal).toHaveBeenCalledOnce();
+        expect(resetClaudeWorkflows.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // Documents why local mode publishes no workflow state today, so nobody
+    // reads the mocked scanner above as evidence that it does.
+    //
+    // Two independent reasons, both verified:
+    //  1. Claude Code does not write task_* system lines into transcript JSONL
+    //     files at all, so there is nothing for the scanner to pick up.
+    //  2. Even if such a line appeared, the shape the workflow tracker expects
+    //     ({ type: 'system', subtype: 'task_started', task_id, task_type })
+    //     carries no uuid, and the system variant of RawJSONLinesSchema
+    //     requires one — the scanner drops it before onMessage ever runs.
+    //
+    // Workflow progress therefore reaches the app only from remote mode, where
+    // claudeRemote.ts reads task_* events off the SDK stream instead of the
+    // transcript. Deleting this test without changing that pipeline would just
+    // restore the false confidence it exists to prevent.
+    it('documents that transcript task_* events cannot feed local-mode workflow state', () => {
+        const transcriptTaskEvent = {
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'workflow-1',
+            task_type: 'local_workflow',
+        };
+
+        const parsed = RawJSONLinesSchema.safeParse(transcriptTaskEvent);
+
+        expect(parsed.success).toBe(false);
+        expect(parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join('.')))
+            .toContain('uuid');
     });
 });

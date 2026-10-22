@@ -398,6 +398,69 @@ export type AgentGoalStatus = {
     }
 );
 
+export type ActiveWorkflowAgentSnapshot = {
+  id: string
+  index: number
+  label: string
+  model?: string
+  state: string
+  queuedAt?: number
+  startedAt?: number
+  lastToolName?: string
+  lastToolSummary?: string
+  lastProgressAt?: number
+  tokens?: number
+  toolCalls?: number
+  durationMs?: number
+}
+
+export type ActiveWorkflowPhaseSnapshot = {
+  index: number
+  title: string
+  agents: ActiveWorkflowAgentSnapshot[]
+}
+
+export type ActiveWorkflowSnapshot = {
+  taskId: string
+  toolUseId?: string
+  name: string
+  description?: string
+  startedAt: number
+  updatedAt: number
+  usage?: {
+    totalTokens?: number
+    toolUses?: number
+    durationMs?: number
+  }
+  phases: ActiveWorkflowPhaseSnapshot[]
+}
+
+export type AgentQuestion = {
+  id: string
+  header: string
+  question: string
+  options: Array<{ label: string; description?: string | null }>
+  multiSelect?: boolean
+  allowCustom?: boolean
+  isSecret?: boolean
+  required?: boolean
+}
+
+export type AgentQuestionAnswer = { options: string[]; custom?: string | null }
+
+export type AgentCommunication = {
+  kind: 'form'
+  createdAt: number
+  toolUseId: string
+  form: { questions: AgentQuestion[] }
+}
+
+export type CompletedAgentCommunication = AgentCommunication & {
+  completedAt: number
+  status: 'answered' | 'cancelled'
+  answers?: Record<string, AgentQuestionAnswer>
+}
+
 export type AgentState = {
   controlledByUser?: boolean | null | undefined
   /**
@@ -435,4 +498,7 @@ export type AgentState = {
     }
   }
   agentGoalStatus?: AgentGoalStatus
+  activeWorkflows?: Record<string, ActiveWorkflowSnapshot>
+  communications?: Record<string, AgentCommunication>
+  completedCommunications?: Record<string, CompletedAgentCommunication>
 }

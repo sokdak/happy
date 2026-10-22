@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { link, mkdir, mkdtemp, open, rmdir, unlink } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, open, rmdir, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -34,9 +34,16 @@ function normalizeServerUrl(value: string): string {
 async function readJson(path: string): Promise<unknown | undefined> {
   let file;
   try {
-    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    // O_NOFOLLOW is unavailable on Windows. Reject links before opening and
+    // verify that the opened handle still names the inspected regular file.
+    const inspected = await lstat(path);
+    if (!inspected.isFile() || inspected.size > MAX_FILE_BYTES) {
+      throw new Error('Invalid pairing file.');
+    }
+    file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const stat = await file.stat();
-    if (!stat.isFile() || stat.size > MAX_FILE_BYTES || (process.getuid && stat.uid !== process.getuid())) {
+    if (!stat.isFile() || stat.dev !== inspected.dev || stat.ino !== inspected.ino
+      || stat.size > MAX_FILE_BYTES || (process.getuid && stat.uid !== process.getuid())) {
       throw new Error('Invalid pairing file.');
     }
     const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);

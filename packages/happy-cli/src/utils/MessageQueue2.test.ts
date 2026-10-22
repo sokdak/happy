@@ -9,18 +9,18 @@ describe('MessageQueue2', () => {
         expect(queue.isClosed()).toBe(false);
     });
 
-    it('should push and retrieve messages with same mode', async () => {
+    it('should push and retrieve messages one at a time in FIFO order', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
-        
+
         queue.push('message1', 'local');
         queue.push('message2', 'local');
         queue.push('message3', 'local');
-        
+
         const result = await queue.waitForMessagesAndGetAsString();
         expect(result).not.toBeNull();
-        expect(result?.message).toBe('message1\nmessage2\nmessage3');
+        expect(result?.message).toBe('message1');
         expect(result?.mode).toBe('local');
-        expect(queue.size()).toBe(0);
+        expect(queue.size()).toBe(2);
     });
 
     it('should return only messages with same mode and keep others', async () => {
@@ -31,19 +31,19 @@ describe('MessageQueue2', () => {
         queue.push('remote1', 'remote');
         queue.push('remote2', 'remote');
         
-        // First call should return local messages
-        const result1 = await queue.waitForMessagesAndGetAsString();
-        expect(result1).not.toBeNull();
-        expect(result1?.message).toBe('local1\nlocal2');
-        expect(result1?.mode).toBe('local');
-        expect(queue.size()).toBe(2); // remote messages still in queue
-        
-        // Second call should return remote messages
-        const result2 = await queue.waitForMessagesAndGetAsString();
-        expect(result2).not.toBeNull();
-        expect(result2?.message).toBe('remote1\nremote2');
-        expect(result2?.mode).toBe('remote');
-        expect(queue.size()).toBe(0);
+        // Each call returns exactly one message, in push order, with its own mode
+        const messages: { message: string; mode: string }[] = [];
+        while (queue.size() > 0) {
+            const next = await queue.waitForMessagesAndGetAsString();
+            messages.push({ message: next!.message, mode: next!.mode });
+        }
+
+        expect(messages).toEqual([
+            { message: 'local1', mode: 'local' },
+            { message: 'local2', mode: 'local' },
+            { message: 'remote1', mode: 'remote' },
+            { message: 'remote2', mode: 'remote' },
+        ]);
     });
 
     it('should handle complex mode objects', async () => {
@@ -60,17 +60,21 @@ describe('MessageQueue2', () => {
         queue.push('message2', { type: 'local' });
         queue.push('message3', { type: 'local', context: 'test' });
         
-        // First batch - same mode hash
+        // Each message keeps the exact mode object it was pushed with
         const result1 = await queue.waitForMessagesAndGetAsString();
         expect(result1).not.toBeNull();
-        expect(result1?.message).toBe('message1\nmessage2');
+        expect(result1?.message).toBe('message1');
         expect(result1?.mode).toEqual({ type: 'local' });
-        
-        // Second batch - different context
+
         const result2 = await queue.waitForMessagesAndGetAsString();
         expect(result2).not.toBeNull();
-        expect(result2?.message).toBe('message3');
-        expect(result2?.mode).toEqual({ type: 'local', context: 'test' });
+        expect(result2?.message).toBe('message2');
+        expect(result2?.mode).toEqual({ type: 'local' });
+
+        const result3 = await queue.waitForMessagesAndGetAsString();
+        expect(result3).not.toBeNull();
+        expect(result3?.message).toBe('message3');
+        expect(result3?.mode).toEqual({ type: 'local', context: 'test' });
     });
 
     it('should wait for messages when queue is empty', async () => {
@@ -87,8 +91,9 @@ describe('MessageQueue2', () => {
         
         const result = await waitPromise;
         expect(result).not.toBeNull();
-        expect(result?.message).toBe('delayed1\ndelayed2');
+        expect(result?.message).toBe('delayed1');
         expect(result?.mode).toBe('local');
+        expect(queue.size()).toBe(1);
     });
 
     it('should return null when waiting and queue closes', async () => {
@@ -169,15 +174,18 @@ describe('MessageQueue2', () => {
         expect(result2?.message).toBe('cycle2');
         expect(result2?.mode).toBe('mode2');
         
-        // Third cycle
+        // Third cycle - two messages of the same mode stay separate
         queue.push('cycle3-1', 'mode3');
         queue.push('cycle3-2', 'mode3');
         const result3 = await queue.waitForMessagesAndGetAsString();
-        expect(result3?.message).toBe('cycle3-1\ncycle3-2');
+        expect(result3?.message).toBe('cycle3-1');
         expect(result3?.mode).toBe('mode3');
+        const result4 = await queue.waitForMessagesAndGetAsString();
+        expect(result4?.message).toBe('cycle3-2');
+        expect(result4?.mode).toBe('mode3');
     });
 
-    it('should batch messages with enhanced mode hashing', async () => {
+    it('should deliver messages individually with enhanced mode hashing', async () => {
         
         interface EnhancedMode {
             permissionMode: string;
@@ -201,14 +209,20 @@ describe('MessageQueue2', () => {
         queue.push('message7', { permissionMode: 'default', allowedTools: ['Read', 'Write'] }); // Different allowed tools
         queue.push('message8', { permissionMode: 'default', disallowedTools: ['Bash'] }); // Different disallowed tools
         
-        // First batch - same permission mode and model
+        // Each message is delivered on its own, carrying its own enhanced mode
         const result1 = await queue.waitForMessagesAndGetAsString();
         expect(result1).not.toBeNull();
-        expect(result1?.message).toBe('message1\nmessage2');
+        expect(result1?.message).toBe('message1');
         expect(result1?.mode).toEqual({ permissionMode: 'default', model: 'sonnet' });
-        expect(queue.size()).toBe(6); // remaining messages in queue
-        
-        // Second batch - same permission mode, different model
+        expect(queue.size()).toBe(7); // remaining messages in queue
+
+        const result1b = await queue.waitForMessagesAndGetAsString();
+        expect(result1b).not.toBeNull();
+        expect(result1b?.message).toBe('message2');
+        expect(result1b?.mode).toEqual({ permissionMode: 'default', model: 'sonnet' });
+        expect(queue.size()).toBe(6);
+
+        // Same permission mode, different model
         const result2 = await queue.waitForMessagesAndGetAsString();
         expect(result2).not.toBeNull();
         expect(result2?.message).toBe('message3');
@@ -347,7 +361,7 @@ describe('MessageQueue2', () => {
         expect(result?.message).toBe('immediate');
     });
 
-    it('should batch messages pushed with pushImmediate normally', async () => {
+    it('should queue messages pushed with pushImmediate in order', async () => {
         const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
         
         // Add some regular messages
@@ -361,10 +375,12 @@ describe('MessageQueue2', () => {
         queue.push('message3', { type: 'A' });
         queue.push('message4', { type: 'A' });
         
-        // All messages should be batched together since they have the same mode
-        const batch1 = await queue.waitForMessagesAndGetAsString();
-        expect(batch1?.message).toBe('message1\nmessage2\nimmediate\nmessage3\nmessage4');
-        expect(batch1?.mode.type).toBe('A');
+        // pushImmediate does not jump the queue; every message keeps its own turn
+        const collected: string[] = [];
+        while (queue.size() > 0) {
+            collected.push((await queue.waitForMessagesAndGetAsString())!.message);
+        }
+        expect(collected).toEqual(['message1', 'message2', 'immediate', 'message3', 'message4']);
     });
 
     it('should isolate messages pushed with pushIsolateAndClear', async () => {
@@ -386,10 +402,14 @@ describe('MessageQueue2', () => {
         expect(batch1?.message).toBe('isolated');
         expect(batch1?.mode.type).toBe('A');
         
-        // Second batch should contain the messages added after
+        // Messages added after the clear survive, still one per turn
         const batch2 = await queue.waitForMessagesAndGetAsString();
-        expect(batch2?.message).toBe('message3\nmessage4');
+        expect(batch2?.message).toBe('message3');
         expect(batch2?.mode.type).toBe('A');
+
+        const batch3 = await queue.waitForMessagesAndGetAsString();
+        expect(batch3?.message).toBe('message4');
+        expect(batch3?.mode.type).toBe('A');
     });
 
     it('pushIsolated does not clear pending messages and prevents batching', async () => {
@@ -450,7 +470,7 @@ describe('MessageQueue2', () => {
         });
     });
 
-    it('should stop batching when hitting isolated message', async () => {
+    it('should preserve order and isolation flags around an isolated message', async () => {
         const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
         
         // Add regular messages
@@ -468,20 +488,23 @@ describe('MessageQueue2', () => {
         // Add more regular messages
         queue.push('message3', { type: 'A' });
         
-        // First batch should contain regular messages until the isolated one
+        // Delivered strictly in order, with the isolate flag surfaced on its own message
         const batch1 = await queue.waitForMessagesAndGetAsString();
-        expect(batch1?.message).toBe('message1\nmessage2');
-        expect(batch1?.mode.type).toBe('A');
-        
-        // Second batch should only contain the isolated message
+        expect(batch1?.message).toBe('message1');
+        expect(batch1?.isolate).toBe(false);
+
         const batch2 = await queue.waitForMessagesAndGetAsString();
-        expect(batch2?.message).toBe('isolated');
-        expect(batch2?.mode.type).toBe('A');
-        
-        // Third batch should contain messages after the isolated one
+        expect(batch2?.message).toBe('message2');
+        expect(batch2?.isolate).toBe(false);
+
         const batch3 = await queue.waitForMessagesAndGetAsString();
-        expect(batch3?.message).toBe('message3');
+        expect(batch3?.message).toBe('isolated');
+        expect(batch3?.isolate).toBe(true);
         expect(batch3?.mode.type).toBe('A');
+
+        const batch4 = await queue.waitForMessagesAndGetAsString();
+        expect(batch4?.message).toBe('message3');
+        expect(batch4?.isolate).toBe(false);
     });
 
     it('should differentiate between pushImmediate and pushIsolateAndClear behavior', async () => {
@@ -493,10 +516,12 @@ describe('MessageQueue2', () => {
         queue.pushImmediate('immediate', { type: 'A' });
         queue.push('after', { type: 'A' });
         
-        // All should be batched together
-        const batch1 = await queue.waitForMessagesAndGetAsString();
-        expect(batch1?.message).toBe('before1\nbefore2\nimmediate\nafter');
-        expect(batch1?.mode.type).toBe('A');
+        // pushImmediate keeps its place in line; nothing is merged
+        const modeA: string[] = [];
+        while (queue.size() > 0) {
+            modeA.push((await queue.waitForMessagesAndGetAsString())!.message);
+        }
+        expect(modeA).toEqual(['before1', 'before2', 'immediate', 'after']);
         
         // Test pushIsolateAndClear behavior - DOES clear queue and isolate
         queue.push('will-be-cleared1', { type: 'B' });
@@ -513,5 +538,30 @@ describe('MessageQueue2', () => {
         const batch3 = await queue.waitForMessagesAndGetAsString();
         expect(batch3?.message).toBe('after-isolated');
         expect(batch3?.mode.type).toBe('B');
+    });
+
+    it('keeps follow-ups sent during an active turn as separate turns', async () => {
+        // Regression: 6 questions sent while a turn was running were joined
+        // with '\n' into a single prompt, so one answer covered only some of
+        // them. Each queued user message must stay its own turn.
+        const queue = new MessageQueue2<string>((mode) => mode);
+        for (let i = 1; i <= 6; i++) {
+            queue.push(`question ${i}`, 'default');
+        }
+
+        const collected: string[] = [];
+        while (queue.size() > 0) {
+            const batch = await queue.waitForMessagesAndGetAsString();
+            collected.push(batch!.message);
+        }
+
+        expect(collected).toEqual([
+            'question 1',
+            'question 2',
+            'question 3',
+            'question 4',
+            'question 5',
+            'question 6',
+        ]);
     });
 });

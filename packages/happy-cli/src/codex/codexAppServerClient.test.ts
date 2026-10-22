@@ -1,5 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SandboxConfig } from '@/persistence';
+import type { ApiSessionClient } from '@/api/apiSession';
+import type { AgentState } from '@/api/types';
 
 const {
     mockExecSync,
@@ -98,6 +100,75 @@ async function waitFor(predicate: () => boolean, timeoutMs: number = 1000): Prom
     }
 }
 
+function createAbortBarrierHarness() {
+    const requests: MockRpcMessage[] = [];
+    const proc = createMockProcess({
+        onRequest: (msg, stdout) => {
+            requests.push(msg);
+
+            if (msg.method === 'thread/start' && msg.id != null) {
+                pushJsonLine(stdout, {
+                    id: msg.id,
+                    result: {
+                        thread: { id: 'thread-abort-barrier', path: '/tmp/thread-abort-barrier' },
+                        model: 'gpt-test',
+                        modelProvider: 'openai',
+                        cwd: '/tmp/project',
+                        approvalPolicy: 'on-request',
+                        sandbox: { type: 'readOnly' },
+                        reasoningEffort: null,
+                    },
+                });
+            }
+
+            const turnStarts = requests.filter((request) => request.method === 'turn/start');
+            if (msg.method === 'turn/start' && msg.id != null && turnStarts.length === 1) {
+                pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-old' } } });
+            }
+
+            if (msg.method === 'turn/interrupt' && msg.id != null) {
+                pushJsonLine(stdout, { id: msg.id, result: { abortReason: 'interrupted' } });
+            }
+        },
+    });
+
+    return {
+        proc,
+        push: (payload: unknown) => pushJsonLine(proc.stdout, payload),
+        turnStarts: () => requests.filter((msg) => msg.method === 'turn/start'),
+    };
+}
+
+type TerminalProtocol = 'legacy' | 'raw';
+
+function pushTerminalEvent(
+    harness: ReturnType<typeof createAbortBarrierHarness>,
+    protocol: TerminalProtocol,
+    turnId: string,
+    status: 'completed' | 'cancelled',
+) {
+    if (protocol === 'legacy') {
+        harness.push({
+            method: 'codex/event',
+            params: {
+                msg: {
+                    type: status === 'cancelled' ? 'turn_aborted' : 'task_complete',
+                    turn_id: turnId,
+                },
+            },
+        });
+        return;
+    }
+
+    harness.push({
+        method: 'turn/completed',
+        params: {
+            threadId: 'thread-abort-barrier',
+            turn: { id: turnId, status, items: [], error: null },
+        },
+    });
+}
+
 const sandboxConfig: SandboxConfig = {
     enabled: true,
     workspaceRoot: '~/projects',
@@ -138,6 +209,20 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(new CodexAppServerClient().supportsGoalActions()).toBe(false);
     });
 
+    it('clears preserved thread state even when no transport remains to disconnect', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+
+        (client as any)._threadId = 'thread-preserved-by-failed-reconnect';
+        (client as any).threadDefaults = { model: 'gpt-test' };
+        expect(client.hasActiveThread()).toBe(true);
+
+        await client.disconnect();
+
+        expect(client.hasActiveThread()).toBe(false);
+        expect((client as any).threadDefaults).toBeNull();
+    });
+
     it('requires Codex 0.153.0 or newer', async () => {
         const { CodexAppServerClient } = await import('./codexAppServerClient');
 
@@ -154,37 +239,46 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
-    it('wraps transport when sandbox is enabled', async () => {
+    it('wraps enabled sandbox transport on supported platforms', async () => {
         // Dynamic import to ensure mocks are applied
         const { CodexAppServerClient } = await import('./codexAppServerClient');
         const client = new CodexAppServerClient(sandboxConfig);
 
         await client.connect();
 
-        expect(mockInitializeSandbox).toHaveBeenCalledWith(sandboxConfig, process.cwd());
-        expect(mockWrapForMcpTransport).toHaveBeenCalledWith('codex', ['app-server', '--listen', 'stdio://']);
-        expect(mockSpawn).toHaveBeenCalledWith(
-            'sh',
-            ['-c', 'wrapped codex app-server'],
-            expect.objectContaining({
-                env: expect.objectContaining({
-                    CODEX_SANDBOX: 'seatbelt',
-                    RUST_LOG: expect.stringContaining('codex_core::rollout::list=off'),
+        if (process.platform === 'win32') {
+            expect(mockInitializeSandbox).not.toHaveBeenCalled();
+            expect(mockWrapForMcpTransport).not.toHaveBeenCalled();
+            expect(mockSpawn).toHaveBeenCalledWith(
+                'codex', ['app-server', '--listen', 'stdio://'], expect.any(Object),
+            );
+        } else {
+            expect(mockInitializeSandbox).toHaveBeenCalledWith(sandboxConfig, process.cwd());
+            expect(mockWrapForMcpTransport).toHaveBeenCalledWith('codex', ['app-server', '--listen', 'stdio://']);
+            expect(mockSpawn).toHaveBeenCalledWith(
+                'sh',
+                ['-c', 'wrapped codex app-server'],
+                expect.objectContaining({
+                    env: expect.objectContaining({
+                        CODEX_SANDBOX: 'seatbelt',
+                        RUST_LOG: expect.stringContaining('codex_core::rollout::list=off'),
+                    }),
                 }),
-            }),
-        );
-        expect(client.sandboxEnabled).toBe(true);
+            );
+        }
+        expect(client.sandboxEnabled).toBe(process.platform !== 'win32');
 
         await client.disconnect();
     });
 
-    it('falls back to non-sandbox transport when sandbox initialization fails', async () => {
+    it('uses direct transport when sandbox initialization is unavailable', async () => {
         mockInitializeSandbox.mockRejectedValue(new Error('sandbox init failed'));
         const { CodexAppServerClient } = await import('./codexAppServerClient');
         const client = new CodexAppServerClient(sandboxConfig);
 
         await client.connect();
 
+        expect(mockInitializeSandbox).toHaveBeenCalledTimes(process.platform === 'win32' ? 0 : 1);
         expect(mockWrapForMcpTransport).not.toHaveBeenCalled();
         expect(mockSpawn).toHaveBeenCalledWith(
             'codex',
@@ -207,7 +301,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.connect();
         await client.disconnect();
 
-        expect(mockSandboxCleanup).toHaveBeenCalledTimes(1);
+        expect(mockSandboxCleanup).toHaveBeenCalledTimes(process.platform === 'win32' ? 0 : 1);
         expect(client.sandboxEnabled).toBe(false);
     });
 
@@ -251,6 +345,231 @@ describe('CodexAppServerClient sandbox integration', () => {
 
         await expect(reconnect).resolves.toBeUndefined();
         await client.disconnect();
+    });
+
+    it('does not start a queued follow-up until the complete abort fallback settles', async () => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const initialTurn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+
+        const abort = client.abortTurnWithFallback({
+            gracePeriodMs: 1000,
+            forceRestartOnTimeout: false,
+        });
+        harness.push({
+            method: 'codex/event',
+            params: { msg: { type: 'task_complete', turn_id: 'turn-old' } },
+        });
+        await expect(initialTurn).resolves.toEqual({ aborted: false });
+
+        const followUp = client.sendTurnAndWait('queued follow-up');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(harness.turnStarts()).toHaveLength(1);
+
+        await expect(abort).resolves.toEqual({
+            hadActiveTurn: true,
+            aborted: true,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+
+        await waitFor(() => harness.turnStarts().length === 2);
+        const nextTurn = harness.turnStarts()[1];
+        harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
+        pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
+        await expect(followUp).resolves.toEqual({ aborted: false });
+
+        await client.disconnect();
+    });
+
+    it('does not let an older abort completion clear a newer abort', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        type AbortResult = {
+            hadActiveTurn: boolean;
+            aborted: boolean;
+            forcedRestart: boolean;
+            resumedThread: boolean;
+        };
+        const internals = client as unknown as {
+            pendingAbort: Promise<AbortResult> | null;
+            performAbortTurnWithFallback: () => Promise<AbortResult>;
+        };
+        let settleFirst!: (result: AbortResult) => void;
+        const firstOperation = new Promise<AbortResult>((resolve) => {
+            settleFirst = resolve;
+        });
+        internals.performAbortTurnWithFallback = () => firstOperation;
+
+        const firstAbort = client.abortTurnWithFallback();
+        const newerAbort = Promise.resolve({
+            hadActiveTurn: true,
+            aborted: true,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+        internals.pendingAbort = newerAbort;
+        settleFirst({
+            hadActiveTurn: false,
+            aborted: false,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+
+        await firstAbort;
+        expect(internals.pendingAbort).toBe(newerAbort);
+    });
+
+    it.each([
+        ['legacy', 'raw'],
+        ['raw', 'legacy'],
+    ] as const)('ignores a duplicate $duplicate terminal event after $first completion', async (first, duplicate) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const terminalEvents: unknown[] = [];
+        client.setEventHandler((msg) => {
+            if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
+                terminalEvents.push(msg);
+            }
+        });
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const initialTurn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+        pushTerminalEvent(harness, first, 'turn-old', 'completed');
+        await expect(initialTurn).resolves.toEqual({ aborted: false });
+
+        const followUp = client.sendTurnAndWait('queued follow-up');
+        await waitFor(() => harness.turnStarts().length === 2);
+        pushTerminalEvent(harness, duplicate, 'turn-old', 'cancelled');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(terminalEvents).toHaveLength(1);
+
+        const nextTurn = harness.turnStarts()[1];
+        harness.push({ id: nextTurn.id, result: { turn: { id: 'turn-next' } } });
+        pushTerminalEvent(harness, 'legacy', 'turn-next', 'completed');
+        await expect(followUp).resolves.toEqual({ aborted: false });
+
+        await client.disconnect();
+    });
+
+    it('closes the terminal callback reentrancy window', async () => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const terminalEvents: unknown[] = [];
+        client.setEventHandler((msg) => {
+            if (msg.type === 'task_complete' || msg.type === 'turn_aborted') {
+                terminalEvents.push(msg);
+            }
+            if (msg.type === 'task_complete' && msg.turn_id === 'turn-old') {
+                pushTerminalEvent(harness, 'raw', 'turn-old', 'cancelled');
+            }
+        });
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const turn = client.sendTurnAndWait('initial turn');
+        await waitFor(() => harness.turnStarts().length === 1);
+        pushTerminalEvent(harness, 'legacy', 'turn-old', 'completed');
+
+        await expect(turn).resolves.toEqual({ aborted: false });
+        expect(terminalEvents).toHaveLength(1);
+
+        await client.disconnect();
+    });
+
+    describe('turn steering', () => {
+        it.each(['raw', 'legacy'] as const)('appends input and images to the exact %s turn without starting another turn', async protocol => {
+            const h = createAbortBarrierHarness();
+            mockSpawn.mockReturnValue(h.proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            const wire = vi.spyOn(h.proc.stdin, 'write');
+            await client.connect();
+            await client.startThread({ model: 'gpt-test' });
+            let target: { threadId: string; turnId: string } | undefined;
+            const turn = client.sendTurnAndWait('Initial request', { onTurnStarted: value => { target = value; } });
+            try {
+                await waitFor(() => !!target);
+                const accepted = client.steerTurn('Use the new instructions', target!, [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=' }]);
+                const firstSteer = JSON.parse(wire.mock.calls.at(-1)![0] as string);
+                expect(firstSteer).toMatchObject({ method: 'turn/steer', params: {
+                    threadId: 'thread-abort-barrier', expectedTurnId: 'turn-old', input: [
+                        { type: 'text', text: 'Use the new instructions' },
+                        { type: 'image', url: 'data:image/png;base64,aW1hZ2U=' },
+                    ],
+                } });
+                h.push({ id: firstSteer.id, result: { turnId: 'turn-old' } });
+                await expect(accepted).resolves.toBe(true);
+                expect(h.turnStarts()).toHaveLength(1);
+                expect(client.turnId).toBe('turn-old');
+                const late = client.steerTurn('Also inspect errors', target!);
+                expect(wire).toHaveBeenCalledWith(expect.stringContaining('"expectedTurnId":"turn-old"'));
+                const last = JSON.parse(wire.mock.calls.at(-1)![0] as string);
+                expect(last).toMatchObject({ method: 'turn/steer', params: {
+                    threadId: 'thread-abort-barrier', expectedTurnId: 'turn-old', input: [{ type: 'text', text: 'Also inspect errors' }],
+                } });
+                // Completion can arrive before an accepted steering reply.
+                pushTerminalEvent(h, protocol, 'turn-old', 'completed');
+                h.push({ id: last.id, result: { turnId: 'turn-old' } });
+                await expect(late).resolves.toBe(true);
+                await expect(turn).resolves.toEqual({ aborted: false });
+            } finally { await client.disconnect(); }
+        });
+
+        it('rejects stale targets locally and lets the caller preserve input after a server rejection', async () => {
+            const h = createAbortBarrierHarness();
+            mockSpawn.mockReturnValue(h.proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            const wire = vi.spyOn(h.proc.stdin, 'write');
+            await client.connect();
+            await client.startThread({ model: 'gpt-test' });
+            let target: { threadId: string; turnId: string } | undefined;
+            const turn = client.sendTurnAndWait('Initial request', { onTurnStarted: value => { target = value; } });
+            try {
+                await waitFor(() => !!target);
+                const count = wire.mock.calls.length;
+                await expect(client.steerTurn('Keep this message', { ...target!, turnId: 'stale-turn' })).resolves.toBe(false);
+                expect(wire.mock.calls.length).toBe(count);
+                const steer = client.steerTurn('Keep this message', target!);
+                const request = JSON.parse(wire.mock.calls.at(-1)![0] as string);
+                h.push({ id: request.id, error: { code: -32600, message: 'No active turn' } });
+                await expect(steer).rejects.toThrow('No active turn');
+                pushTerminalEvent(h, 'raw', 'turn-old', 'completed');
+                await turn;
+                await expect(client.steerTurn('Next request', target!)).resolves.toBe(false);
+            } finally { await client.disconnect(); }
+        });
     });
 
     it.each([
@@ -1160,6 +1479,62 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it.each(['raw', 'legacy', 'mixed'] as const)('renders MCP calls from %s notifications through the session mapper', async (protocol) => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const { mapCodexMcpMessageToSessionEnvelopes } = await import('./utils/sessionProtocolMapper');
+        const proc = createMockProcess();
+        mockSpawn.mockReturnValue(proc);
+        const client = new CodexAppServerClient();
+        const events: Array<Record<string, unknown>> = [];
+        client.setEventHandler((event) => events.push(event));
+        const invocation = { server: 'docs', tool: 'search', arguments: { query: 'MCP' } };
+        const notify = (completed: boolean) => {
+            if (protocol !== 'raw') {
+                pushJsonLine(proc.stdout, {
+                    method: 'codex/event',
+                    params: { msg: {
+                        type: completed ? 'mcp_tool_call_end' : 'mcp_tool_call_begin',
+                        call_id: 'call-1', invocation,
+                        ...(completed ? { result: { Ok: { content: [] } } } : {}),
+                    } },
+                });
+            }
+            if (protocol !== 'legacy') {
+                pushJsonLine(proc.stdout, {
+                    method: completed ? 'item/completed' : 'item/started',
+                    params: { threadId: 'thread-1', turnId: 'turn-1', item: {
+                        id: 'call-1', type: 'mcpToolCall', ...invocation,
+                        status: completed ? 'completed' : 'inProgress',
+                        ...(completed ? { result: { content: [] }, error: null, durationMs: 12 } : {}),
+                    } },
+                });
+            }
+        };
+        await client.connect();
+        try {
+            notify(false);
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(events).toHaveLength(1);
+            const state = { currentTurnId: 'turn-1' };
+            const started = mapCodexMcpMessageToSessionEnvelopes(events[0], state);
+            const call = protocol === 'raw' ? 'thread-1:call-1' : 'call-1';
+            expect(started.envelopes).toHaveLength(1);
+            expect(started.envelopes[0]).toMatchObject({
+                turn: 'turn-1',
+                ev: { t: 'tool-call-start', call, name: 'mcp__docs__search', args: { query: 'MCP' } },
+            });
+
+            notify(true);
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(events).toHaveLength(2);
+            const ended = mapCodexMcpMessageToSessionEnvelopes(events[1], state);
+            expect(ended.envelopes).toHaveLength(1);
+            expect(ended.envelopes[0]).toMatchObject({ turn: 'turn-1', ev: { t: 'tool-call-end', call } });
+        } finally {
+            await client.disconnect();
+        }
+    });
+
     it('maps raw goal notifications into legacy goal events', async () => {
         const proc = createMockProcess({
             pid: 3002,
@@ -1412,6 +1787,13 @@ describe('CodexAppServerClient sandbox integration', () => {
                                     text: 'patched',
                                     phase: 'final_answer',
                                 },
+                            },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'turn/completed',
+                            params: {
+                                threadId: 'thread-raw-3',
+                                turn: { id: 'turn-raw-3', status: 'completed' },
                             },
                         });
                     }, 0);
@@ -1700,7 +2082,195 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
-    it('falls back to final answer completion when raw turn/completed is missing', async () => {
+    it.each(['raw', 'legacy'] as const)('keeps three FIFO inputs in separate turns until %s terminal events', async (protocol) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const { MessageQueue2 } = await import('../utils/MessageQueue2');
+        const client = new CodexAppServerClient();
+        const events: Array<Record<string, unknown>> = [];
+        client.setEventHandler((event) => events.push(event));
+        await client.connect();
+        await client.startThread({ model: 'gpt-test' });
+        const queue = new MessageQueue2<string>((mode) => mode);
+        queue.push('first', 'same-mode');
+        const results: Array<{ aborted: boolean }> = [];
+        const run = (async () => {
+            for (let index = 0; index < 3; index++) {
+                const input = await queue.waitForMessagesAndGetAsString();
+                if (!input) break;
+                results.push(await client.sendTurnAndWait(input.message));
+            }
+        })();
+
+        try {
+            await waitFor(() => client.turnId === 'turn-old');
+            queue.push('second', 'same-mode');
+            queue.push('third', 'same-mode');
+            for (const [index, turnId] of ['turn-old', 'turn-next', 'turn-third'].entries()) {
+                if (index > 0) {
+                    await waitFor(() => harness.turnStarts().length === index + 1);
+                    harness.push({ id: harness.turnStarts()[index].id, result: { turn: { id: turnId } } });
+                    await waitFor(() => client.turnId === turnId);
+                }
+                // final_answer is an item boundary; Astra may produce another
+                // answer in this same turn before the real terminal arrives.
+                for (let answer = 0; answer < 2; answer++) {
+                    harness.push({
+                        method: 'item/completed',
+                        params: {
+                            threadId: 'thread-abort-barrier', turnId,
+                            item: { id: `answer-${index}-${answer}`, type: 'agentMessage', phase: 'final_answer', text: 'answer' },
+                        },
+                    });
+                }
+                harness.push({
+                    method: 'thread/status/changed',
+                    params: { threadId: 'thread-abort-barrier', status: { type: 'idle' } },
+                });
+                await new Promise((resolve) => setImmediate(resolve));
+                expect(results).toHaveLength(index);
+                expect(harness.turnStarts()).toHaveLength(index + 1);
+                expect(client.turnId).toBe(turnId);
+
+                pushTerminalEvent(harness, protocol, turnId, 'completed');
+                await waitFor(() => results.length === index + 1);
+            }
+            await run;
+            expect(harness.turnStarts().map((request) => request.params.input[0].text)).toEqual(['first', 'second', 'third']);
+            expect(results).toEqual(Array(3).fill({ aborted: false }));
+            expect(events.filter((event) => event.type === 'task_complete')).toHaveLength(3);
+            expect(mockSpawn).toHaveBeenCalledTimes(1);
+        } finally {
+            queue.close();
+            await client.disconnect();
+            await run.catch(() => {});
+        }
+    });
+
+    it.each(['raw', 'legacy'] as const)('ignores foreign and late %s lifecycle events while the next turn starts', async (protocol) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const events: Array<Record<string, unknown>> = [];
+        client.setEventHandler((event) => events.push(event));
+        await client.connect();
+        await client.startThread({ model: 'gpt-test' });
+        const first = client.sendTurnAndWait('first');
+        await waitFor(() => client.turnId === 'turn-old');
+        pushTerminalEvent(harness, protocol, 'turn-old', 'completed');
+        await first;
+
+        let settled = false;
+        const next = client.sendTurnAndWait('next').then((result) => { settled = true; return result; });
+        try {
+            await waitFor(() => harness.turnStarts().length === 2);
+            // An unseen older terminal must not bind to an unacknowledged request.
+            pushTerminalEvent(harness, protocol, 'turn-stale', 'cancelled');
+            harness.push({ id: harness.turnStarts()[1].id, result: { turn: { id: 'turn-next' } } });
+            await waitFor(() => client.turnId === 'turn-next');
+            if (protocol === 'raw') {
+                harness.push({ method: 'turn/started', params: { threadId: 'child-thread', turn: { id: 'child-turn' } } });
+                harness.push({ method: 'turn/completed', params: { threadId: 'child-thread', turn: { id: 'turn-next', status: 'completed' } } });
+            } else {
+                harness.push({ method: 'codex/event', params: { threadId: 'child-thread', msg: { type: 'task_started', turn_id: 'child-turn' } } });
+                harness.push({ method: 'codex/event', params: { threadId: 'child-thread', msg: { type: 'task_complete', turn_id: 'turn-next' } } });
+            }
+            harness.push({ method: 'turn/started', params: { threadId: 'thread-abort-barrier', turn: { id: 'turn-old' } } });
+            pushTerminalEvent(harness, protocol, 'turn-stale-after-ack', 'cancelled');
+            harness.push({ method: 'thread/status/changed', params: { threadId: 'thread-abort-barrier', status: { type: 'idle' } } });
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(settled).toBe(false);
+            expect(client.turnId).toBe('turn-next');
+            expect(events.filter((event) => event.type === 'task_complete' || event.type === 'turn_aborted')).toHaveLength(1);
+            pushTerminalEvent(harness, protocol, 'turn-next', 'completed');
+            await expect(next).resolves.toEqual({ aborted: false });
+        } finally {
+            await client.disconnect();
+        }
+    });
+
+    it.each(['raw', 'legacy'] as const)('preserves a fast %s completion received before turn/start acknowledgement', async (protocol) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({ model: 'gpt-test' });
+        const first = client.sendTurnAndWait('first');
+        await waitFor(() => client.turnId === 'turn-old');
+        pushTerminalEvent(harness, protocol, 'turn-old', 'completed');
+        await first;
+        const next = client.sendTurnAndWait('fast follow-up');
+        try {
+            await waitFor(() => harness.turnStarts().length === 2);
+            pushTerminalEvent(harness, protocol, 'turn-fast', 'completed');
+            harness.push({ id: harness.turnStarts()[1].id, result: { turn: { id: 'turn-fast' } } });
+            await expect(next).resolves.toEqual({ aborted: false });
+            expect(client.turnId).toBeNull();
+        } finally {
+            await client.disconnect();
+        }
+    });
+
+    it.each(['raw', 'legacy'] as const)('settles a waiter acknowledged with a completed ID without duplicating the %s UI event', async (protocol) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const events: Array<Record<string, unknown>> = [];
+        client.setEventHandler((event) => events.push(event));
+        await client.connect();
+        await client.startThread({ model: 'gpt-test' });
+        const first = client.sendTurnAndWait('first');
+        await waitFor(() => client.turnId === 'turn-old');
+        pushTerminalEvent(harness, protocol, 'turn-old', 'completed');
+        await first;
+        const next = client.sendTurnAndWait('acknowledged continuation');
+        try {
+            await waitFor(() => harness.turnStarts().length === 2);
+            harness.push({ id: harness.turnStarts()[1].id, result: { turn: { id: 'turn-old' } } });
+            await waitFor(() => client.turnId === 'turn-old');
+            pushTerminalEvent(harness, protocol, 'turn-old', 'completed');
+            await expect(next).resolves.toEqual({ aborted: false });
+            expect(client.turnId).toBeNull();
+            expect(events.filter((event) => event.type === 'task_complete')).toHaveLength(1);
+        } finally {
+            await client.disconnect();
+        }
+    });
+
+    it.each(['failed', 'interrupted'] as const)('preserves the actual %s outcome after a final answer', async (status) => {
+        const harness = createAbortBarrierHarness();
+        mockSpawn.mockImplementation(() => harness.proc);
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const events: Array<Record<string, unknown>> = [];
+        client.setEventHandler((event) => events.push(event));
+        await client.connect();
+        await client.startThread({ model: 'gpt-test' });
+        const turn = client.sendTurnAndWait('first');
+        try {
+            await waitFor(() => client.turnId === 'turn-old');
+            harness.push({ method: 'item/completed', params: {
+                threadId: 'thread-abort-barrier', turnId: 'turn-old',
+                item: { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'answer' },
+            } });
+            harness.push({ method: 'turn/completed', params: {
+                threadId: 'thread-abort-barrier',
+                turn: { id: 'turn-old', status, error: { message: 'terminal diagnostic' } },
+            } });
+            await expect(turn).resolves.toEqual({ aborted: status === 'interrupted' });
+            expect(events.filter((event) => event.type === 'task_complete' || event.type === 'turn_aborted')).toEqual([
+                expect.objectContaining({ status, error: { message: 'terminal diagnostic' } }),
+            ]);
+        } finally {
+            await client.disconnect();
+        }
+    });
+
+    it('displays a final answer but waits for the actual raw turn completion', async () => {
         const proc = createMockProcess({
             pid: 3002,
             onRequest: (msg, stdout) => {
@@ -1771,7 +2341,27 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'danger-full-access',
         });
 
-        await expect(client.sendTurnAndWait('say hi')).resolves.toEqual({ aborted: false });
+        let settled = false;
+        const turn = client.sendTurnAndWait('say hi').then((result) => {
+            settled = true;
+            return result;
+        });
+        try {
+            await waitFor(() => events.some((event) => event.type === 'agent_message'));
+            expect(settled).toBe(false);
+            expect(client.turnId).toBe('turn-raw-2');
+            expect(events.filter((event) => event.type === 'task_complete')).toHaveLength(0);
+            pushJsonLine(proc.stdout, {
+                method: 'turn/completed',
+                params: {
+                    threadId: 'thread-raw-2',
+                    turn: { id: 'turn-raw-2', status: 'completed' },
+                },
+            });
+            await expect(turn).resolves.toEqual({ aborted: false });
+        } finally {
+            await client.disconnect();
+        }
         expect(events).toEqual(expect.arrayContaining([
             expect.objectContaining({ type: 'task_started', turn_id: 'turn-raw-2' }),
             expect.objectContaining({ type: 'agent_message', message: 'still works' }),
@@ -1779,6 +2369,135 @@ describe('CodexAppServerClient sandbox integration', () => {
         ]));
 
         await client.disconnect();
+    });
+
+    describe('native user input', () => {
+        const question = {
+            threadId: 'thread', turnId: 'turn', itemId: 'item',
+            questions: [{ id: 'q', header: 'Storage', question: 'Where?', isOther: true, isSecret: false, options: [{ label: 'Local', description: 'On disk' }] }],
+        };
+
+        it.each([99, 'question-99'])('waits for an answer and returns it on the original JSON-RPC id %s', async id => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: msg => { requests.push(msg); } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            let resolve!: (response: { answers: Record<string, { answers: string[] }> }) => void;
+            const handler = vi.fn(() => new Promise<{ answers: Record<string, { answers: string[] }> }>(r => { resolve = r; }));
+            client.setUserInputHandler(handler);
+            await client.connect();
+            try {
+                pushJsonLine(proc.stdout, { id, method: 'item/tool/requestUserInput', params: question });
+                await waitFor(() => handler.mock.calls.length === 1);
+                expect(handler).toHaveBeenCalledWith(expect.objectContaining({ ...question, callId: `thread:item:question:${id}` }));
+                expect(requests.some(msg => msg.result?.answers)).toBe(false);
+                resolve({ answers: { q: { answers: ['Local'] } } });
+                await waitFor(() => requests.some(msg => msg.result?.answers));
+                expect(requests).toContainEqual({ jsonrpc: '2.0', id, result: { answers: { q: { answers: ['Local'] } } } });
+            } finally { await client.disconnect(); }
+        });
+
+        it('routes a native request through the Happy card, communication RPC, and back to Codex', async () => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: msg => { requests.push(msg); } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const { CodexUserInputHandler } = await import('./utils/userInputHandler');
+            let state: AgentState = {};
+            let reply!: (data: unknown) => Promise<unknown>;
+            const send = vi.fn();
+            const session = {
+                rpcHandlerManager: { registerHandler: (_: string, handler: typeof reply) => { reply = handler; } },
+                updateAgentState: (update: (current: AgentState) => AgentState) => { state = update(state); },
+                sendSessionProtocolMessage: send,
+            } as unknown as ApiSessionClient;
+            const client = new CodexAppServerClient();
+            client.setUserInputHandler(new CodexUserInputHandler(session).handle);
+            await client.connect();
+            try {
+                pushJsonLine(proc.stdout, { id: 99, method: 'item/tool/requestUserInput', params: question });
+                await waitFor(() => Object.keys(state.communications ?? {}).length === 1);
+                const id = Object.keys(state.communications!)[0];
+                expect(send).toHaveBeenCalledWith(expect.objectContaining({ ev: expect.objectContaining({ t: 'tool-call-start', call: state.communications![id].toolUseId }) }));
+                await reply({ id, kind: 'form', status: 'answered', answers: { q: { options: [], custom: 'Remote storage' } } });
+                await waitFor(() => requests.some(msg => msg.id === 99 && msg.result?.answers));
+                expect(requests).toContainEqual({ jsonrpc: '2.0', id: 99, result: { answers: { q: { answers: ['Remote storage'] } } } });
+                expect(state.completedCommunications?.[id].status).toBe('answered');
+            } finally { await client.disconnect(); }
+        });
+
+        it.each(['resolved', 'completed', 'interrupted', 'disconnected', 'exited'] as const)('cancels %s questions without sending late replies', async action => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: msg => { requests.push(msg); } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            let signal: AbortSignal | undefined;
+            let resolve!: (response: { answers: {} }) => void;
+            client.setUserInputHandler(params => {
+                signal = params.signal;
+                return new Promise(r => { resolve = r; });
+            });
+            await client.connect();
+            try {
+                pushJsonLine(proc.stdout, { id: 99, method: 'item/tool/requestUserInput', params: question });
+                await waitFor(() => !!signal);
+                // A resolution from a different thread must not dismiss this request.
+                pushJsonLine(proc.stdout, { method: 'serverRequest/resolved', params: { threadId: 'other', requestId: 99 } });
+                await new Promise(r => setTimeout(r, 0));
+                expect(signal!.aborted).toBe(false);
+                if (action === 'resolved') pushJsonLine(proc.stdout, { method: 'serverRequest/resolved', params: { threadId: 'thread', requestId: 99 } });
+                if (action === 'completed') pushJsonLine(proc.stdout, { method: 'turn/completed', params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } } });
+                if (action === 'interrupted') await client.interruptTurn();
+                if (action === 'disconnected') await client.disconnect();
+                if (action === 'exited') proc.emit('exit', 1, null);
+                await waitFor(() => signal!.aborted);
+                resolve({ answers: {} });
+                await new Promise(r => setTimeout(r, 0));
+                expect(requests.some(msg => msg.id === 99 && msg.result)).toBe(false);
+            } finally { await client.disconnect(); }
+        });
+
+        it.each([undefined, true, false])('keeps native questions pending without a turn deadline (isBlocking: %s)', async isBlocking => {
+            const requests: MockRpcMessage[] = [];
+            const proc = createMockProcess({ onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if (msg.method === 'turn/start') pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn' } } });
+            } });
+            mockSpawn.mockReturnValue(proc);
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient();
+            const onSettled = vi.fn();
+            let resolve!: (response: { answers: {} }) => void;
+            client.setUserInputHandler(() => new Promise(r => { resolve = r; }));
+            await client.connect();
+            (client as any)._threadId = 'thread';
+            vi.useFakeTimers();
+            try {
+                const turn = client.sendTurnAndWait('hello').then(onSettled);
+                await vi.advanceTimersByTimeAsync(0);
+                pushJsonLine(proc.stdout, { id: 99, method: 'item/tool/requestUserInput', params: { ...question, threadId: 'child', isBlocking } });
+                await vi.advanceTimersByTimeAsync(600_001);
+                expect(onSettled).not.toHaveBeenCalled();
+                expect(requests.some(msg => msg.method === 'turn/interrupt')).toBe(false);
+                expect(requests.some(msg => msg.id === 99 && msg.result)).toBe(false);
+                expect(proc.kill).not.toHaveBeenCalled();
+
+                resolve({ answers: {} });
+                await vi.advanceTimersByTimeAsync(600_001);
+                expect(requests).toContainEqual({ jsonrpc: '2.0', id: 99, result: { answers: {} } });
+                expect(onSettled).not.toHaveBeenCalled();
+                expect(requests.some(msg => msg.method === 'turn/interrupt')).toBe(false);
+                pushJsonLine(proc.stdout, { method: 'turn/completed', params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } } });
+                await turn;
+                expect(onSettled).toHaveBeenCalledExactlyOnceWith({ aborted: false });
+            } finally {
+                await client.disconnect();
+                vi.clearAllTimers();
+                vi.useRealTimers();
+            }
+        });
     });
 
     it('responds to MCP elicitation requests with an action payload', async () => {

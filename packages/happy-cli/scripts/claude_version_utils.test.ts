@@ -16,6 +16,11 @@ import {
   shouldWarnAboutGoalHookJsonValidationRisk,
 } from '../scripts/claude_version_utils.cjs';
 
+const hostPlatform = process.platform;
+afterEach(() => {
+  Object.defineProperty(process, 'platform', { value: hostPlatform, configurable: true });
+});
+
 describe('Claude Version Utils - Cross-Platform Detection', () => {
 
   describe('resolveClaudeEntrypoint', () => {
@@ -248,6 +253,7 @@ describe('Claude Version Utils - Cross-Platform Detection', () => {
     });
 
     it('should handle Unix-style absolute paths', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
       const unixPaths = [
         '/usr/local/bin/claude',
         '/opt/homebrew/bin/claude',
@@ -278,9 +284,11 @@ describe('Claude Version Utils - Cross-Platform Detection', () => {
   });
 
   describe('getVersion', () => {
-    it('falls back to --version for native binaries without adjacent package.json', () => {
-      const testCliPath = `/tmp/test-claude-version-${process.pid}-${Date.now()}`;
-      fs.writeFileSync(testCliPath, '#!/bin/sh\necho "2.1.177 (Claude Code)"\n');
+    it('falls back to --version without adjacent package.json', () => {
+      const testCliPath = path.join(os.tmpdir(), `test-claude-version-${process.pid}-${Date.now()}${hostPlatform === 'win32' ? '.cjs' : ''}`);
+      fs.writeFileSync(testCliPath, hostPlatform === 'win32'
+        ? 'console.log("2.1.177 (Claude Code)");\n'
+        : '#!/bin/sh\necho "2.1.177 (Claude Code)"\n');
       fs.chmodSync(testCliPath, 0o755);
 
       try {
@@ -448,7 +456,7 @@ describe('Claude Version Utils - Cross-Platform Detection', () => {
 });
 
 describe('HAPPY_CLAUDE_PATH env var', () => {
-  const testClaudePath = '/tmp/test-claude-path';
+  const testClaudePath = path.join(os.tmpdir(), `test-claude-path-${process.pid}`);
 
   beforeEach(() => {
     // Create mock executable

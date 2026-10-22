@@ -88,7 +88,9 @@ vi.mock('@/claude/claudeLocal', () => ({
     claudeLocal: vi.fn(),
 }));
 
-import { runClaude } from './runClaude';
+import { claudeLocal } from '@/claude/claudeLocal';
+import { startOfflineReconnection } from '@/utils/serverConnectionErrors';
+import { runClaude, type StartOptions } from './runClaude';
 
 function createDeferred<T>() {
     let resolve!: (value: T | PromiseLike<T>) => void;
@@ -110,9 +112,13 @@ async function expectPromptRejectsFast(promise: Promise<unknown>, pattern: RegEx
 }
 
 async function startRemoteRunClaudeHarness(opts: {
+    startOptions?: StartOptions;
     metadata?: Record<string, unknown>;
     updateAgentState?: ReturnType<typeof vi.fn>;
     registerHandler?: ReturnType<typeof vi.fn>;
+    resetClaudeWorkflows?: ReturnType<typeof vi.fn>;
+    flush?: ReturnType<typeof vi.fn>;
+    close?: ReturnType<typeof vi.fn>;
 } = {}) {
     let metadata = opts.metadata ?? {
         claudeSessionId: 'claude-session-1',
@@ -141,8 +147,9 @@ async function startRemoteRunClaudeHarness(opts: {
             registerHandler,
         },
         sendSessionDeath: vi.fn(),
-        flush: vi.fn(async () => {}),
-        close: vi.fn(async () => {}),
+        resetClaudeWorkflows: opts.resetClaudeWorkflows ?? vi.fn(async () => {}),
+        flush: opts.flush ?? vi.fn(async () => {}),
+        close: opts.close ?? vi.fn(async () => {}),
     };
     const api = {
         getOrCreateMachine: vi.fn(async () => ({})),
@@ -170,6 +177,7 @@ async function startRemoteRunClaudeHarness(opts: {
     } as any, {
         startingMode: 'remote',
         shouldStartDaemon: false,
+        ...opts.startOptions,
     });
 
     await vi.waitFor(() => {
@@ -185,6 +193,9 @@ async function startRemoteRunClaudeHarness(opts: {
     const runtimeSession = { thinking: false, cleanup: vi.fn() };
     loopOptions.onSessionReady(runtimeSession);
     const goalActionHandler = registerHandler.mock.calls.find(([method]) => method === 'goal-action')?.[1];
+    const happyServer = await mockStartHappyServer.mock.results.at(-1)?.value;
+    const hookServer = await mockStartHookServer.mock.results.at(-1)?.value;
+    const remoteScanner = await mockCreateSessionScanner.mock.results.at(-1)?.value;
 
     const finish = async () => {
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -195,12 +206,23 @@ async function startRemoteRunClaudeHarness(opts: {
         exitSpy.mockRestore();
     };
 
+    const finishAfterCleanup = async () => {
+        loopDeferred.resolve(0);
+        await expect(runPromise).resolves.toBeUndefined();
+    };
+
     return {
         api,
         finish,
+        finishAfterCleanup,
         goalActionHandler,
+        happyServer,
+        hookServer,
         loopOptions,
         registerHandler,
+        remoteScanner,
+        resolveLoop: (exitCode: number) => loopDeferred.resolve(exitCode),
+        runPromise,
         runtimeSession,
         scannerOptions,
         sessionClient,
@@ -229,6 +251,26 @@ function emitClaudeGoalStatus(
             condition: event.condition,
         },
     });
+}
+
+function emitClaudeAiTitle(
+    scannerOptions: { onTranscriptEvent: (event: unknown) => void },
+    event: { aiTitle: string; sourceSessionId?: string },
+) {
+    const sourceSessionId = event.sourceSessionId ?? 'claude-session-1';
+    scannerOptions.onTranscriptEvent({
+        type: 'ai_title',
+        aiTitle: event.aiTitle,
+        sourceSessionId,
+        sourceRevision: `${sourceSessionId}:${event.aiTitle}`,
+    });
+}
+
+function summaryMessages(sessionClient: { sendClaudeSessionMessage: { mock: { calls: unknown[][] } } }) {
+    return sessionClient.sendClaudeSessionMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message): message is Record<string, unknown> =>
+            !!message && typeof message === 'object' && (message as Record<string, unknown>).type === 'summary');
 }
 
 describe('runClaude remote JSONL scanner', () => {
@@ -279,6 +321,63 @@ describe('runClaude remote JSONL scanner', () => {
             }
         }
         originalListeners.clear();
+    });
+
+    it('defaults new Claude sessions to full access without choosing a model', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+
+        expect(harness.loopOptions.permissionMode).toBe('bypassPermissions');
+        expect(harness.loopOptions.model).toBeUndefined();
+        expect(harness.api.getOrCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+            metadata: expect.objectContaining({ dangerouslySkipPermissions: true }),
+        }));
+        const onUserMessage = harness.sessionClient.onUserMessage.mock.calls[0][0];
+        await onUserMessage({ content: { text: 'first turn' }, meta: {} });
+        expect(harness.loopOptions.messageQueue.queue[0].mode.permissionMode).toBe('bypassPermissions');
+
+        await harness.finish();
+    });
+
+    it.each([
+        [{ permissionMode: 'default' }, 'default'],
+        [{ claudeArgs: ['--permission-mode', 'plan'] }, 'plan'],
+        [{ permissionMode: 'bypassPermissions', claudeArgs: ['--permission-mode=acceptEdits'] }, 'acceptEdits'],
+        [{ permissionMode: 'default', claudeArgs: ['--dangerously-skip-permissions'] }, 'bypassPermissions'],
+    ] satisfies Array<[StartOptions, string]>)('honors explicit permission choices %j', async (startOptions, expectedMode) => {
+        const harness = await startRemoteRunClaudeHarness({ startOptions });
+
+        expect(harness.loopOptions.permissionMode).toBe(expectedMode);
+        expect(harness.api.getOrCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+            metadata: expect.objectContaining({ dangerouslySkipPermissions: expectedMode === 'bypassPermissions' }),
+        }));
+
+        await harness.finish();
+    });
+
+    it('passes the default bypass flag to local Claude during an offline start', async () => {
+        mockApiClientCreate.mockResolvedValue({
+            getOrCreateMachine: vi.fn(async () => ({})),
+            getOrCreateSession: vi.fn(async () => null),
+        });
+        const cancel = vi.fn();
+        vi.mocked(startOfflineReconnection).mockReturnValueOnce({ cancel } as any);
+        vi.mocked(claudeLocal).mockResolvedValueOnce(null);
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+            throw new Error('process.exit');
+        }) as never);
+
+        try {
+            await expect(runClaude({
+                token: 'token',
+                encryption: { type: 'legacy', secret: new Uint8Array(32) },
+            } as any, { shouldStartDaemon: false })).rejects.toThrow('process.exit');
+            expect(claudeLocal).toHaveBeenCalledWith(expect.objectContaining({
+                claudeArgs: ['--dangerously-skip-permissions'],
+            }));
+            expect(cancel).toHaveBeenCalledOnce();
+        } finally {
+            exitSpy.mockRestore();
+        }
     });
 
     it('does not forward terminal JSONL messages while local mode owns the transcript', async () => {
@@ -522,6 +621,78 @@ describe('runClaude remote JSONL scanner', () => {
         }) as never);
         await expect(runPromise).rejects.toThrow('process.exit');
         exitSpy.mockRestore();
+    });
+
+    it('titles the session from an ai-title transcript event', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+        const agentStateWritesBefore = harness.updateAgentState.mock.calls.length;
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+
+        expect(summaryMessages(harness.sessionClient)).toEqual([
+            { type: 'summary', summary: 'Generated session title', leafUuid: expect.any(String) },
+        ]);
+        // Titling must not disturb goal state.
+        expect(harness.updateAgentState.mock.calls).toHaveLength(agentStateWritesBefore);
+
+        await harness.finish();
+    });
+
+    it('does not overwrite a title the session already has', async () => {
+        const harness = await startRemoteRunClaudeHarness({
+            metadata: {
+                claudeSessionId: 'claude-session-1',
+                slashCommands: ['goal'],
+                summary: { text: 'Human picked title', updatedAt: 1 },
+            },
+        });
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+
+        expect(summaryMessages(harness.sessionClient)).toHaveLength(0);
+
+        await harness.finish();
+    });
+
+    it('ignores ai-title events from a different Claude session', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+
+        emitClaudeAiTitle(harness.scannerOptions, {
+            aiTitle: 'Someone else session title',
+            sourceSessionId: 'other-claude-session',
+        });
+
+        expect(summaryMessages(harness.sessionClient)).toHaveLength(0);
+
+        await harness.finish();
+    });
+
+    it('applies only the first of two ai-title events seen in one scan', async () => {
+        // A cold scan replays every ai-title line in the transcript back to
+        // back, long before the metadata write for the first one lands, so
+        // the "only title an untitled session" rule cannot rely on metadata
+        // alone.
+        const harness = await startRemoteRunClaudeHarness();
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'First title' });
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Second title' });
+
+        expect(summaryMessages(harness.sessionClient)).toEqual([
+            { type: 'summary', summary: 'First title', leafUuid: expect.any(String) },
+        ]);
+
+        await harness.finish();
+    });
+
+    it('applies a repeated ai-title event only once', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+        emitClaudeAiTitle(harness.scannerOptions, { aiTitle: 'Generated session title' });
+
+        expect(summaryMessages(harness.sessionClient)).toHaveLength(1);
+
+        await harness.finish();
     });
 
     it('registers Claude goal-action and queues clear as an isolated command without optimistic state changes', async () => {
@@ -815,21 +986,36 @@ describe('runClaude remote JSONL scanner', () => {
         await harness.finish();
     });
 
-    it('keeps the picked model and effort after an abort resets the other mode defaults', async () => {
+    it('keeps session modes and clears transient overrides after an abort', async () => {
         const harness = await startRemoteRunClaudeHarness();
         const userMessageHandler = harness.sessionClient.onUserMessage.mock.calls[0][0];
 
         await userMessageHandler({
             content: { text: 'first turn' },
-            meta: { model: 'claude-fable-5-20260115', effort: 'high' },
+            meta: {
+                permissionMode: 'bypassPermissions',
+                model: 'claude-fable-5-1[1m]',
+                fallbackModel: 'claude-haiku-4-5',
+                effort: 'max',
+                customSystemPrompt: 'one-turn system prompt',
+                appendSystemPrompt: 'one-turn appended prompt',
+                allowedTools: ['Read'],
+                disallowedTools: ['Bash'],
+            },
         });
         expect(harness.loopOptions.messageQueue.queue[0].mode).toMatchObject({
-            model: 'claude-fable-5-20260115',
-            effort: 'high',
+            permissionMode: 'bypassPermissions',
+            model: 'claude-fable-5-1[1m]',
+            fallbackModel: 'claude-haiku-4-5',
+            effort: 'max',
+            customSystemPrompt: 'one-turn system prompt',
+            appendSystemPrompt: 'one-turn appended prompt',
+            allowedTools: ['Read'],
+            disallowedTools: ['Bash'],
         });
 
-        // Aborting the turn must not silently revert the picker's choice —
-        // the app only sends meta.model/meta.effort when the user changes them.
+        // Mode picks are session state, while prompt and tool overrides apply
+        // only to the interrupted turn.
         harness.loopOptions.onAbort();
 
         await userMessageHandler({
@@ -837,8 +1023,14 @@ describe('runClaude remote JSONL scanner', () => {
             meta: {},
         });
         expect(harness.loopOptions.messageQueue.queue[1].mode).toMatchObject({
-            model: 'claude-fable-5-20260115',
-            effort: 'high',
+            permissionMode: 'bypassPermissions',
+            model: 'claude-fable-5-1[1m]',
+            fallbackModel: 'claude-haiku-4-5',
+            effort: 'max',
+            customSystemPrompt: undefined,
+            appendSystemPrompt: undefined,
+            allowedTools: undefined,
+            disallowedTools: undefined,
         });
 
         await harness.finish();
@@ -862,5 +1054,123 @@ describe('runClaude remote JSONL scanner', () => {
         await expectPromptRejectsFast(handler({ action: 'clear' }), /not ready|thinking/i);
         expect(harness.loopOptions.messageQueue.queue).toEqual([]);
         await harness.finish();
+    });
+    it('awaits one authoritative workflow reset before archive cleanup flushes and closes', async () => {
+        const reset = createDeferred<void>();
+        const resetClaudeWorkflows = vi.fn(() => reset.promise);
+        const flush = vi.fn(async () => {});
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+        const archiveCleanup = mockRegisterKillSessionHandler.mock.calls.at(-1)?.[1];
+        if (!archiveCleanup) throw new Error('archive cleanup handler not registered');
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        const cleanup = archiveCleanup();
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        const duplicateCleanup = archiveCleanup();
+        const runAfterCleanup = harness.finishAfterCleanup();
+        await Promise.resolve();
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledTimes(1);
+        expect(flush).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        expect(exitSpy).not.toHaveBeenCalled();
+
+        reset.resolve();
+        await Promise.all([cleanup, duplicateCleanup, runAfterCleanup]);
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledTimes(1);
+        expect(flush).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(0);
+        expect(resetClaudeWorkflows.mock.invocationCallOrder[0])
+            .toBeLessThan(flush.mock.invocationCallOrder[0]);
+        expect(flush.mock.invocationCallOrder[0])
+            .toBeLessThan(close.mock.invocationCallOrder[0]);
+        expect(close.mock.invocationCallOrder[0])
+            .toBeLessThan(exitSpy.mock.invocationCallOrder[0]);
+
+        exitSpy.mockRestore();
+    });
+
+    it('continues archive cleanup when the authoritative workflow reset fails', async () => {
+        const resetFailure = new Error('workflow reset timed out');
+        const resetClaudeWorkflows = vi.fn(async () => { throw resetFailure; });
+        const flush = vi.fn(async () => {});
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+        const archiveCleanup = mockRegisterKillSessionHandler.mock.calls.at(-1)?.[1];
+        if (!archiveCleanup) throw new Error('archive cleanup handler not registered');
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        await archiveCleanup();
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        expect(flush).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(0);
+
+        exitSpy.mockRestore();
+        await harness.finishAfterCleanup();
+    });
+
+    it('resets workflows before flush and close on normal loop exit', async () => {
+        const resetClaudeWorkflows = vi.fn(async () => {});
+        const flush = vi.fn(async () => {});
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+
+        await harness.finish();
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        expect(resetClaudeWorkflows).toHaveBeenCalledWith({ seal: true });
+        expect(resetClaudeWorkflows.mock.invocationCallOrder[0])
+            .toBeLessThan(flush.mock.invocationCallOrder[0]);
+        expect(flush.mock.invocationCallOrder[0])
+            .toBeLessThan(close.mock.invocationCallOrder[0]);
+    });
+
+    it('keeps normal and archive cleanup single-flight when archive arrives during finalization', async () => {
+        const reset = createDeferred<void>();
+        const blockedFlush = createDeferred<void>();
+        const resetClaudeWorkflows = vi.fn(() => reset.promise);
+        const flush = vi.fn(() => blockedFlush.promise);
+        const close = vi.fn(async () => {});
+        const harness = await startRemoteRunClaudeHarness({ resetClaudeWorkflows, flush, close });
+        const archiveCleanup = mockRegisterKillSessionHandler.mock.calls.at(-1)?.[1];
+        if (!archiveCleanup) throw new Error('archive cleanup handler not registered');
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        harness.resolveLoop(7);
+        await vi.waitFor(() => {
+            expect(resetClaudeWorkflows).toHaveBeenCalled();
+        });
+
+        const archiveDuringReset = archiveCleanup();
+        reset.resolve();
+        await vi.waitFor(() => {
+            expect(flush).toHaveBeenCalled();
+        });
+        const archiveDuringFlush = archiveCleanup();
+        blockedFlush.resolve();
+
+        await Promise.all([harness.runPromise, archiveDuringReset, archiveDuringFlush]);
+
+        expect(resetClaudeWorkflows).toHaveBeenCalledOnce();
+        expect(resetClaudeWorkflows).toHaveBeenCalledWith({ seal: true });
+        expect(flush).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(harness.runtimeSession.cleanup).toHaveBeenCalledOnce();
+        expect(harness.sessionClient.sendSessionDeath).toHaveBeenCalledOnce();
+        expect(harness.api.deactivateSession).toHaveBeenCalledOnce();
+        expect(harness.remoteScanner.cleanup).toHaveBeenCalledOnce();
+        expect(harness.happyServer.stop).toHaveBeenCalledOnce();
+        expect(harness.hookServer.stop).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledOnce();
+        expect(exitSpy).toHaveBeenCalledWith(7);
+        expect(harness.sessionClient.getMetadata()).not.toHaveProperty('lifecycleState');
+
+        exitSpy.mockRestore();
     });
 });

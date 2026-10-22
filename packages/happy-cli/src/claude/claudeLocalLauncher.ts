@@ -4,12 +4,36 @@ import { Session } from "./session";
 import { Future } from "@/utils/future";
 import { createSessionScanner } from "./utils/sessionScanner";
 import { launchFailureMessage } from "./utils/launchFailureMessage";
+import { createClaudeAiTitleApplier } from "./claudeAiTitle";
+import { randomUUID } from "node:crypto";
 
 export type LauncherResult = { type: 'switch' } | { type: 'exit', code: number };
 
 export async function claudeLocalLauncher(session: Session): Promise<LauncherResult> {
+    const resetClaudeWorkflowsBestEffort = () => {
+        void session.client.resetClaudeWorkflows().catch((error) => {
+            logger.debug('[local]: failed to reset Claude workflows', error);
+        });
+    };
 
     let scannerMessageChain = Promise.resolve();
+
+    // Claude Code titles the conversation itself via an `ai-title` transcript
+    // line. Adopt it only when the session has no title yet — an explicit
+    // change_title always wins.
+    const applyClaudeAiTitle = createClaudeAiTitleApplier({
+        getClaudeSessionId: () => session.client.getMetadata()?.claudeSessionId ?? null,
+        getCurrentTitle: () => session.client.getMetadata()?.summary?.text ?? null,
+        applyTitle: (title) => {
+            // Same persistence path as the change_title MCP tool: the
+            // synthetic summary's side effect writes metadata.summary.
+            session.client.sendClaudeSessionMessage({
+                type: 'summary',
+                summary: title,
+                leafUuid: randomUUID(),
+            });
+        },
+    });
 
     // Create scanner
     const scanner = await createSessionScanner({
@@ -25,6 +49,11 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
                         logger.debug('[local]: failed to send Claude transcript message', error);
                     }
                 });
+            }
+        },
+        onTranscriptEvent: (event) => {
+            if (event.type === 'ai_title') {
+                applyClaudeAiTitle(event);
             }
         }
     });
@@ -109,6 +138,7 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
 
             // Launch
             logger.debug('[local]: launch');
+            resetClaudeWorkflowsBestEffort();
             try {
                 await claudeLocal({
                     path: session.path,
@@ -162,21 +192,28 @@ export async function claudeLocalLauncher(session: Session): Promise<LauncherRes
             logger.debug('[local]: launch done');
         }
     } finally {
+        try {
+            resetClaudeWorkflowsBestEffort();
+        } finally {
+            // Resolve future
+            exutFuture.resolve(undefined);
 
-        // Resolve future
-        exutFuture.resolve(undefined);
+            // Set handlers to no-op
+            session.client.rpcHandlerManager.registerHandler('abort', async () => { });
+            session.client.rpcHandlerManager.registerHandler('switch', async () => { });
+            session.queue.setOnMessage(null);
 
-        // Set handlers to no-op
-        session.client.rpcHandlerManager.registerHandler('abort', async () => { });
-        session.client.rpcHandlerManager.registerHandler('switch', async () => { });
-        session.queue.setOnMessage(null);
-        
-        // Remove session found callback
-        session.removeSessionFoundCallback(scannerSessionCallback);
+            // Remove session found callback
+            session.removeSessionFoundCallback(scannerSessionCallback);
 
-        // Cleanup
-        await scanner.cleanup();
-        await scannerMessageChain;
+            // Cleanup
+            try {
+                await scanner.cleanup();
+            } finally {
+                await scannerMessageChain;
+                resetClaudeWorkflowsBestEffort();
+            }
+        }
     }
 
     // Return

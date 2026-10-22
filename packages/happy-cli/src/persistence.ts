@@ -441,7 +441,7 @@ type SessionsFile = {
   sessions: Record<string, PersistedSession>;
 };
 
-const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+export const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** Last time this session was known to be running (older records: when it started). */
 function lastAliveAt(session: PersistedSession): number {

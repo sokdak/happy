@@ -1,9 +1,11 @@
+import { resolveCodexModel } from './codexModel';
 import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
 import { CodexAppServerClient } from './codexAppServerClient';
 import type { ReasoningEffort } from './codexAppServerTypes';
 import { CodexPermissionHandler } from './utils/permissionHandler';
+import { CodexUserInputHandler } from './utils/userInputHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
 import { randomUUID } from 'node:crypto';
@@ -48,6 +50,7 @@ import {
 } from './codexPrompt';
 import { discoverCodexSkillCommands } from './codexSkills';
 import { CodexRemoteModeState } from './remoteModeState';
+import { CodexTurnSteering } from './codexTurnSteering';
 import {
     codexGoalActionCapabilities,
     mapCodexGoalEventToAgentGoalStatus,
@@ -81,15 +84,10 @@ function hasCodexSubagentReference(message: Record<string, unknown>): boolean {
     return false;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol';
 const DEFAULT_CODEX_EFFORT: ReasoningEffort = 'medium';
-// Codex's app-server protocol requires a concrete approval policy and sandbox
-// on every turn, so unlike Claude there is no "send nothing" here. This is the
-// closest honest equivalent: `auto` is Codex's own shipped default preset
-// (on-request approvals inside the workspace sandbox), so leaving the picker on
-// Default lands where plain `codex` would. It used to be 'yolo', which quietly
-// gave full access to anyone who never touched the picker.
-const DEFAULT_CODEX_PERMISSION_MODE: PermissionMode = 'auto';
+// Keep this fork's Yolo default for new CLI sessions. Explicit launch options
+// and later permission changes still take precedence.
+const DEFAULT_CODEX_PERMISSION_MODE: PermissionMode = 'yolo';
 
 /**
  * Main entry point for the codex command with ink UI
@@ -208,6 +206,7 @@ export async function runCodex(opts: {
     // Permission handler declared here so it can be updated in onSessionSwap callback
     // (assigned later at line ~385 after client setup)
     let permissionHandler: CodexPermissionHandler;
+    let userInputHandler: CodexUserInputHandler;
     let client!: CodexAppServerClient;
     let reasoningProcessor!: ReasoningProcessor;
     let abortInProgress: Promise<void> | null = null;
@@ -223,6 +222,7 @@ export async function runCodex(opts: {
             if (permissionHandler) {
                 permissionHandler.updateSession(newSession);
             }
+            userInputHandler?.updateSession(newSession);
         }
     });
     session = initialSession;
@@ -260,6 +260,31 @@ export async function runCodex(opts: {
     }
 
     const messageQueue = new MessageQueue2<EnhancedMode>(hashCodexEnhancedMode);
+    const turnSteering = new CodexTurnSteering({
+        enqueue: message => {
+            const result = enqueueCodexUserText({
+                text: message.message,
+                mode: message.mode,
+                queue: messageQueue,
+                attachments: message.attachments,
+            });
+            if (result === 'clear') logger.debug('[Codex] /clear command pushed to isolated queue');
+        },
+        hasQueuedMessages: () => messageQueue.size() > 0,
+        steer: async (message, target) => {
+            const images = await prepareCodexImageInputItems(message.attachments, { sessionId: session.sessionId });
+            if (message.attachments?.length && images.inputItems.length === 0 && !message.message.trim()) {
+                session.sendSessionEvent({ type: 'message', message: 'No supported images were available to send to Codex.' });
+                return true;
+            }
+            const accepted = await client.steerTurn(message.message, target, images.inputItems);
+            if (accepted && message.message.trim()) messageBuffer.addMessage(message.message, 'user');
+            return accepted;
+        },
+        onError: error => logger.debug('[Codex] Could not steer active turn; preserving input in queue', {
+            errorName: error instanceof Error ? error.name : typeof error,
+        }),
+    });
 
     session.onFileEvent((fileEvent) => {
         const ev = fileEvent.content.data.ev;
@@ -274,7 +299,7 @@ export async function runCodex(opts: {
     // Use shared PermissionMode type from api/types for cross-agent compatibility
     const remoteModeState = new CodexRemoteModeState({
         permissionMode: initialPermissionMode,
-        model: opts.model ?? DEFAULT_CODEX_MODEL,
+        model: resolveCodexModel(opts.model),
         effort: opts.effort ?? DEFAULT_CODEX_EFFORT,
     });
     let currentAppendSystemPrompt: string | undefined = undefined;
@@ -333,15 +358,11 @@ export async function runCodex(opts: {
             appendSystemPrompt: messageAppendSystemPrompt,
             effort: modeResolution.effort,
         };
-        const enqueueResult = enqueueCodexUserText({
-            text: message.content.text,
+        turnSteering.submit({
+            message: message.content.text,
             mode: enhancedMode,
-            queue: messageQueue,
             attachments: attachmentsForThisMessage,
         });
-        if (enqueueResult === 'clear') {
-            logger.debug('[Codex] /clear command pushed to isolated queue');
-        }
     }, (error) => {
         logger.warn('[Codex] Failed to handle user message', {
             errorName: error instanceof Error ? error.name : typeof error,
@@ -514,7 +535,7 @@ export async function runCodex(opts: {
     // Register abort handler
     session.rpcHandlerManager.registerHandler('abort', handleAbort);
 
-    registerKillSessionHandler(session.rpcHandlerManager, handleKillSession);
+    registerKillSessionHandler(session, handleKillSession);
 
     //
     // Initialize Ink UI
@@ -560,6 +581,9 @@ export async function runCodex(opts: {
     // process that died while a tool prompt was open — see the matching
     // call in claudeRemoteLauncher for the full rationale.
     permissionHandler.reset('Previous CLI process exited before responding');
+    userInputHandler = new CodexUserInputHandler(session, () => currentTurnId);
+    userInputHandler.reset();
+    client.setUserInputHandler(userInputHandler.handle);
     reasoningProcessor = new ReasoningProcessor((message) => {
         const mapped = mapCodexProcessorMessageToSessionEnvelopes(message, { currentTurnId });
         currentTurnId = mapped.currentTurnId;
@@ -998,13 +1022,14 @@ export async function runCodex(opts: {
                     includeTitleInstruction: first,
                 });
 
-                const result = await client.sendTurnAndWait(turnPrompt, {
+                const result = await turnSteering.runTurn(message.mode, onTurnStarted => client.sendTurnAndWait(turnPrompt, {
                     model: message.mode.model,
                     approvalPolicy: executionPolicy.approvalPolicy,
                     sandbox: executionPolicy.sandbox,
                     effort: message.mode.effort,
                     extraInputItems: imageInputs.inputItems,
-                });
+                    onTurnStarted,
+                }));
                 first = false;
                 if (includeAppendSystemPrompt) {
                     appendSystemPromptInjected = true;
@@ -1041,6 +1066,7 @@ export async function runCodex(opts: {
     } finally {
         // Clean up resources when main loop exits
         logger.debug('[codex]: Final cleanup start');
+        userInputHandler.reset();
         logActiveHandles('cleanup-start');
 
         // Cancel offline reconnection if still running

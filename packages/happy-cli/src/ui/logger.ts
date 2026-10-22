@@ -11,6 +11,7 @@ import { inspect } from 'node:util'
 import { configuration } from '@/configuration'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { pruneOldLogs } from './logRetention'
 // Note: readDaemonState is imported lazily inside listDaemonLogFiles() to avoid
 // circular dependency: logger.ts ↔ persistence.ts
 
@@ -57,6 +58,17 @@ class Logger {
       && process.env.HAPPY_SERVER_URL) {
       this.dangerouslyUnencryptedServerLoggingUrl = process.env.HAPPY_SERVER_URL
       console.log(chalk.yellow('[REMOTE LOGGING] Sending logs to server for AI debugging'))
+    }
+
+    // Every start opens a new file and, until now, nothing closed the loop:
+    // a daemon left running for three months left 204k files behind. Prune in
+    // the background - nothing downstream waits on it, and a failure here must
+    // not keep the CLI from starting.
+    //
+    // Skipped under vitest: the module-level `new Logger()` below would
+    // otherwise make a test run delete the developer's own logs.
+    if (!process.env.VITEST) {
+      void pruneOldLogs(configuration.logsDir, basename(this.logFilePath)).catch(() => { })
     }
   }
 
