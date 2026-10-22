@@ -29,11 +29,10 @@ export type AgentDefaultConfig = {
 };
 
 const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
-    // Auto is the reviewed everyday mode for both shipped code agents. The
-    // old CLI fallback is applied only when a machine version is known below;
-    // a user override is kept separate and is never rewritten here.
-    claude: { permissionMode: 'auto', modelMode: 'claude-opus-5-5', effortLevel: 'medium' },
-    codex: { permissionMode: 'auto', modelMode: 'gpt-6.1-sol', effortLevel: 'medium' },
+    // This fork defaults both code agents to Yolo. Explicit user overrides
+    // remain separate; model defaults keep upstream CLI compatibility gates.
+    claude: { permissionMode: 'bypassPermissions', modelMode: 'claude-opus-5-5', effortLevel: 'medium' },
+    codex: { permissionMode: 'yolo', modelMode: 'gpt-6.1-sol', effortLevel: 'medium' },
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },
     agy: { permissionMode: 'default', modelMode: 'Gemini 3.8 Flash', effortLevel: 'medium' },
@@ -136,6 +135,7 @@ export function retirePermissionMode<T extends string | null | undefined>(mode: 
  * it as a saved row instead (includeConfiguredModel).
  */
 const RETIRED_CLAUDE_MODEL_MODES: Record<string, string> = {
+    'claude-fable-5-1[1m]': 'claude-fable-5-1',
     'claude-opus-5-5[1m]': 'claude-opus-5-5',
     'claude-opus-5[1m]': 'claude-opus-5',
     'claude-sonnet-5-5[1m]': 'claude-sonnet-5-5',

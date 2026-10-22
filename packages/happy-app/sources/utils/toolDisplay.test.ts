@@ -160,6 +160,15 @@ describe('terminal tool display helpers', () => {
         expect(shouldUseCompactToolRow(pendingPlan, true)).toBe(true);
     });
 
+    it('uses the localized launch title for compact Workflow activity', () => {
+        const workflow = tool('Workflow', {
+            script: 'export default workflow({ phases: [{ name: "build" }] })',
+        });
+        workflow.description = 'Launch the full build workflow';
+
+        expect(getToolActivityLabel(workflow)).toBe('workflows.toolTitle');
+    });
+
     it.each(['Running CodexBash', 'Running Codex Bash', 'Checking the git status'])('prefers the actual command over %s', description => {
         expect(getToolActivityLabel({ ...tool('CodexBash', { command: 'git status' }), description })).toBe('git status');
     });

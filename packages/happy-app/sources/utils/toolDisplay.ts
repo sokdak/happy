@@ -220,6 +220,10 @@ export function getToolSummaryDetail(tool: Pick<ToolCall, 'name' | 'input' | 'de
  * command/path, then fall back to a localized action and its detail.
  */
 export function getToolActivityLabel(tool: Pick<ToolCall, 'name' | 'title' | 'input' | 'description'>): string {
+    if (tool.name === 'Workflow') {
+        return t('workflows.toolTitle');
+    }
+
     // The command is the primary information, even when a provider supplies a
     // purpose or a boilerplate description such as "Running CodexBash".
     const command = getTerminalToolCommand(tool);

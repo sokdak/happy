@@ -200,6 +200,7 @@ describe('modelModeOptions', () => {
     });
 
     it.each([
+        ['claude-fable-5-1[1m]', 'claude-fable-5-1'],
         ['claude-opus-5-5[1m]', 'claude-opus-5-5'],
         ['claude-opus-5[1m]', 'claude-opus-5'],
         ['claude-sonnet-5-5[1m]', 'claude-sonnet-5-5'],
@@ -248,11 +249,11 @@ describe('modelModeOptions', () => {
     });
 
     it('uses code defaults for agent defaults', () => {
-        expect(getDefaultPermissionModeKey('claude')).toBe('auto');
+        expect(getDefaultPermissionModeKey('claude')).toBe('bypassPermissions');
         expect(getDefaultModelKey('claude')).toBe('claude-opus-5');
         expect(getDefaultModelKey('claude', '1.2.6-beta.0')).toBe('claude-opus-5-5');
         expect(getDefaultEffortKey('claude')).toBe('medium');
-        expect(getDefaultPermissionModeKey('codex')).toBe('auto');
+        expect(getDefaultPermissionModeKey('codex')).toBe('yolo');
         expect(getDefaultModelKey('codex')).toBe('gpt-6.1-sol');
         expect(getDefaultEffortKey('codex')).toBe('medium');
         expect(getDefaultPermissionModeKey('agy')).toBe('default');

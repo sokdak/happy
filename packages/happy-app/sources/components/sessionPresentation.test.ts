@@ -111,7 +111,11 @@ vi.mock('@/utils/sessionUtils', () => ({
     formatOSPlatform: () => '', formatPathRelativeToHome: (path: string) => path,
     getResumeCommand: () => null,
 }));
-vi.mock('@/text', () => ({ t: (key: string, params?: { count: number }) => params ? `${params.count} changed files` : key }));
+vi.mock('@/text', () => ({
+    t: (key: string, params?: { count: number }) => params
+        ? key === 'files.changedFiles' ? `${params.count} changed files` : `${key}:${params.count}`
+        : key,
+}));
 vi.mock('@/components/Item', async () => {
     const ReactModule = await import('react');
     return { Item: (props: any) => ReactModule.createElement('Item', props, props.rightElement) };
@@ -132,6 +136,7 @@ vi.mock('@/hooks/useWorktreeCleanup', () => ({ maybeCleanupWorktree: vi.fn() }))
 vi.mock('@/hooks/useHappyAction', () => ({ useHappyAction: (action: unknown) => [false, action] }));
 vi.mock('@/hooks/useSessionQuickActions', () => ({ useSessionQuickActions: () => ({}) }));
 vi.mock('@/hooks/useProjectWorktree', () => ({ useWorktreeTabSuccessor: () => null }));
+vi.mock('@/hooks/useNavigateToSession', () => ({ navigateToSession: vi.fn() }));
 vi.mock('@/utils/copySessionMetadataToClipboard', () => ({
     copySessionMetadataToClipboard: vi.fn(), copySessionMetadataAndLogsToClipboard: vi.fn(),
 }));
@@ -213,6 +218,27 @@ describe('chat header', () => {
 });
 
 describe('session details', () => {
+    it.each([0, 2])('keeps the workflow monitor reachable with %s running workflows', (count) => {
+        state.session = {
+            id: 'session-id', createdAt: 1, updatedAt: 1, seq: 1,
+            metadata: { path: '/repo', host: 'machine' },
+            agentState: {
+                activeWorkflows: Object.fromEntries(Array.from({ length: count }, (_, index) => [
+                    `task-${index}`,
+                    { taskId: `task-${index}`, name: 'Build', startedAt: 1, updatedAt: 1, phases: [] },
+                ])),
+            },
+        } as unknown as Session;
+        const renderer = render(React.createElement(SessionInfo));
+        const monitor = renderer.root.findAllByType('Item')
+            .find((item: any) => item.props.title === 'workflows.rowTitle');
+
+        expect(monitor).toBeDefined();
+        expect(monitor!.props.detail).toBe(count > 0 ? `workflows.workflowCount:${count}` : undefined);
+        act(() => monitor!.props.onPress());
+        expect(state.push).toHaveBeenCalledWith('/session/session-id/workflows');
+    });
+
     it('puts Changes and Happy Agent stats first, without the duplicate title/status card', () => {
         state.session = {
             id: 'session-id', createdAt: 1, updatedAt: 1, seq: 1,
