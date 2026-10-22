@@ -64,6 +64,8 @@ import { UserProfile } from './friendTypes';
 import { resolveControlHandoffDirection } from './controlHandoff';
 import { resolveMessageDeliveryMeta, resolveMessageModeMeta, UnsupportedPermissionModeError } from './messageMeta';
 import type { AttachmentPreview, UploadedAttachment } from './attachmentTypes';
+import { shouldRefreshOnWebFocusTransition, type WebFocusState } from './webFocusRefresh';
+import { resolveExistingViewingSessionId, stopDeletedSessionWork } from './sessionSyncLifecycle';
 import { requestAttachmentUpload, uploadEncryptedBlob } from './apiAttachments';
 import { encryptBlob } from '@/encryption/blob';
 import { readFileBytes } from '@/utils/readFileBytes';
@@ -197,6 +199,7 @@ class Sync {
     private activityAccumulator: ActivityUpdateAccumulator;
     private pendingSettings: Partial<Settings> = loadPendingSettings();
     private appState: AppStateStatus = AppState.currentState;
+    private webFocusState: WebFocusState = getCurrentAppState();
     private backgroundSendTimeout: ReturnType<typeof setTimeout> | null = null;
     private backgroundSendNotificationId: string | null = null;
     private backgroundSendStartedAt: number | null = null;
@@ -234,7 +237,11 @@ class Sync {
             // Web/desktop: visibilitychange/focus listeners below drive this same path
             // by updating this.appState too — re-derive via getCurrentAppState() so
             // the wire value matches what the server uses for suppression.
-            apiSocket.sendAppState(getCurrentAppState());
+            const currentAppState = getCurrentAppState();
+            apiSocket.sendAppState(currentAppState);
+            if (Platform.OS === 'web') {
+                this.handleWebFocusState(currentAppState);
+            }
 
             if (nextAppState === 'active') {
                 const shouldFailAfterResume = this.backgroundSendStartedAt !== null
@@ -268,9 +275,8 @@ class Sync {
                 // fresh SessionView mount). getMessagesSync does a bounded forward sync;
                 // if the socket hasn't reconnected yet, InvalidateSync's backoff retries
                 // until it has.
-                const resumeViewingSessionId = storage.getState().currentViewingSessionId;
-                if (resumeViewingSessionId) {
-                    this.onSessionVisible(resumeViewingSessionId);
+                if (Platform.OS !== 'web') {
+                    this.refreshViewingSession();
                 }
             } else {
                 log.log(`📱 App state changed to: ${nextAppState}`);
@@ -284,7 +290,10 @@ class Sync {
         // the user is actually looking at this client.
         if (Platform.OS === 'web' && typeof document !== 'undefined') {
             const broadcast = () => {
-                apiSocket.sendAppState(getCurrentAppState());
+                const currentAppState = getCurrentAppState();
+                this.appState = currentAppState;
+                apiSocket.sendAppState(currentAppState);
+                this.handleWebFocusState(currentAppState);
             };
             document.addEventListener('visibilitychange', broadcast);
             window.addEventListener('focus', broadcast);
@@ -383,6 +392,24 @@ class Sync {
         }
     }
 
+    /** Refresh only while the viewed session still exists in the store. */
+    private refreshViewingSession = () => {
+        const state = storage.getState();
+        const sessionId = resolveExistingViewingSessionId(state);
+        if (!sessionId) {
+            return;
+        }
+        this.onSessionVisible(sessionId);
+    }
+
+    private handleWebFocusState(nextState: WebFocusState) {
+        const shouldRefresh = shouldRefreshOnWebFocusTransition(this.webFocusState, nextState);
+        this.webFocusState = nextState;
+        if (shouldRefresh) {
+            this.refreshViewingSession();
+        }
+    }
+
     private refreshSessionData = (sessionId: string) => {
         this.getMessagesSync(sessionId).invalidate();
 
@@ -423,6 +450,7 @@ class Sync {
                 return false;
             }
             await this.fetchInitialLatestPage(sessionId, encryption, signal);
+            this.assertSessionFetchActive(sessionId, encryption, signal);
             storage.getState().applyMessagesLoaded(sessionId);
             return true;
         });
@@ -1302,11 +1330,14 @@ class Sync {
                 let decrypted = await this.encryption.decryptEncryptionKey(session.dataEncryptionKey);
                 if (!decrypted) {
                     console.error(`Failed to decrypt data encryption key for session ${session.id}`);
+                    this.sessionDataKeys.delete(session.id);
                     continue;
                 }
                 sessionKeys.set(session.id, decrypted);
+                this.sessionDataKeys.set(session.id, new Uint8Array(decrypted));
             } else {
                 sessionKeys.set(session.id, null);
+                this.sessionDataKeys.delete(session.id);
             }
         }
         await this.encryption.initializeSessions(sessionKeys);
@@ -1391,6 +1422,15 @@ class Sync {
 
     public refreshSessions = async () => {
         return this.sessionsSync.invalidateAndAwait();
+    }
+
+    public getSessionDataKey(sessionId: string): Uint8Array | undefined {
+        const dataKey = this.sessionDataKeys.get(sessionId);
+        return dataKey ? new Uint8Array(dataKey) : undefined;
+    }
+
+    public clearSessionDataKeys(): void {
+        this.sessionDataKeys.clear();
     }
 
     public getCredentials() {
@@ -2240,10 +2280,17 @@ class Sync {
                 this.getMessagesSync(sessionId).invalidate();
             }
         } catch (error) {
-            this.maybeStartBackgroundSendWatchdog();
-            throw error;
+            // Session deletion and the background-send watchdog deliberately
+            // abort an in-flight POST. Treat that as settled work; stop() on the
+            // owning InvalidateSync prevents another retry for a deleted session.
+            if (!controller.signal.aborted) {
+                this.maybeStartBackgroundSendWatchdog();
+                throw error;
+            }
         } finally {
-            this.sendAbortControllers.delete(sessionId);
+            if (this.sendAbortControllers.get(sessionId) === controller) {
+                this.sendAbortControllers.delete(sessionId);
+            }
         }
 
         if (pending.length === 0) {
@@ -2301,6 +2348,7 @@ class Sync {
                 await this.fetchForwardSince(sessionId, encryption, knownLastSeq);
             }
 
+            this.assertSessionFetchActive(sessionId, encryption);
             storage.getState().applyMessagesLoaded(sessionId);
             log.log(`💬 fetchMessages completed for session ${sessionId}`);
 
@@ -2366,6 +2414,7 @@ class Sync {
         encryption: ReturnType<Encryption['getSessionEncryption']> & {},
         preloadSignal?: AbortSignal,
     ) => {
+        this.assertSessionFetchActive(sessionId, encryption, preloadSignal);
         const response = await apiSocket.request(
             `/v3/sessions/${sessionId}/messages?before_seq=${SEQ_BACKWARD_INITIAL_SENTINEL}&limit=100`,
             { signal: preloadSignal },
@@ -2377,6 +2426,7 @@ class Sync {
         const messages = Array.isArray(data.messages) ? data.messages : [];
 
         await this.applyFetchedMessages(sessionId, encryption, messages, preloadSignal);
+        this.assertSessionFetchActive(sessionId, encryption, preloadSignal);
 
         // Anchor both ends so future incremental forward sync resumes from
         // maxSeq, and loadOlderMessages can page backward from minSeq.
@@ -2404,6 +2454,7 @@ class Sync {
     ) => {
         let afterSeq = fromSeq;
         while (true) {
+            this.assertSessionFetchActive(sessionId, encryption);
             const response = await apiSocket.request(`/v3/sessions/${sessionId}/messages?after_seq=${afterSeq}&limit=100`);
             if (!response.ok) {
                 throw new Error(`Failed to forward-sync ${sessionId}: ${response.status}`);
@@ -2412,6 +2463,7 @@ class Sync {
             const messages = Array.isArray(data.messages) ? data.messages : [];
 
             await this.applyFetchedMessages(sessionId, encryption, messages);
+            this.assertSessionFetchActive(sessionId, encryption);
 
             let maxSeq = afterSeq;
             for (const message of messages) {
@@ -2428,22 +2480,30 @@ class Sync {
         }
     }
 
+    private assertSessionFetchActive = (
+        sessionId: string,
+        encryption: ReturnType<Encryption['getSessionEncryption']> & {},
+        preloadSignal?: AbortSignal,
+    ) => {
+        // stop() prevents retries but cannot cancel a GET or decryption already
+        // in progress. Check every fetch, including empty pages, before it can
+        // restore deleted messages/cursors or apply a previous session key.
+        if (preloadSignal?.aborted || !storage.getState().sessions[sessionId]
+            || this.encryption.getSessionEncryption(sessionId) !== encryption) {
+            throw new Error(preloadSignal ? 'Session preload cancelled' : 'Session message sync cancelled');
+        }
+    }
+
     private applyFetchedMessages = async (
         sessionId: string,
         encryption: ReturnType<Encryption['getSessionEncryption']> & {},
         messages: ApiMessage[],
         preloadSignal?: AbortSignal,
     ) => {
-        const assertPreloadActive = () => {
-            if (preloadSignal && (preloadSignal.aborted || !storage.getState().sessions[sessionId]
-                || this.encryption.getSessionEncryption(sessionId) !== encryption)) {
-                throw new Error('Session preload cancelled');
-            }
-        };
-        assertPreloadActive();
+        this.assertSessionFetchActive(sessionId, encryption, preloadSignal);
         if (messages.length === 0) return;
         const decryptedMessages = await encryption.decryptMessages(messages);
-        assertPreloadActive();
+        this.assertSessionFetchActive(sessionId, encryption, preloadSignal);
         const normalizedMessages: NormalizedMessage[] = [];
         for (let i = 0; i < decryptedMessages.length; i++) {
             const decrypted = decryptedMessages[i];
@@ -2471,6 +2531,7 @@ class Sync {
      * automatically continue on true and rest on false.
      */
     loadOlderMessages = async (sessionId: string): Promise<boolean> => {
+        if (!storage.getState().sessions[sessionId]) return false;
         const oldestSeq = this.sessionOldestSeq.get(sessionId);
         if (oldestSeq === undefined || oldestSeq <= 1) {
             return false;
@@ -2484,6 +2545,7 @@ class Sync {
         const lock = this.getSessionMessageLock(sessionId);
         try {
             return await lock.inLock(async () => {
+                if (!storage.getState().sessions[sessionId]) return false;
                 const encryption = this.encryption.getSessionEncryption(sessionId);
                 if (!encryption) {
                     // Thrown, as fetchMessages does: a silent no-op leaves
@@ -2508,6 +2570,7 @@ class Sync {
                 const messages = Array.isArray(data.messages) ? data.messages : [];
 
                 await this.applyFetchedMessages(sessionId, encryption, messages);
+                this.assertSessionFetchActive(sessionId, encryption);
 
                 let minSeq = beforeSeq;
                 for (const message of messages) {
@@ -2577,10 +2640,7 @@ class Sync {
             // changes", but realtimeStatus tracks the voice session, not this data
             // socket — see useSocketStatus vs useRealtimeStatus — so that trigger
             // never fired on reconnect.)
-            const reconnectViewingSessionId = storage.getState().currentViewingSessionId;
-            if (reconnectViewingSessionId) {
-                this.onSessionVisible(reconnectViewingSessionId);
-            }
+            this.refreshViewingSession();
             for (const sync of this.sendSync.values()) {
                 sync.invalidate();
             }
@@ -2698,11 +2758,22 @@ class Sync {
             const sessionId = updateData.body.sid;
             this.sessionAvatars.cancel(sessionId);
 
+            // Stop retry loops before removing their session/encryption state.
+            // Dropping only the map entries leaves the InvalidateSync instances
+            // alive, and an in-flight outbox POST must also be aborted explicitly.
+            stopDeletedSessionWork(sessionId, {
+                messagesSync: this.messagesSync,
+                sendSync: this.sendSync,
+                sendAbortControllers: this.sendAbortControllers,
+                pendingOutbox: this.pendingOutbox,
+            });
+
             // Remove session from storage
             storage.getState().deleteSession(sessionId);
 
             // Remove encryption keys from memory
             this.encryption.removeSessionEncryption(sessionId);
+            this.sessionDataKeys.delete(sessionId);
 
             // Clear any cached git status
             gitStatusSync.clearForSession(sessionId);
@@ -2710,9 +2781,6 @@ class Sync {
             this.historyPrefetchSessions.delete(sessionId);
             this.olderMessagesPrefetchAttempts.delete(sessionId);
             this.preloadedPlanModes.delete(sessionId);
-            this.messagesSync.delete(sessionId);
-            this.sendSync.delete(sessionId);
-            this.pendingOutbox.delete(sessionId);
             this.sessionLastSeq.delete(sessionId);
             this.sessionOldestSeq.delete(sessionId);
             this.sessionMessageLocks.delete(sessionId);

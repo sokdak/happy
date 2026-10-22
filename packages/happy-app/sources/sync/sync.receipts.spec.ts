@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { createReducer, reducer, registerUserMessageServerIds } from './reducer/reducer';
-import { messageSortKey } from './typesMessage';
+import { mergeMessagesInto } from './messageList';
 import { normalizeRawMessage, type NormalizedMessage } from './typesRaw';
 
 const HOLD = { holdUserMessagesUntilAccepted: true };
@@ -25,7 +25,7 @@ function transport(state: ReturnType<typeof createReducer>) {
     const parsed = source('./sync.ts');
     const klass = parsed.statements.find((node): node is ts.ClassDeclaration =>
         ts.isClassDeclaration(node) && node.name?.text === 'Sync')!;
-    const names = ['flushOutbox', 'fetchForwardSince', 'applyFetchedMessages'];
+    const names = ['flushOutbox', 'fetchForwardSince', 'assertSessionFetchActive', 'applyFetchedMessages'];
     const methods = klass.members
         .filter((member) => member.name && names.includes(member.name.getText(parsed)))
         .map((member) => member.getText(parsed)).join('\n');
@@ -60,6 +60,7 @@ function transport(state: ReturnType<typeof createReducer>) {
         },
     };
     const storage = { getState: () => ({
+        sessions: { session: { id: 'session' } },
         applyUserMessageServerIds: (_sid: string, pairs: { serverId: string; localId: string }[]) => registerUserMessageServerIds(state, pairs),
     }) };
     const javascript = ts.transpile(`class Sync { ${methods} }; return Sync;`, { target: ts.ScriptTarget.ES2022 });
@@ -67,7 +68,9 @@ function transport(state: ReturnType<typeof createReducer>) {
         apiSocket, storage, normalizeRawMessage, { log() {} },
     );
     const sync = new Harness();
+    const encryption = { decryptMessages: async (messages: unknown[]) => messages };
     Object.assign(sync, {
+        encryption: { getSessionEncryption: () => encryption },
         sessionLastSeq: new Map([['session', 10]]),
         pendingOutbox: new Map([['session', [{ localId: 'local-2', content: 'encrypted', kind: 'user' }]]]),
         sendAbortControllers: new Map(),
@@ -78,7 +81,7 @@ function transport(state: ReturnType<typeof createReducer>) {
         getMessagesSync: () => ({ invalidate: () => sync.invalidations++ }),
         applyMessages: (_sid: string, messages: NormalizedMessage[]) => reducer(state, messages, null, HOLD),
     });
-    return { sync, requests };
+    return { sync, requests, encryption };
 }
 
 describe('receipt transport races', () => {
@@ -98,14 +101,14 @@ describe('receipt transport races', () => {
         const state = createReducer();
         reducer(state, [local('local-1'), local('local-2')], null, HOLD);
         registerUserMessageServerIds(state, [{ serverId: 'server-1', localId: 'local-1' }]);
-        const { sync, requests } = transport(state);
+        const { sync, requests, encryption } = transport(state);
 
         await sync.flushOutbox('session');
         expect(sync.sessionLastSeq.get('session')).toBe(10);
         expect(sync.invalidations).toBe(1);
         expect(state.messageIds.get('server-2')).toBe(state.localIds.get('local-2'));
 
-        await sync.fetchForwardSince('session', { decryptMessages: async (messages: unknown[]) => messages }, 10);
+        await sync.fetchForwardSince('session', encryption, 10);
         expect(requests.at(-1)).toContain('after_seq=10');
         expect(sync.sessionLastSeq.get('session')).toBe(12);
         expect(state.messages.get(state.localIds.get('local-1')!)).toMatchObject({ pending: false, sortAt: 3000 });
@@ -125,8 +128,8 @@ describe('receipt transport races', () => {
         const state: { sessionMessages: Record<string, { reducerState: ReturnType<typeof createReducer> }> } = { sessionMessages: {} };
         const set = (update: (current: typeof state) => Partial<typeof state>) => Object.assign(state, update(state));
         const javascript = ts.transpile(`const apply = ${adapter!.getText(parsed)}; return apply;`, { target: ts.ScriptTarget.ES2022 });
-        const apply = new Function('set', 'createReducer', 'registerUserMessageServerIds', 'messageSortKey', javascript)(
-            set, createReducer, registerUserMessageServerIds, messageSortKey,
+        const apply = new Function('set', 'createReducer', 'registerUserMessageServerIds', 'mergeMessagesInto', javascript)(
+            set, createReducer, registerUserMessageServerIds, mergeMessagesInto,
         );
 
         apply('session', [{ serverId: 'server-1', localId: 'local-1' }]);

@@ -221,6 +221,83 @@ describe('background history budget', () => {
     });
 });
 
+describe('in-flight history cancellation', () => {
+    async function deleteSession() {
+        engine.encryption.removeSessionEncryption = vi.fn();
+        engine.projectsSync = { invalidate: vi.fn() };
+        await engine.handleUpdate({ id: 'delete', seq: 1, createdAt: 1, body: { t: 'delete-session', sid: 'a' } });
+    }
+
+    function fetch(mode: 'initial' | 'forward' | 'older') {
+        if (mode !== 'initial') {
+            engine.sessionLastSeq.set('a', 100);
+            engine.sessionOldestSeq.set('a', 100);
+            mocks.state.sessionMessages.a = {
+                messages: [], messagesMap: {}, hasMoreOlder: true, isLoadingOlder: false, isLoaded: true,
+            };
+        }
+        // Observe rejection immediately, before resolving a delayed boundary.
+        const pending = mode === 'older' ? engine.loadOlderMessages('a') : engine.fetchMessages('a');
+        return pending.then(() => null, (error: Error) => error);
+    }
+
+    describe.each(['response', 'empty response', 'decryption'] as const)('deletion during %s', (boundary) => {
+        it.each(['initial', 'forward', 'older'] as const)('does not restore %s history, cursors or pagination', async (mode) => {
+            let finish!: (value: any) => void;
+            const delayed = new Promise(resolve => { finish = resolve; });
+            const rows = boundary === 'empty response' ? [] : [{ ...message(), seq: mode === 'forward' ? 101 : 1 }];
+            if (boundary === 'decryption') {
+                mocks.request.mockResolvedValue(response(rows, true));
+                encryption.decryptMessages.mockReturnValueOnce(delayed);
+            } else {
+                // Simulate a transport that completes despite session deletion.
+                mocks.request.mockReturnValueOnce(delayed);
+            }
+            const pending = fetch(mode);
+            await vi.waitFor(() => expect(boundary === 'decryption' ? encryption.decryptMessages : mocks.request).toHaveBeenCalledOnce());
+            await deleteSession();
+            finish(boundary === 'decryption' ? rows : response(rows, true));
+
+            expect(await pending).toMatchObject({ message: 'Session message sync cancelled' });
+            expect(mocks.state.sessionMessages.a).toBeUndefined();
+            expect(engine.sessionLastSeq.has('a')).toBe(false);
+            expect(engine.sessionOldestSeq.has('a')).toBe(false);
+            expect(mocks.applyMessages).not.toHaveBeenCalled();
+            expect(mocks.applyMessagesLoaded).not.toHaveBeenCalled();
+            expect(mocks.request).toHaveBeenCalledOnce();
+        });
+    });
+
+    it.each(['initial', 'forward', 'older'] as const)('does not restore %s cursors after deletion at the page commit boundary', async (mode) => {
+        mocks.request.mockResolvedValue(response([{ ...message(), seq: mode === 'forward' ? 101 : 1 }], true));
+        const apply = engine.applyFetchedMessages;
+        vi.spyOn(engine, 'applyFetchedMessages').mockImplementation(async (...args: any[]) => {
+            await apply(...args);
+            await deleteSession();
+        });
+        expect(await fetch(mode)).toMatchObject({ message: 'Session message sync cancelled' });
+        expect(mocks.state.sessionMessages.a).toBeUndefined();
+        expect(engine.sessionLastSeq.has('a')).toBe(false);
+        expect(engine.sessionOldestSeq.has('a')).toBe(false);
+        expect(mocks.applyMessagesLoaded).not.toHaveBeenCalled();
+        expect(mocks.request).toHaveBeenCalledOnce();
+    });
+
+    it('does not apply a page decrypted with a replaced session key', async () => {
+        let finish!: (value: any) => void;
+        encryption.decryptMessages.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+        const pending = fetch('initial');
+        await vi.waitFor(() => expect(encryption.decryptMessages).toHaveBeenCalledOnce());
+        engine.encryption.getSessionEncryption = () => ({ decryptMessages: vi.fn() });
+        finish([message()]);
+        expect(await pending).toMatchObject({ message: 'Session message sync cancelled' });
+        expect(mocks.applyMessages).not.toHaveBeenCalled();
+        expect(mocks.applyMessagesLoaded).not.toHaveBeenCalled();
+        expect(engine.sessionLastSeq.has('a')).toBe(false);
+        expect(engine.sessionOldestSeq.has('a')).toBe(false);
+    });
+});
+
 describe('session avatar sync integration', () => {
     const avatar = { ref: 'sessions/a/avatar/a.enc', preview: 'opaque', version: 1 };
     const update = (seq: number, value: unknown) => ({ id: `u${seq}`, seq, createdAt: seq, body: { t: 'update-session', id: 'a', avatar: value } });

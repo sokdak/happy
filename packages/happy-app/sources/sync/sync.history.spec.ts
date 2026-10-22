@@ -3,7 +3,7 @@ import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { createReducer, reducer } from './reducer/reducer';
 import { normalizeRawMessage, RawRecordSchema } from './typesRaw';
-import { messageSortKey } from './typesMessage';
+import { mergeMessagesInto } from './messageList';
 import { messagePlanMode } from './messagePlanMode';
 import { AsyncLock } from '@/utils/lock';
 
@@ -27,7 +27,7 @@ visit(storeSource);
 expect(adapters).toHaveLength(adapterNames.length);
 const syncSource = source('./sync.ts');
 const klass = syncSource.statements.find((node): node is ts.ClassDeclaration => ts.isClassDeclaration(node) && node.name?.text === 'Sync')!;
-const methodNames = ['fetchMessages', 'fetchInitialLatestPage', 'fetchForwardSince', 'applyFetchedMessages', 'loadOlderMessages', 'preloadLatestPage', 'fetchOlderMessagesInBackground'];
+const methodNames = ['fetchMessages', 'fetchInitialLatestPage', 'fetchForwardSince', 'assertSessionFetchActive', 'applyFetchedMessages', 'loadOlderMessages', 'preloadLatestPage', 'fetchOlderMessagesInBackground'];
 const methods = klass.members.filter(node => node.name && methodNames.includes(node.name.getText(syncSource))).map(node => node.getText(syncSource));
 expect(methods).toHaveLength(methodNames.length);
 
@@ -42,7 +42,7 @@ function setup(rows: ReturnType<typeof record>[], archived = false) {
     let state: any = { sessions: { session: { id: 'session', active: !archived, metadata: null, agentState: null } }, sessionMessages: {} };
     Object.assign(state, compile(`return ({${adapters.join(',')}});`, {
         set: (update: (state: any) => any) => { state = update(state); },
-        createReducer, reducer, messageSortKey, messagePlanMode, rigSendsMessageReceipts: () => false,
+        createReducer, reducer, mergeMessagesInto, messagePlanMode, rigSendsMessageReceipts: () => false,
     }));
     const storage = { getState: () => state };
     const request = vi.fn(async (url: string) => {
