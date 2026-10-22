@@ -118,12 +118,12 @@
 
 **2026-10-22 통합 기준과 반영 내용**
 
-통합은 `integrate/upstream-20261022`에서 최신 커스텀 main을 기준으로 upstream main을 병합했다. 이전 작업 브랜치는 `backup/happy-desert-before-upstream-20261022`에 보존했다.
+최초 통합·검증은 `integrate/upstream-20261022`의 시험 병합 커밋 `e7090f986`에서 수행했다. 이후 사용자 지시에 따라 최종 이력은 upstream 위에 선택한 커스텀 변경을 기능별로 다시 쌓는 선형 구조로 재구성했다. 시험 병합은 `backup/integrated-before-rebase-20261022`, 이전 작업 브랜치는 `backup/happy-desert-before-upstream-20261022`에 보존했다.
 
 | 기준 | 커밋 |
 |---|---|
 | 통합 시작 커스텀 main | `325044bf7d8c650541ff0482a42827efae292e49` |
-| 병합한 upstream main | `1a643badd1b4a5043f5316af0821402c770e55b6` |
+| 최종 선형 이력의 upstream 기반 | `1a643badd1b4a5043f5316af0821402c770e55b6` |
 | 백업한 이전 happy-desert | `8d735514c5e3055479acdb4cbedc3d0701883e28` |
 
 최초 조사 이후 커스텀 main에 Codex turn steering(`9cc01054c`)과 native 질문 응답(`325044bf7`)이 반영되었다. 통합은 이 최신 main의 동작을 보존한다. 기존 대기 메시지의 FIFO 독립 턴 처리와 실행 중 명시적으로 가능한 steering, 질문 응답을 함께 유지한다.
@@ -158,4 +158,22 @@ Windows 검증 과정에서 ripgrep 실행 파일 탐색과 JSON stdout 오염, 
 
 웹 번들링에는 upstream 의존성인 `@noble/hashes/crypto.js`의 exports fallback 경고가 있었지만 export와 초기 화면 실행은 성공했다. CLI help/version 보완 후에도 build/typecheck와 실제 Windows 실행을 다시 확인했다.
 
-통합 결과는 위 통합 브랜치의 로컬 병합 커밋으로 기록한다. 실제 npm publish, 원격 main push, 서버 배포는 수행하지 않았다. Android/iOS 네이티브 바이너리와 Tauri 데스크톱 바이너리는 이 Windows 통합 검증에서 빌드하지 않았다. 의존성은 frozen lockfile로 설치했으며 Skia 네이티브 라이브러리의 Unix 전용 설치 단계는 생략하고, wire·CLI tools·Prisma·앱 WASM 후처리는 개별 수행했다.
+Android/iOS 네이티브 바이너리와 Tauri 데스크톱 바이너리는 이 Windows 통합 검증에서 빌드하지 않았다. 의존성은 frozen lockfile로 설치했으며 Skia 네이티브 라이브러리의 Unix 전용 설치 단계는 생략하고, wire·CLI tools·Prisma·앱 WASM 후처리는 개별 수행했다. 릴리스·배포 워크플로를 수동으로 실행하지 않았다.
+
+**2026-10-23 선형 이력 및 main 교체**
+
+사용자는 merge 방식 대신 upstream 기반 리베이스와 force push를 지시했고, 기존 원격 main을 `release/1.0`으로 보존하도록 지정했다. `origin/release/1.0`은 기존 main의 정확한 tip인 `325044bf7d8c650541ff0482a42827efae292e49`를 가리키며, 원래 커스텀 커밋 50개도 이 브랜치에 남는다.
+
+최종 커스텀 이력은 `rebase/upstream-20261023`에서 아래 일곱 묶음으로 정리하고, 문서 정정 커밋을 추가한 뒤 upstream 기반에 리베이스했다. `main` 교체에는 기존 원격 main SHA를 고정한 `--force-with-lease`를 사용하여 작업 중 들어온 다른 변경을 덮어쓰지 않게 한다.
+
+| 순서 | 커밋 범위 |
+|---|---|
+| 1 | CLI workflow·제목·Codex 턴 처리·agent 정책·보존 기간·Windows 실행 호환 |
+| 2 | 앱 workflow 모니터·데스크톱 세션 작업·스키마·번역 |
+| 3 | 앱 증분 병합·삭제 및 복귀 시 동기화·세션 수명 보호 |
+| 4 | native 질문 응답·권한 및 모델 기본값 |
+| 5 | 독립 패키징·배포 워크플로·OTA 차단·플랫폼 빌드 호환 |
+| 6 | 서버 테스트의 Windows 경로 호환 |
+| 7 | 구조·통합·검증 문서 |
+
+일곱 묶음을 적용한 tree는 시험 병합의 검증된 tree `35e6ce4d16068beee347bf8354e127b1c90191b2`와 정확히 일치했다. 이후 변경은 이 문서의 이력 정정뿐이다. 따라서 최종 제품 코드·테스트·설정은 앞서 검증한 구현과 동일하다. upstream 이후 최종 커스텀 구간에는 merge 커밋을 남기지 않는다. 원격 main push는 저장소에 설정된 자동 CI·게시 워크플로를 트리거할 수 있으며, 그 실행 결과는 위 로컬 검증과 별도로 확인해야 한다.
