@@ -76,6 +76,26 @@ flowchart TD
 - Ensures auth and machine setup when needed (`authAndSetupMachineIfNeeded`).
 - Starts the daemon or runs an agent directly based on subcommand/context.
 
+## Codex turn completion and queued input
+
+The Codex runner processes queued messages one at a time. A final answer
+(`item/completed` with `phase: final_answer`) finishes an answer item, while
+`turn/completed` finishes the turn. The CLI displays the answer immediately
+but waits for the turn's terminal event before sending the next `turn/start`.
+Legacy `task_complete` and `turn_aborted` events remain supported. A thread's
+`idle` notification has no turn ID and does not release the queue.
+
+Terminal events are matched to the foreground thread and the turn ID returned
+by `turn/start`. Events received before that acknowledgement are held until
+the ID is known; stale events cannot finish a later request or clear its active
+turn. Raw and legacy completion notifications share UI deduplication. If a
+terminal event never arrives, the existing timeout interrupts or restarts the
+app-server before the queue advances.
+
+This behavior follows the [Codex App Server lifecycle](https://learn.chatgpt.com/docs/app-server#lifecycle-overview).
+It is implemented in `packages/happy-cli`, so deploying a Helm server/web image
+alone does not update an installed CLI/daemon.
+
 ## Local state and configuration
 
 ```mermaid
@@ -96,6 +116,11 @@ graph LR
         E4[HAPPY_VARIANT]
         E5[HAPPY_EXPERIMENTAL]
         E6[HAPPY_DISABLE_CAFFEINATE]
+        E7[HAPPY_ENABLED_AGENTS]
+        E8[HAPPY_DISABLED_AGENTS]
+        E9[HAPPY_LOG_RETENTION_DAYS]
+        E10[HAPPY_CODEX_MODEL]
+        E11[HAPPY_SESSION_IDLE_TIMEOUT_HOURS]
     end
 
     E1 -.-> settings & access & daemon & logs
@@ -105,11 +130,57 @@ Local state lives under `~/.happy` (or `HAPPY_HOME_DIR`):
 - `settings.json`: onboarding and profile settings (validated/migrated).
 - `access.key`: local key material for encryption/auth.
 - `daemon.state.json`: daemon PID + control port + version.
-- `logs/`: CLI/daemon logs.
+- `logs/`: CLI/daemon logs. One file per process start, pruned on start after
+  14 days (`HAPPY_LOG_RETENTION_DAYS`; `0` keeps everything).
 
 Configuration lives in `src/configuration.ts`:
 - `HAPPY_SERVER_URL` and `HAPPY_WEBAPP_URL` override defaults.
 - `HAPPY_VARIANT`, `HAPPY_EXPERIMENTAL`, `HAPPY_DISABLE_CAFFEINATE` control behavior.
+- `HAPPY_CODEX_MODEL` pins the model Codex sessions run when the request does not
+  name one. There is no built-in default: without this variable, and without an
+  explicit pick, the model is left out of the request and Codex uses its own
+  `~/.codex/config.toml`. A user's explicit choice always wins over this.
+- `HAPPY_SESSION_IDLE_TIMEOUT_HOURS` ends a daemon-started session that has run no
+  turn for that long (default 24, `0` never ends one). A running turn is never
+  interrupted however long it takes, and the session ends through the same
+  graceful path as the app's "Kill Session" so the server stops showing it as
+  active. Sessions started from a terminal are never reaped.
+- `HAPPY_LOG_RETENTION_DAYS` sets how long `logs/` is kept (default 14, `0` disables
+  pruning). Expired files are deleted in the background on start, oldest first, off
+  the startup path — so a directory that has grown to six figures is cleared by the
+  next start rather than over dozens of them.
+- `HAPPY_ENABLED_AGENTS` / `HAPPY_DISABLED_AGENTS` restrict which agent CLIs this
+  machine will run — see [Restricting which agents a machine will run](#restricting-which-agents-a-machine-will-run).
+
+### Pointing the CLI at a self-hosted relay
+
+Both URLs resolve through the same chain, highest precedence first:
+
+1. `HAPPY_SERVER_URL` / `HAPPY_WEBAPP_URL` environment variables
+2. `serverUrl` / `webappUrl` in `~/.happy/settings.json`
+3. The built-in public defaults
+
+Environment variables only reach the daemon if they are set in the environment
+that starts it. A daemon outlives the shell that spawned it, so anything that
+starts one from a different context — a login shell that never sourced your
+profile, a supervisor, a restart triggered by another process — gets the
+defaults instead. Prefer `settings.json` for self-hosting: it is read by every
+process on every start, so it survives daemon restarts and CLI upgrades alike.
+
+```json
+{
+  "serverUrl": "https://api.example.com",
+  "webappUrl": "https://app.example.com"
+}
+```
+
+Verify which value actually won with `happy doctor` — it prints the environment
+variables, the full contents of `settings.json`, and the effective `Server URL`.
+
+Credentials are per-server. Tokens minted against the public server are
+rejected by a self-hosted API with `401 Invalid token`, and `happy auth login`
+will still report `Already authenticated` because a credential exists. Re-run
+authentication after switching relays.
 
 ## API client architecture
 
@@ -305,6 +376,60 @@ Sessions can be started by:
 - Remote requests over RPC (from mobile/web via machine connection).
 
 Daemon session spawning uses `registerCommonHandlers` to expose a controlled RPC surface (shell commands, file operations, search/diff helpers).
+
+#### Restricting which agents a machine will run
+
+`detectCLIAvailability()` reports which agent CLIs a machine can launch, and the
+app uses it to build the agent picker. By default it reports whatever is on
+`PATH`, which is not always what a deployment wants: an image can ship an agent
+CLI that is deliberately unauthenticated, and launching it only produces auth
+errors.
+
+Two environment variables on the daemon narrow that set (`src/utils/agentPolicy.ts`):
+
+| Variable | Effect |
+| --- | --- |
+| `HAPPY_ENABLED_AGENTS` | Allowlist. Only these agents are offered. Takes precedence over the denylist. |
+| `HAPPY_DISABLED_AGENTS` | Denylist. These agents are never offered. |
+
+Both accept a comma- or space-separated list of `claude`, `codex`, `gemini`,
+`openclaw`, `agy`. Neither can make a missing CLI usable — `PATH` still has the
+final say on availability.
+
+An unrecognised name is a configuration error rather than a no-op: the machine
+advertises no agents and every spawn fails naming the offending value. Ignoring
+it would be worse — `HAPPY_ENABLED_AGENTS=codxe` would parse to an empty policy,
+read as "no policy configured", and re-enable every agent on `PATH`, which is
+the outcome the operator was trying to prevent.
+
+A Codex-only deployment sets either of:
+
+```bash
+HAPPY_ENABLED_AGENTS=codex
+HAPPY_DISABLED_AGENTS=claude
+```
+
+With a policy in effect, the daemon resolves the agent once per spawn before it
+stages any credentials:
+
+- An unspecified agent runs the first enabled one, rather than defaulting to Claude.
+- A request naming a disabled agent is coerced to the first enabled one. This is
+  what keeps a browser holding a stale `agent: "claude"` draft working instead of
+  failing against an unauthenticated CLI.
+- A coerced spawn drops the parts of the request that belonged to the agent that
+  was asked for: `token`, `modelMode`, `permissionMode`, and any resume id. They
+  do not translate across agents — a Claude OAuth token staged as
+  `CODEX_HOME/auth.json` is not a Codex credential, `bypassPermissions` is not a
+  Codex permission mode, and `claude-opus-5` is not a model Codex can run. The
+  session starts from the target agent's own credential and defaults instead.
+  `effortLevel` survives coercion: every agent reads the same `low`…`max` scale.
+- A request naming an agent this CLI cannot launch is rejected.
+- If the policy leaves nothing enabled, the spawn fails with that explanation
+  instead of launching an arbitrary agent.
+
+Without either variable set, spawning behaves exactly as before: an unspecified
+agent means Claude, and an agent missing from `PATH` is still launched so the
+failure surfaces where it always has.
 
 ### Machine state
 
