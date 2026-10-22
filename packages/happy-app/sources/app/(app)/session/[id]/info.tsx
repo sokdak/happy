@@ -27,6 +27,7 @@ import { HappyError } from '@/utils/errors';
 import { getRigIdentity, isRigMetadata } from '@/sync/rig';
 import { MOBILE_GLASS_HEADER_HEIGHT } from '@/components/navigation/headerMetrics';
 import { navigateToSession } from '@/hooks/useNavigateToSession';
+import { getWorkflowBadgeModel, selectActiveWorkflows } from '@/components/workflows/workflowModel';
 
 function formatSandboxMetadata(sandbox: unknown, homeDir?: string): string {
     if (sandbox === null || sandbox === undefined) {
@@ -102,6 +103,11 @@ function SessionInfoContent({ session }: { session: Session }) {
         resumeSession,
         resumeSessionSubtitle,
     } = useSessionQuickActions(session);
+
+    const activeWorkflowBadge = React.useMemo(
+        () => getWorkflowBadgeModel(selectActiveWorkflows(session.agentState?.activeWorkflows).length),
+        [session.agentState?.activeWorkflows],
+    );
 
     // Asked now rather than after the archive, which is what takes the chat out
     // of the checkout it would have been measured against.
@@ -249,6 +255,15 @@ function SessionInfoContent({ session }: { session: Session }) {
                             onPress={() => router.push(`/machine/${session.metadata?.machineId}`)}
                         />
                     )}
+                    <Item
+                        title={t('workflows.rowTitle')}
+                        subtitle={t('workflows.rowSubtitle')}
+                        detail={activeWorkflowBadge
+                            ? t('workflows.workflowCount', { count: activeWorkflowBadge.count })
+                            : undefined}
+                        icon={<Ionicons name="git-network-outline" size={29} color="#007AFF" />}
+                        onPress={() => router.push(`/session/${session.id}/workflows`)}
+                    />
                     {canShowResume && (
                         <Item
                             title={t('sessionInfo.resumeSession')}

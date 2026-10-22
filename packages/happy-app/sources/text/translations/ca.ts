@@ -70,6 +70,33 @@ export const ca: TranslationStructure = {
         optional: 'Opcional',
     },
 
+    workflows: {
+        activeTitle: 'Fluxos de treball actius',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Altres',
+        states: {
+            running: 'En execució',
+            completed: 'Completat',
+            error: 'Error',
+            active: 'Actiu',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Flux de treball',
+        rowTitle: 'Fluxos de treball',
+        rowSubtitle: 'Segueix el progrés dels fluxos de treball multiagent',
+        emptyTitle: 'Cap activitat de fluxos de treball',
+        emptyDescription: 'El progrés apareixerà aquí mentre Claude executa fluxos de treball multiagent.',
+    },
+
     profile: {
         userProfile: 'Perfil d\'usuari',
         details: 'Detalls',
@@ -315,6 +342,7 @@ export const ca: TranslationStructure = {
         newChat: 'Nou xat',
         statusBarContext: 'Context',
         statusBarPathTitle: 'Directori de treball',
+        headerActionsAccessibility: 'Accions de la sessió',
         forkAction: 'Bifurca la sessió',
         forkSubtitle: 'Continua en una nova sessió amb el mateix context',
         duplicateAction: 'Duplica des d\'un missatge…',

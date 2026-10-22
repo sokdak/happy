@@ -72,6 +72,33 @@ export const zhHans: TranslationStructure = {
         optional: '可选的',
     },
 
+    workflows: {
+        activeTitle: '活动工作流',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: '其他',
+        states: {
+            running: '运行中',
+            completed: '已完成',
+            error: '错误',
+            active: '活动',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: '工作流',
+        rowTitle: '工作流',
+        rowSubtitle: '查看多智能体工作流进度',
+        emptyTitle: '暂无工作流活动',
+        emptyDescription: 'Claude 运行多智能体工作流时，进度会显示在这里。',
+    },
+
     profile: {
         userProfile: '用户资料',
         details: '详情',
@@ -316,6 +343,7 @@ export const zhHans: TranslationStructure = {
         newChat: '新对话',
         statusBarContext: '上下文',
         statusBarPathTitle: '工作目录',
+        headerActionsAccessibility: '会话操作',
         forkAction: '分叉会话',
         forkSubtitle: '在相同上下文中开启新会话继续',
         duplicateAction: '从消息处复制…',

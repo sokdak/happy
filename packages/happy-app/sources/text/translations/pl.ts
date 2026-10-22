@@ -81,6 +81,33 @@ export const pl: TranslationStructure = {
         optional: 'opcjonalnie',
     },
 
+    workflows: {
+        activeTitle: 'Aktywne przepływy pracy',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Inne',
+        states: {
+            running: 'W toku',
+            completed: 'Ukończono',
+            error: 'Błąd',
+            active: 'Aktywny',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Przepływ pracy',
+        rowTitle: 'Przepływy pracy',
+        rowSubtitle: 'Śledź postęp wieloagentowych przepływów pracy',
+        emptyTitle: 'Brak aktywności przepływów pracy',
+        emptyDescription: 'Postęp pojawi się tutaj, gdy Claude uruchomi wieloagentowe przepływy pracy.',
+    },
+
     profile: {
         userProfile: 'Profil użytkownika',
         details: 'Szczegóły',
@@ -332,6 +359,7 @@ export const pl: TranslationStructure = {
         newChat: 'Nowy czat',
         statusBarContext: 'Kontekst',
         statusBarPathTitle: 'Katalog roboczy',
+        headerActionsAccessibility: 'Akcje sesji',
         forkAction: 'Rozwidl sesję',
         forkSubtitle: 'Kontynuuj w nowej sesji z tym samym kontekstem',
         duplicateAction: 'Duplikuj od wiadomości…',

@@ -70,6 +70,33 @@ export const it: TranslationStructure = {
         saveAs: 'Salva con nome',
     },
 
+    workflows: {
+        activeTitle: 'Flussi di lavoro attivi',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Altro',
+        states: {
+            running: 'In esecuzione',
+            completed: 'Completato',
+            error: 'Errore',
+            active: 'Attivo',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Flusso di lavoro',
+        rowTitle: 'Flussi di lavoro',
+        rowSubtitle: 'Monitora l\'avanzamento dei flussi di lavoro multi-agente',
+        emptyTitle: 'Nessuna attività dei flussi di lavoro',
+        emptyDescription: 'L\'avanzamento comparirà qui mentre Claude esegue flussi di lavoro multi-agente.',
+    },
+
     profile: {
         userProfile: 'Profilo utente',
         details: 'Dettagli',
@@ -313,6 +340,7 @@ export const it: TranslationStructure = {
         newChat: 'Nuova chat',
         statusBarContext: 'Contesto',
         statusBarPathTitle: 'Directory di lavoro',
+        headerActionsAccessibility: 'Azioni sessione',
         forkAction: 'Biforca sessione',
         forkSubtitle: 'Continua in una nuova sessione con lo stesso contesto',
         duplicateAction: 'Duplica da un messaggio…',

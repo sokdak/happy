@@ -70,6 +70,33 @@ export const en = {
         optional: 'optional',
     },
 
+    workflows: {
+        activeTitle: 'Active workflows',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Other',
+        states: {
+            running: 'Running',
+            completed: 'Completed',
+            error: 'Error',
+            active: 'Active',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Workflow',
+        rowTitle: 'Workflows',
+        rowSubtitle: 'Track multi-agent workflow progress',
+        emptyTitle: 'No workflow activity',
+        emptyDescription: 'Workflow progress appears here while Claude runs multi-agent workflows.',
+    },
+
     profile: {
         userProfile: 'User Profile',
         details: 'Details',
@@ -333,6 +360,7 @@ export const en = {
         newChat: 'New chat',
         statusBarContext: 'Context',
         statusBarPathTitle: 'Working directory',
+        headerActionsAccessibility: 'Session actions',
         // Fork / duplicate / rewind flow (Claude only)
         forkAction: 'Fork session',
         forkSubtitle: 'Continue in a new session with the same context',

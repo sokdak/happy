@@ -72,6 +72,33 @@ export const zhHant: TranslationStructure = {
         optional: '選填',
     },
 
+    workflows: {
+        activeTitle: '活動工作流程',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: '其他',
+        states: {
+            running: '執行中',
+            completed: '已完成',
+            error: '錯誤',
+            active: '活動',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: '工作流程',
+        rowTitle: '工作流程',
+        rowSubtitle: '查看多代理工作流程進度',
+        emptyTitle: '目前沒有工作流程活動',
+        emptyDescription: 'Claude 執行多代理工作流程時，進度會顯示在這裡。',
+    },
+
     profile: {
         userProfile: '使用者資料',
         details: '詳情',
@@ -315,6 +342,7 @@ export const zhHant: TranslationStructure = {
         newChat: '新對話',
         statusBarContext: '上下文',
         statusBarPathTitle: '工作目錄',
+        headerActionsAccessibility: '會話操作',
         forkAction: '分叉會話',
         forkSubtitle: '在相同上下文中開啟新會話繼續',
         duplicateAction: '從訊息處複製…',

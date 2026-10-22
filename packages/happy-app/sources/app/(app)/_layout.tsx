@@ -132,6 +132,16 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="session/[id]/workflows"
+                options={{
+                    headerShown: true,
+                    // The route is reachable with no workflows running, so the
+                    // header cannot claim activity it may not have.
+                    headerTitle: t('workflows.rowTitle'),
+                    headerBackTitle: t('common.back'),
+                }}
+            />
+            <Stack.Screen
                 name="session/[id]/files"
                 options={{
                     headerShown: true,

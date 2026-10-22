@@ -35,6 +35,7 @@ export const SideChatPanel = React.memo(function SideChatPanel({
     onCreateSideChat,
     canCreateSideChat,
     creatingSideChat,
+    interactionEnabled = true,
 }: {
     parentSessionId: string;
     sideChats: Session[];
@@ -44,6 +45,7 @@ export const SideChatPanel = React.memo(function SideChatPanel({
     onCreateSideChat: () => void;
     canCreateSideChat: boolean;
     creatingSideChat: boolean;
+    interactionEnabled?: boolean;
 }) {
     const activeSession = React.useMemo(() => {
         if (activeSideChatId) {
@@ -76,7 +78,7 @@ export const SideChatPanel = React.memo(function SideChatPanel({
                 onClose={onCloseSideChat}
             />
             {activeSession && (
-                <SideChatConversation key={activeSession.id} session={activeSession} active={isFocused} />
+                <SideChatConversation key={activeSession.id} session={activeSession} active={isFocused && interactionEnabled} />
             )}
         </View>
     );
@@ -233,7 +235,7 @@ const SideChatConversation = React.memo(function SideChatConversation({ session,
                 </Pressable>
             </View>
             <View style={styles.chatWrap}>
-                <SessionViewLoaded sessionId={session.id} session={session} active={active} embedded />
+                <SessionViewLoaded sessionId={session.id} session={session} active={active} interactionEnabled={active} embedded />
             </View>
         </View>
     );

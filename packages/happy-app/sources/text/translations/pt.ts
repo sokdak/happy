@@ -70,6 +70,33 @@ export const pt: TranslationStructure = {
         optional: 'Opcional',
     },
 
+    workflows: {
+        activeTitle: 'Fluxos de trabalho ativos',
+        workflowCount: ({ count }: { count: number }) => count === 1 ? '1 workflow' : `${count} workflows`,
+        runningCount: ({ count }: { count: number }) => `${count} running`,
+        badgeAccessibility: ({ count }: { count: number }) => count === 1
+            ? '1 active workflow. Open workflow monitor'
+            : `${count} active workflows. Open workflow monitor`,
+        closeMonitor: 'Close workflow monitor',
+        dismissAutomatically: 'Completed workflows disappear automatically.',
+        otherPhase: 'Outros',
+        states: {
+            running: 'Em execução',
+            completed: 'Concluído',
+            error: 'Erro',
+            active: 'Ativo',
+        },
+        phaseAccessibility: ({ title, state }: { title: string; state: string }) => `${title}, ${state}`,
+        agentAccessibility: ({ label, state }: { label: string; state: string }) => `${label}, ${state}`,
+        tokens: ({ count }: { count: string }) => `${count} tokens`,
+        toolCalls: ({ count }: { count: number }) => count === 1 ? '1 tool call' : `${count} tool calls`,
+        toolTitle: 'Fluxo de trabalho',
+        rowTitle: 'Fluxos de trabalho',
+        rowSubtitle: 'Acompanhe o progresso dos fluxos de trabalho multiagente',
+        emptyTitle: 'Sem atividade de fluxos de trabalho',
+        emptyDescription: 'O progresso aparecerá aqui enquanto o Claude executa fluxos de trabalho multiagente.',
+    },
+
     profile: {
         userProfile: 'Perfil do usuário',
         details: 'Detalhes',
@@ -314,6 +341,7 @@ export const pt: TranslationStructure = {
         newChat: 'Novo chat',
         statusBarContext: 'Contexto',
         statusBarPathTitle: 'Diretório de trabalho',
+        headerActionsAccessibility: 'Ações da sessão',
         forkAction: 'Bifurcar sessão',
         forkSubtitle: 'Continuar em uma nova sessão com o mesmo contexto',
         duplicateAction: 'Duplicar a partir da mensagem…',
