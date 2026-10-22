@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { transformSync } from '@babel/core';
 import { createDiffSyntax } from './factory.generated';
 import { tokenize } from './tokenize';
@@ -19,7 +20,7 @@ const input = {
 
 describe('isolated Prism worker', () => {
     it('keeps the generated factory in sync with the source and locked Prism version', () => {
-        const script = new URL('../../../../scripts/build-diff-syntax.cjs', import.meta.url).pathname;
+        const script = fileURLToPath(new URL('../../../../scripts/build-diff-syntax.cjs', import.meta.url));
         expect(execFileSync(process.execPath, [script, '--check'], { encoding: 'utf8' })).toContain('(verified)');
     });
     it('has the same tokens as the source implementation without any host imports', () => {
@@ -33,7 +34,7 @@ describe('isolated Prism worker', () => {
     });
 
     it('survives the actual Worklets transform with no captured module functions', () => {
-        const filename = new URL('./factory.generated.ts', import.meta.url).pathname;
+        const filename = fileURLToPath(new URL('./factory.generated.ts', import.meta.url));
         const code = transformSync(readFileSync(filename, 'utf8'), {
             filename, configFile: false, babelrc: false,
             presets: ['@babel/preset-typescript'],
