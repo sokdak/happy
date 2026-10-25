@@ -6,6 +6,7 @@ import { Linking, Platform } from 'react-native';
 import { AuthCredentials } from '@/auth/tokenStorage';
 import { clearRegisteredPushToken, loadRegisteredPushToken, saveRegisteredPushToken } from './persistence';
 import { registerPushToken, unregisterPushToken } from './apiPush';
+import { getWebNotificationPermission, requestWebNotificationPermission } from './webNotifications';
 
 export type PushPermissionStatus = 'unsupported' | 'granted' | 'denied' | 'undetermined';
 
@@ -55,11 +56,7 @@ function getExpoProjectId(): string | null {
 
 export async function getPushPermissionInfo(): Promise<PushPermissionInfo> {
     if (Platform.OS === 'web') {
-        return {
-            status: 'unsupported',
-            granted: false,
-            canAskAgain: false,
-        };
+        return getWebNotificationPermission();
     }
 
     try {
@@ -76,15 +73,7 @@ export async function getPushPermissionInfo(): Promise<PushPermissionInfo> {
 
 export async function requestPushPermissionOrOpenSettings(): Promise<PushPermissionRequestResult> {
     if (Platform.OS === 'web') {
-        return {
-            granted: false,
-            openedSettings: false,
-            permission: {
-                status: 'unsupported',
-                granted: false,
-                canAskAgain: false,
-            }
-        };
+        return requestWebNotificationPermission();
     }
 
     const existingPermission = await getPushPermissionInfo();
@@ -142,11 +131,9 @@ export async function syncCurrentPushToken(credentials: AuthCredentials): Promis
         return {
             registered: false,
             token: null,
-            permission: {
-                status: 'unsupported',
-                granted: false,
-                canAskAgain: false,
-            }
+            // Browser notifications use the live socket and never register an
+            // Expo token or request permission outside a user gesture.
+            permission: getWebNotificationPermission(),
         };
     }
 

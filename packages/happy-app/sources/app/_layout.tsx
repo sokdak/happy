@@ -32,6 +32,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import { AsyncLock } from '@/utils/lock';
 import { getSessionRouteFromNotificationResponse } from '@/utils/notificationRouting';
 import { navigateToSession } from '@/hooks/useNavigateToSession';
+import { subscribeWebNotificationClicks } from '@/sync/webNotifications';
 import { applyVoiceUpsellOverride } from '@/realtime/voiceExperiment';
 import { useTauriZoom } from '@/hooks/useTauriZoom';
 import { useTauriDrag } from '@/hooks/useTauriDrag';
@@ -411,6 +412,12 @@ export default function RootLayout() {
         };
     }, [handleNotificationResponse, initState]);
 
+    React.useEffect(() => {
+        if (Platform.OS !== 'web' || !initState) {
+            return;
+        }
+        return subscribeWebNotificationClicks((sessionId) => navigateToSession(router, sessionId));
+    }, [router, initState]);
 
     // Track the screens
     useTrackScreens()

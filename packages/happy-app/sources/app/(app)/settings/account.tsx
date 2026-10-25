@@ -53,6 +53,18 @@ function formatPushPermissionSubtitle(permission: PushPermissionInfo | null): st
     if (!permission) {
         return 'Checking push notification permissions for this device.';
     }
+    if (Platform.OS === 'web') {
+        if (permission.status === 'unsupported') {
+            return 'Browser notifications require a supported browser and HTTPS (or localhost).';
+        }
+        if (permission.granted) {
+            return 'Receive task completion, permission requests, and questions while this Happy tab stays open.';
+        }
+        if (permission.status === 'denied') {
+            return 'Allow notifications for this site in your browser settings, then return to Happy.';
+        }
+        return 'Enable notifications to receive alerts while using another tab or app.';
+    }
     if (permission.status === 'unsupported') {
         return 'Push notification permissions are only managed on mobile devices.';
     }
@@ -135,14 +147,13 @@ export default React.memo(() => {
 
         setLoadingPushSettings(true);
         try {
-            const [tokens, permission, liveToken] = await Promise.all([
-                fetchPushTokens(auth.credentials),
+            const [permission, liveToken] = await Promise.all([
                 getPushPermissionInfo(),
                 getCurrentExpoPushToken(),
             ]);
-            setPushTokens(tokens);
             setPushPermission(permission);
             setCurrentPushToken(liveToken);
+            setPushTokens(await fetchPushTokens(auth.credentials));
         } catch (error) {
             console.error('Failed to load push notification settings:', error);
             if (showError) {
@@ -162,6 +173,21 @@ export default React.memo(() => {
             void loadPushSettings();
         }, [loadPushSettings])
     );
+
+    useEffect(() => {
+        if (Platform.OS !== 'web') {
+            return;
+        }
+        const updatePermission = () => {
+            void getPushPermissionInfo().then(setPushPermission);
+        };
+        window.addEventListener('focus', updatePermission);
+        document.addEventListener('visibilitychange', updatePermission);
+        return () => {
+            window.removeEventListener('focus', updatePermission);
+            document.removeEventListener('visibilitychange', updatePermission);
+        };
+    }, []);
 
     // GitHub disconnection
     const [disconnecting, handleDisconnectGitHub] = useHappyAction(async () => {
@@ -233,21 +259,28 @@ export default React.memo(() => {
             const result = await requestPushPermissionOrOpenSettings();
             setPushPermission(result.permission);
 
-            if (result.granted) {
-                await syncCurrentPushToken(auth.credentials);
+            if (Platform.OS !== 'web') {
+                if (result.granted) {
+                    await syncCurrentPushToken(auth.credentials);
+                }
                 await loadPushSettings();
-                Modal.alert(t('common.success'), 'Push notifications are enabled for this device.');
-                return;
             }
 
-            await loadPushSettings();
+            if (result.granted) {
+                Modal.alert(t('common.success'), Platform.OS === 'web'
+                    ? 'Browser notifications are enabled while this Happy tab stays open.'
+                    : 'Push notifications are enabled for this device.');
+                return;
+            }
 
             if (result.openedSettings) {
                 Modal.alert('Open Settings', 'The system will not show the permission prompt again, so Happy opened Settings instead.');
                 return;
             }
 
-            Modal.alert(t('common.error'), 'Push notification permission was not granted.');
+            Modal.alert(t('common.error'), Platform.OS === 'web' && result.permission.status === 'denied'
+                ? 'Notifications are blocked for this site. Allow them in your browser settings, then return to Happy.'
+                : 'Push notification permission was not granted.');
         } catch (error) {
             console.error('Failed to request push permission:', error);
             Modal.alert(t('common.error'), 'Failed to request push notification permission.');
@@ -503,20 +536,24 @@ export default React.memo(() => {
                 </ItemGroup>
 
                 <ItemGroup
-                    title="Push Notifications"
-                    footer="Shows every push token registered on your account. Tap an old token to delete it."
+                    title={Platform.OS === 'web' ? 'Browser Notifications' : 'Push Notifications'}
+                    footer={Platform.OS === 'web'
+                        ? 'Keep this Happy tab open to receive alerts. Notifications pause if the browser suspends or disconnects the tab.'
+                        : 'Shows every push token registered on your account. Tap an old token to delete it.'}
                 >
                     <Item
                         title="Permission"
                         detail={formatPushPermissionLabel(pushPermission)}
                         subtitle={formatPushPermissionSubtitle(pushPermission)}
                         icon={<Ionicons name="notifications-outline" size={29} color="#007AFF" />}
-                        loading={loadingPushSettings}
+                        loading={Platform.OS === 'web' ? !pushPermission : loadingPushSettings}
                         showChevron={false}
                     />
                     <Item
-                        title="Request Permission Again"
-                        subtitle={pushPermission?.status === 'unsupported'
+                        title={Platform.OS === 'web' ? 'Enable Browser Notifications' : 'Request Permission Again'}
+                        subtitle={Platform.OS === 'web'
+                            ? formatPushPermissionSubtitle(pushPermission)
+                            : pushPermission?.status === 'unsupported'
                             ? 'Push notification permissions are only available on iPhone and Android.'
                             : pushPermission?.canAskAgain
                             ? 'Shows the system prompt again if iOS still allows it.'
@@ -524,30 +561,36 @@ export default React.memo(() => {
                         icon={<Ionicons name="shield-checkmark-outline" size={29} color="#34C759" />}
                         onPress={handlePushPermissionRequest}
                         loading={requestingPushPermission}
-                        disabled={requestingPushPermission || loadingPushSettings || pushPermission?.status === 'unsupported' || !auth.credentials}
+                        disabled={requestingPushPermission || (Platform.OS !== 'web' && loadingPushSettings) || pushPermission?.status === 'unsupported' || (Platform.OS === 'web' && pushPermission?.granted) || !auth.credentials}
                         showChevron={false}
                     />
-                    <Item
-                        title="Re-register This Device"
-                        subtitle={currentPushToken
-                            ? `Current token ${formatPushTokenFingerprint(currentPushToken)}`
-                            : 'Fetches the current Expo token and registers it again.'}
-                        icon={<Ionicons name="refresh-outline" size={29} color="#FF9500" />}
-                        onPress={handleRefreshCurrentPushToken}
-                        loading={refreshingPushToken}
-                        disabled={refreshingPushToken || loadingPushSettings || !auth.credentials}
-                        showChevron={false}
-                    />
+                    {Platform.OS !== 'web' && (
+                        <Item
+                            title="Re-register This Device"
+                            subtitle={currentPushToken
+                                ? `Current token ${formatPushTokenFingerprint(currentPushToken)}`
+                                : 'Fetches the current Expo token and registers it again.'}
+                            icon={<Ionicons name="refresh-outline" size={29} color="#FF9500" />}
+                            onPress={handleRefreshCurrentPushToken}
+                            loading={refreshingPushToken}
+                            disabled={refreshingPushToken || loadingPushSettings || !auth.credentials}
+                            showChevron={false}
+                        />
+                    )}
                 </ItemGroup>
 
                 <ItemGroup
                     title={`Registered Tokens (${pushTokens.length})`}
-                    footer="Current-device metadata comes from this phone. Older tokens use their token fingerprint plus server timestamps."
+                    footer={Platform.OS === 'web'
+                        ? 'These tokens belong to mobile devices on your account. Browser notifications do not use a push token.'
+                        : 'Current-device metadata comes from this phone. Older tokens use their token fingerprint plus server timestamps.'}
                 >
                     {pushTokens.length === 0 ? (
                         <Item
                             title="No registered push tokens"
-                            subtitle="Once this device is registered, it will appear here."
+                            subtitle={Platform.OS === 'web'
+                                ? 'Mobile devices registered on your account will appear here.'
+                                : 'Once this device is registered, it will appear here.'}
                             showChevron={false}
                         />
                     ) : (

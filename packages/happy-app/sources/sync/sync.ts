@@ -2,6 +2,7 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import { apiSocket, getCurrentAppState, getHappyClientId } from '@/sync/apiSocket';
 import { notifyUnreadMessage } from '@/sync/webTabTitle';
+import { showWebSessionNotification } from '@/sync/webNotifications';
 import { AuthCredentials } from '@/auth/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
@@ -3272,10 +3273,13 @@ class Sync {
         }
 
         // Session-level lifecycle event (Claude finished, needs permission, asks question).
-        // This is the same signal that triggers the mobile push — bump browser-tab
-        // unread counter on these only, ignore the noisy per-message stream.
+        // The same signal drives mobile push, browser alerts and the tab counter;
+        // ignore the noisy per-message stream.
         if (updateData.type === 'session-event') {
             notifyUnreadMessage();
+            if (Platform.OS === 'web') {
+                showWebSessionNotification(updateData);
+            }
         }
 
         // daemon-status ephemeral updates are deprecated, machine status is handled via machine-activity
