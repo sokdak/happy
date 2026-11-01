@@ -195,6 +195,7 @@ export function getCodexModelModes(): ModelMode[] {
     return [
         { key: 'gpt-6-astra', name: 'GPT-6 Astra', description: 'most capable', providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', description: null, providerId: 'openai', providerName: 'OpenAI' },
+        { key: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', description: null, providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-6-sol', name: 'GPT-6 Sol', description: null, providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-6-luna', name: 'GPT-6 Luna', description: null, providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', description: null, providerId: 'openai', providerName: 'OpenAI' },
@@ -554,7 +555,8 @@ const AGY_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
 
 // Exactly what each model publishes in Codex's own registry, in its order
 // (codex-rs/models-manager/models.json; astra verified against the 0.153.4
-// host registry). This really is per-model: astra, sol, and terra reach
+// host registry; 6.1 Terra verified against 0.165.0). This is per-model:
+// astra, sol, and terra reach
 // `ultra`, luna stops at `max`. `ultra` is documented as maximum reasoning
 // with automatic task delegation, so it is a different kind of run rather
 // than one more notch — but it is a level these models accept, so the picker
@@ -562,6 +564,7 @@ const AGY_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
 const CODEX_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
     'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    'gpt-6.1-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     'gpt-6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
     'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
