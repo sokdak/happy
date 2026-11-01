@@ -125,6 +125,7 @@ describe('modelModeOptions', () => {
         expect(models.map((model) => model.key)).toEqual([
             'gpt-6-astra',
             'gpt-6.1-sol',
+            'gpt-6.1-terra',
             'gpt-6-sol',
             'gpt-6-luna',
             'gpt-5.6-sol',
@@ -141,6 +142,7 @@ describe('modelModeOptions', () => {
         expect(withCustom.map((model) => model.key)).toEqual([
             'gpt-6-astra',
             'gpt-6.1-sol',
+            'gpt-6.1-terra',
             'gpt-6-sol',
             'gpt-6-luna',
             'gpt-5.6-sol',
@@ -148,7 +150,7 @@ describe('modelModeOptions', () => {
             'gpt-5.6-luna',
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(7);
+        expect(models).toHaveLength(8);
         expect(includeConfiguredModel('gemini', models, 'my-workspace-model')).toBe(models);
         expect(includeConfiguredModel('openclaw', models, 'my-workspace-model')).toBe(models);
     });
@@ -219,6 +221,8 @@ describe('modelModeOptions', () => {
         expect(getEffortLevelsForModel('codex', 'gpt-6-astra').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-6.1-sol').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+        expect(getEffortLevelsForModel('codex', 'gpt-6.1-terra').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-6-sol').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
