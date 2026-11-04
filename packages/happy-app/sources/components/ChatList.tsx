@@ -64,6 +64,8 @@ const MAINTAIN_VISIBLE_CONTENT_POSITION = {
      * `autoscrollToBottomThreshold`, this is not implemented by FlashList. It
      * is forwarded to React Native's native maintainVisibleContentPosition,
      * which takes points — a fraction here is indistinguishable from off.
+     * React Native Web lacks that implementation; our FlashList web patch
+     * applies the same threshold before its JS anchor correction instead.
      *
      * Generous, because the reader is either at the newest message or
      * deliberately back in history, and the points in between are mostly the

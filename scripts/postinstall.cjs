@@ -8,6 +8,7 @@ require('../patches/force-preact-cjs.cjs');
 require('../patches/fix-pierre-trees-preact-hooks.cjs');
 require('../patches/fix-react-native-audio-api-size-t.cjs');
 require('../patches/fix-flash-list-web-inversion.cjs').patchFlashListWeb();
+require('../patches/fix-flash-list-web-autoscroll.cjs').patchFlashListWebAutoscroll();
 require('../patches/fix-virtualized-list-stale-frame-offset.cjs').patchVirtualizedLists();
 
 const {

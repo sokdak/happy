@@ -39,6 +39,16 @@ to React Native's native mVCP, which takes **points**.
 Passing `0.2` there is a fifth of a pixel and is indistinguishable from off. We
 lost real time to this.
 
+React Native Web does not implement this threshold. FlashList's JS anchor
+correction still runs there, so a new message used to move an inverted chat
+away from offset 0 even when the reader was at the newest message. The
+postinstall patch `patches/fix-flash-list-web-autoscroll.cjs` applies the same
+point threshold to the **pre-update** offset in that web-only correction path.
+Near the newest message it keeps offset 0; further into history it retains the
+existing anchor correction. Native and horizontal lists keep their original
+behavior. Both the source and emitted JS entrypoints are patched and checked
+for upstream drift.
+
 ### Trap 2: `minIndexForVisible` indexes MOUNTED SUBVIEWS, not your data
 
 From `RCTScrollViewComponentView.mm:1051-1067`:

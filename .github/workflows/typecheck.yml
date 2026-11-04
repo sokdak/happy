@@ -5,12 +5,16 @@ on:
         paths:
             - 'packages/happy-app/**'
             - '.github/workflows/typecheck.yml'
+            - 'patches/fix-flash-list-web-*.cjs'
+            - 'scripts/postinstall.cjs'
     push:
         branches:
             - main
         paths:
             - 'packages/happy-app/**'
             - '.github/workflows/typecheck.yml'
+            - 'patches/fix-flash-list-web-*.cjs'
+            - 'scripts/postinstall.cjs'
 
 jobs:
     typecheck:
@@ -34,3 +38,6 @@ jobs:
 
             - name: TypeScript typecheck
               run: pnpm --filter happy-app typecheck
+
+            - name: FlashList web regression tests
+              run: node --test patches/fix-flash-list-web-*.test.cjs
