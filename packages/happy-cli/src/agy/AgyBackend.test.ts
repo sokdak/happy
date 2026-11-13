@@ -22,7 +22,13 @@ function makeFakeChild() {
 }
 
 describe('AgyBackend', () => {
-  it.each(['Gemini 3.8 Flash', 'Gemini 4 Argon'])('passes %s and effort to agy --model', async (model) => {
+  it.each([
+    ['Gemini 3.8 Flash', 'high', 'High'],
+    ['Gemini 4 Argon', 'high', 'High'],
+    ['Gemini 4 Carbon', 'high', 'High'],
+    ['Gemini 4 Hydrogen', 'high', 'High'],
+    ['Gemini 4 Hydrogen', 'xhigh', 'XHigh'],
+  ])('passes %s with %s effort to agy --model', async (model, effort, label) => {
     const { child } = makeFakeChild();
     const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
     const backend = new AgyBackend({
@@ -34,14 +40,14 @@ describe('AgyBackend', () => {
       resolveConversationId: () => null,
     });
 
-    backend.setEffort('high');
+    backend.setEffort(effort);
     const turn = backend.sendPrompt('/work', 'hi');
     child.emit('close', 0);
     await turn;
 
     const args = (spawnFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
     const modelIndex = args.indexOf('--model');
-    expect(args[modelIndex + 1]).toBe(`${model} (High)`);
+    expect(args[modelIndex + 1]).toBe(`${model} (${label})`);
   });
 
   it('maps a successful turn: running → model-output(s) → idle', async () => {

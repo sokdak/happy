@@ -68,6 +68,8 @@ export function resolveAgyBin(): string {
 export const AGY_MODELS = [
   'Gemini 3.8 Flash',
   'Gemini 4 Argon',
+  'Gemini 4 Carbon',
+  'Gemini 4 Hydrogen',
   'Claude Sonnet 4.6 (Thinking)',
   'Claude Opus 4.6 (Thinking)',
   'GPT-OSS 120B (Medium)',
@@ -75,8 +77,18 @@ export const AGY_MODELS = [
 
 export const AGY_GEMINI_3_8_FLASH_MODEL = 'Gemini 3.8 Flash';
 export const AGY_GEMINI_4_ARGON_MODEL = 'Gemini 4 Argon';
-export const AGY_EFFORTS = ['low', 'medium', 'high'] as const;
+export const AGY_GEMINI_4_CARBON_MODEL = 'Gemini 4 Carbon';
+export const AGY_GEMINI_4_HYDROGEN_MODEL = 'Gemini 4 Hydrogen';
+const AGY_STANDARD_EFFORTS = ['low', 'medium', 'high'] as const;
+export const AGY_EFFORTS = [...AGY_STANDARD_EFFORTS, 'xhigh'] as const;
 export type AgyEffort = typeof AGY_EFFORTS[number];
+
+const AGY_EFFORTS_BY_MODEL = new Map<string, readonly AgyEffort[]>([
+  [AGY_GEMINI_3_8_FLASH_MODEL, AGY_STANDARD_EFFORTS],
+  [AGY_GEMINI_4_ARGON_MODEL, AGY_STANDARD_EFFORTS],
+  [AGY_GEMINI_4_CARBON_MODEL, AGY_STANDARD_EFFORTS],
+  [AGY_GEMINI_4_HYDROGEN_MODEL, AGY_EFFORTS],
+]);
 
 /**
  * Default agy model. A Gemini model on purpose: this backend exists as a fallback
@@ -99,11 +111,17 @@ export function resolveAgyModelName(
   model: string,
   effort: string | null | undefined,
 ): string {
-  if (model !== AGY_GEMINI_3_8_FLASH_MODEL && model !== AGY_GEMINI_4_ARGON_MODEL) {
+  const supportedEfforts = AGY_EFFORTS_BY_MODEL.get(model);
+  if (!supportedEfforts) {
     return model;
   }
-  const resolvedEffort = normalizeAgyEffort(effort);
-  const effortLabel = resolvedEffort[0].toUpperCase() + resolvedEffort.slice(1);
+  const normalizedEffort = normalizeAgyEffort(effort);
+  const resolvedEffort = supportedEfforts.includes(normalizedEffort)
+    ? normalizedEffort
+    : DEFAULT_AGY_EFFORT;
+  const effortLabel = resolvedEffort === 'xhigh'
+    ? 'XHigh'
+    : resolvedEffort[0].toUpperCase() + resolvedEffort.slice(1);
   return `${model} (${effortLabel})`;
 }
 
