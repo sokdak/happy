@@ -69,6 +69,21 @@ describe('resolveAgyModelName', () => {
       .toBe('Gemini 3.8 Flash (Medium)');
   });
 
+  it.each([
+    ['low', 'Gemini 4 Argon (Low)'],
+    ['medium', 'Gemini 4 Argon (Medium)'],
+    ['high', 'Gemini 4 Argon (High)'],
+    [undefined, 'Gemini 4 Argon (Medium)'],
+    ['ultra', 'Gemini 4 Argon (Medium)'],
+  ])('maps Argon with effort %s to %s', (effort, expected) => {
+    expect(resolveAgyModelName('Gemini 4 Argon', effort)).toBe(expected);
+  });
+
+  it('keeps an explicitly saved Argon variant independent of the effort picker', () => {
+    expect(resolveAgyModelName('Gemini 4 Argon (Low)', 'high'))
+      .toBe('Gemini 4 Argon (Low)');
+  });
+
   it('passes non-Gemini and saved legacy model names through', () => {
     expect(resolveAgyModelName('Claude Opus 4.6 (Thinking)', 'high'))
       .toBe('Claude Opus 4.6 (Thinking)');

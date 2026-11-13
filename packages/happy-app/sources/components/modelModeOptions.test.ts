@@ -327,7 +327,7 @@ describe('modelModeOptions', () => {
         // the agentDefaults agy default must be selectable
         expect(keys).toContain('Gemini 3.8 Flash');
         expect(getDefaultModelKey('agy')).toBe('Gemini 3.8 Flash');
-        expect(keys.filter((key) => key.startsWith('Gemini '))).toEqual(['Gemini 3.8 Flash']);
+        expect(keys.filter((key) => key.startsWith('Gemini '))).toEqual(['Gemini 3.8 Flash', 'Gemini 4 Argon']);
         expect(getEffortLevelsForModel('agy', 'Gemini 3.8 Flash').map((level) => level.key))
             .toEqual(['low', 'medium', 'high']);
         // no 'default' entry — agy would receive the literal string "default" as --model
@@ -335,6 +335,18 @@ describe('modelModeOptions', () => {
         // not the claude list
         expect(keys).not.toContain('opus');
         expect(keys).not.toContain('sonnet');
+    });
+
+    it('offers Argon with its three agy thinking levels', () => {
+        const models = getAvailableModels('agy', null, translate);
+
+        expect(models.find((model) => model.key === 'Gemini 4 Argon')).toMatchObject({
+            name: 'Gemini 4 Argon',
+            providerId: 'google',
+            providerName: 'Google',
+        });
+        expect(getEffortLevelsForModel('agy', 'Gemini 4 Argon').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high']);
     });
 
     it('keeps a saved legacy agy model selectable without restoring it to the catalog', () => {

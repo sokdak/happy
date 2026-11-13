@@ -67,12 +67,14 @@ export function resolveAgyBin(): string {
  */
 export const AGY_MODELS = [
   'Gemini 3.8 Flash',
+  'Gemini 4 Argon',
   'Claude Sonnet 4.6 (Thinking)',
   'Claude Opus 4.6 (Thinking)',
   'GPT-OSS 120B (Medium)',
 ] as const;
 
 export const AGY_GEMINI_3_8_FLASH_MODEL = 'Gemini 3.8 Flash';
+export const AGY_GEMINI_4_ARGON_MODEL = 'Gemini 4 Argon';
 export const AGY_EFFORTS = ['low', 'medium', 'high'] as const;
 export type AgyEffort = typeof AGY_EFFORTS[number];
 
@@ -97,12 +99,12 @@ export function resolveAgyModelName(
   model: string,
   effort: string | null | undefined,
 ): string {
-  if (model !== AGY_GEMINI_3_8_FLASH_MODEL) {
+  if (model !== AGY_GEMINI_3_8_FLASH_MODEL && model !== AGY_GEMINI_4_ARGON_MODEL) {
     return model;
   }
   const resolvedEffort = normalizeAgyEffort(effort);
   const effortLabel = resolvedEffort[0].toUpperCase() + resolvedEffort.slice(1);
-  return `${AGY_GEMINI_3_8_FLASH_MODEL} (${effortLabel})`;
+  return `${model} (${effortLabel})`;
 }
 
 /** Timeout passed to `agy --print-timeout` for a single print turn. */

@@ -22,13 +22,13 @@ function makeFakeChild() {
 }
 
 describe('AgyBackend', () => {
-  it('maps the logical Gemini model and effort to the agy model display name', async () => {
+  it.each(['Gemini 3.8 Flash', 'Gemini 4 Argon'])('passes %s and effort to agy --model', async (model) => {
     const { child } = makeFakeChild();
     const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
     const backend = new AgyBackend({
       cwd: '/work',
       permissionMode: 'default',
-      model: 'Gemini 3.8 Flash',
+      model,
       effort: 'medium',
       spawnFn,
       resolveConversationId: () => null,
@@ -41,7 +41,7 @@ describe('AgyBackend', () => {
 
     const args = (spawnFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
     const modelIndex = args.indexOf('--model');
-    expect(args[modelIndex + 1]).toBe('Gemini 3.8 Flash (High)');
+    expect(args[modelIndex + 1]).toBe(`${model} (High)`);
   });
 
   it('maps a successful turn: running → model-output(s) → idle', async () => {

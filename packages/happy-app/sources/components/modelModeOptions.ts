@@ -361,6 +361,7 @@ export function getOpenClawModelModes(): ModelMode[] {
 export function getAgyModelModes(): ModelMode[] {
     return [
         { key: 'Gemini 3.8 Flash', name: 'Gemini 3.8 Flash', description: null, providerId: 'google', providerName: 'Google' },
+        { key: 'Gemini 4 Argon', name: 'Gemini 4 Argon', description: null, providerId: 'google', providerName: 'Google' },
         { key: 'Claude Sonnet 4.6 (Thinking)', name: 'Claude Sonnet 4.6 (Thinking)', description: null, providerId: 'anthropic', providerName: 'Anthropic' },
         { key: 'Claude Opus 4.6 (Thinking)', name: 'Claude Opus 4.6 (Thinking)', description: null, providerId: 'anthropic', providerName: 'Anthropic' },
         { key: 'GPT-OSS 120B (Medium)', name: 'GPT-OSS 120B (Medium)', description: null, providerId: 'openai', providerName: 'OpenAI' },
@@ -546,11 +547,12 @@ function effortLevels(keys: readonly string[]): EffortLevel[] {
 // `off`: Claude's floor is `low`.
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
-// Antigravity exposes Gemini 3.8 Flash's three selectable thinking variants as
+// Antigravity exposes Gemini's selectable thinking variants as
 // separate model display names. Happy presents them through its effort picker;
 // happy-cli performs the final model-name mapping at the provider boundary.
 const AGY_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
     'Gemini 3.8 Flash': ['low', 'medium', 'high'],
+    'Gemini 4 Argon': ['low', 'medium', 'high'],
 };
 
 // Exactly what each model publishes in Codex's own registry, in its order
