@@ -428,3 +428,38 @@ describe('opt-in incremental text delivery', () => {
     expect(mapper.endTurn('completed').map(e => e.ev)).toEqual([{ t: 'turn-end', status: 'completed' }]);
   });
 });
+
+
+describe('AGY Markdown segment preservation', () => {
+  it('retains every whitespace character and keeps tool-delimited segments separate', () => {
+    const mapper = new AcpSessionManager({ preserveTextWhitespace: true });
+    mapper.startTurn();
+    const parts = ['\n**bold', ' text**\n\n', '```ts\n', 'const a = 1;\n', '```\n'];
+    expect(parts.flatMap(textDelta => mapper.mapMessage({ type: 'model-output', textDelta }))).toEqual([]);
+    const boundary = mapper.mapMessage({ type: 'tool-call', callId: 'read', toolName: 'Read', args: {} });
+    expect(boundary.map(e => e.ev)).toEqual([
+      { t: 'text', text: parts.join('') },
+      expect.objectContaining({ t: 'tool-call-start' }),
+    ]);
+    mapper.mapMessage({ type: 'model-output', textDelta: 'Final answer\n' });
+    expect(mapper.endTurn('completed').map(e => e.ev)).toEqual([
+      { t: 'text', text: 'Final answer\n' }, { t: 'turn-end', status: 'completed' },
+    ]);
+  });
+});
+
+
+describe('opt-in tool completion status', () => {
+  it.each([true, false])('forwards safe result and error status when opted in (%s)', (isError) => {
+    const mapper = new AcpSessionManager({ forwardToolResults: true });
+    mapper.startTurn();
+    const [start] = mapper.mapMessage({ type: 'tool-call', callId: 'c1', toolName: 'Bash', args: {} });
+    const [end] = mapper.mapMessage({ type: 'tool-result', callId: 'c1', toolName: 'Bash', result: 'Safe status.', isError });
+    expect(end.ev).toEqual({ t: 'tool-call-end', call: (start.ev as any).call, result: 'Safe status.', isError });
+  });
+  it('does not change completion payloads for other runners', () => {
+    const mapper = new AcpSessionManager();
+    expect(mapper.mapMessage({ type: 'tool-result', callId: 'c1', toolName: 'Bash', result: 'Private output', isError: true })[0].ev)
+      .toEqual({ t: 'tool-call-end', call: expect.any(String) });
+  });
+});

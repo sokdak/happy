@@ -113,6 +113,13 @@ describe('session protocol schemas', () => {
   });
 });
 
+describe('tool completion status compatibility', () => {
+  it.each([true, false])('retains explicit isError=%s and safe status after JSON roundtrip', isError => {
+    const envelope = createEnvelope('agent', { t: 'tool-call-end', call: 'call-1', result: 'Safe status.', isError });
+    expect(sessionEnvelopeSchema.parse(JSON.parse(JSON.stringify(envelope))).ev).toEqual(envelope.ev);
+  });
+});
+
 describe('createEnvelope', () => {
   it('creates id by default', () => {
     const envelope = createEnvelope('agent', { t: 'turn-start' });

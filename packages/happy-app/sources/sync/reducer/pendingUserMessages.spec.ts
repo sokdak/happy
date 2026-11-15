@@ -458,3 +458,44 @@ describe('participants and turns', () => {
         expect(updated.kind === 'tool-call' && updated.turn).toBe('turn-a');
     });
 });
+
+
+describe('legacy AGY prompt ordering across device clock skew', () => {
+    it('keeps successive local prompts in send order with a slow clock', () => {
+        const state = createReducer();
+        reducer(state, [agentText('old', 'previous answer', 5000)]);
+        const first = reducer(state, [optimistic('one', 'first', 1000)]).messages[0];
+        const second = reducer(state, [optimistic('two', 'second', 1001)]).messages[0];
+        expect(messageSortKey(second)).toBeGreaterThan(messageSortKey(first));
+    });
+    it('corrects a fast clock at the first echo so the next answer stays below it', () => {
+        const state = createReducer();
+        reducer(state, [optimistic('one', 'first', 9000)]);
+        const first = reducer(state, [echo('server-one', 'one', 'first', 6000)]).messages[0];
+        expect(messageSortKey(first)).toBe(6000);
+    });
+    it.each(['echo-later', 'same-batch'] as const)('places the next prompt after the completed answer and before the next answer (%s)', delivery => {
+        const state = createReducer();
+        const rows = new Map<string, Message>();
+        const apply = (messages: NormalizedMessage[]) => {
+            for (const row of reducer(state, messages).messages) rows.set(row.id, row);
+        };
+        const order = () => [...rows.values()].sort((a, b) => messageSortKey(a) - messageSortKey(b)).map(row => row.kind === 'user-text' ? 'USER' : row.kind === 'agent-text' ? row.text : row.kind);
+        apply([agentText('old', 'previous answer', 5000)]);
+        const local = optimistic('local-next', 'next task', 1000);
+        const remote = echo('server-next', 'local-next', 'next task', 6000);
+        if (delivery === 'same-batch') apply([local, remote]);
+        else {
+            apply([local]);
+            expect(order()).toEqual(['previous answer', 'USER']);
+            apply([remote]);
+        }
+        apply([agentText('next', 'next answer', 7000)]);
+        expect(order()).toEqual(['previous answer', 'USER', 'next answer']);
+        const user = [...rows.values()].find(row => row.kind === 'user-text')!;
+        expect(messageSortKey(user)).toBe(6000);
+        expect(reducer(state, [remote]).messages).toHaveLength(0);
+        const reloaded = reducer(createReducer(), [agentText('old', 'previous answer', 5000), remote, agentText('next', 'next answer', 7000)]).messages;
+        expect(reloaded.sort((a, b) => messageSortKey(a) - messageSortKey(b)).map(row => row.kind === 'user-text' ? 'USER' : row.kind === 'agent-text' ? row.text : row.kind)).toEqual(order());
+    });
+});

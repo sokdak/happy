@@ -17,6 +17,7 @@ import { Typography } from '@/constants/Typography';
 import { parseLocalCommandMessage, isUserSlashCommandEcho } from './parseLocalCommandMessage';
 import { resolveUserMessageBubbleColor } from '@/utils/userMessageBubbleColor';
 import { LongPressCopyable } from './LongPressCopyable';
+import { thinkingSummary } from '@/utils/thinkingSummary';
 
 
 export const MessageView = React.memo((props: {
@@ -60,7 +61,7 @@ function RenderBlock(props: {
       );
 
     case 'agent-text':
-      return <AgentTextBlock message={props.message} sessionId={props.sessionId} />;
+      return <AgentTextBlock message={props.message} sessionId={props.sessionId} showThinking={props.metadata?.flavor === 'agy'} />;
 
     case 'tool-call':
       return <ToolCallBlock
@@ -259,14 +260,37 @@ function UserTextBlock(props: {
 function AgentTextBlock(props: {
   message: AgentTextMessage;
   sessionId: string;
+  showThinking?: boolean;
 }) {
   const handleOptionPress = React.useCallback((option: Option) => {
     sync.sendMessage(props.sessionId, option.title, { source: 'option' });
   }, [props.sessionId]);
 
-  // Hide thinking messages
+  const { theme } = useUnistyles();
+  const [thinkingExpanded, setThinkingExpanded] = React.useState(false);
   if (props.message.isThinking) {
-    return null;
+    // AGY exposes public thought summaries through ACP; keep them discoverable
+    // without filling the transcript with expanded reasoning by default.
+    if (!props.showThinking) return null;
+    const text = props.message.text;
+    // The reducer wraps thinking in Markdown emphasis for legacy renderers.
+    const summary = thinkingSummary(text);
+    if (!summary.trim()) return null;
+    return (
+      <View style={styles.agentMessageContainer}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t('sessionInfo.thinking')}
+          accessibilityState={{ expanded: thinkingExpanded }}
+          onPress={() => setThinkingExpanded(value => !value)}
+          style={styles.thinkingToggle}
+        >
+          <Text style={styles.thinkingText}>{t('sessionInfo.thinking')}</Text>
+          <Ionicons name={thinkingExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={theme.colors.agentEventText} />
+        </Pressable>
+        {thinkingExpanded ? <Text selectable style={styles.thinkingText}>{summary}</Text> : null}
+      </View>
+    );
   }
 
   return (
@@ -463,6 +487,17 @@ const styles = StyleSheet.create((theme) => ({
     marginVertical: 10,
     borderRadius: 16,
     maxWidth: '100%',
+  },
+  thinkingToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
+  },
+  thinkingText: {
+    color: theme.colors.agentEventText,
+    fontSize: 14,
+    lineHeight: 20,
   },
   copyAction: {
     // No width, so the box shrink-wraps the glyph and its left edge lands on the

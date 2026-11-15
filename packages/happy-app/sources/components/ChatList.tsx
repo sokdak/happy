@@ -313,8 +313,8 @@ const ChatListInternal = React.memo((props: {
     const currentTurnComplete = session?.thinking !== true
         && !hasPendingPermission;
     const groupingOptions = React.useMemo(
-        () => ({ collapseCurrentTurn: currentTurnComplete }),
-        [currentTurnComplete],
+        () => ({ collapseCurrentTurn: currentTurnComplete, showThinking: props.metadata?.flavor === 'agy' }),
+        [currentTurnComplete, props.metadata?.flavor],
     );
 
     // Messages arrive newest-first, so the window is a prefix of the array and

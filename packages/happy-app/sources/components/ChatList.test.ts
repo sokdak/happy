@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
     isLoadingOlder: false,
     session: null as any,
     platform: 'ios',
+    groupToolCalls: true,
     scrollNode: null as any,
 }));
 vi.hoisted(() => {
@@ -96,7 +97,7 @@ vi.mock('@expo/vector-icons', async () => {
 vi.mock('@/sync/storage', () => ({
     useSession: () => state.session,
     useSessionMessages: () => ({ messages: state.messages, hasMoreOlder: state.hasMoreOlder, isLoadingOlder: state.isLoadingOlder }),
-    useSetting: () => true,
+    useSetting: (key: string) => key === 'groupToolCalls' ? state.groupToolCalls : true,
 }));
 vi.mock('@/sync/storageTypes', () => ({}));
 vi.mock('@/sync/typesMessage', () => ({}));
@@ -215,6 +216,7 @@ afterEach(() => {
     state.isLoadingOlder = false;
     state.session = null;
     state.platform = 'ios';
+    state.groupToolCalls = true;
     state.scrollNode = null;
     vi.mocked(sync.loadOlderMessages).mockReset();
     vi.mocked(Modal.alert).mockClear();
@@ -879,5 +881,23 @@ describe('ChatList work-group folding', () => {
         state.session = { ...state.session, id: 'other-session', metadata: { revision: 5 } };
         renderChat(renderer);
         expect(messageIds(renderer)).not.toContain('tool-earliest');
+    });
+});
+
+describe('AGY Thinking reaches transcript rows', () => {
+    it.each([false, true])('gates Thinking by flavor with groupToolCalls=%s', enabled => {
+        state.groupToolCalls = enabled;
+        state.session = { id: 'session', metadata: { flavor: 'agy' }, thinking: true, agentState: { requests: {} } };
+        state.messages = [{ ...agentMessage('thought', 2), isThinking: true }, userMessage('user', 1)];
+        const renderer = renderChat(undefined);
+        expect(messageIds(renderer)).toContain('thought');
+        for (const flavor of ['codex', 'claude', 'gemini']) {
+            state.session = { ...state.session, metadata: { flavor } };
+            renderChat(renderer);
+            expect(messageIds(renderer)).not.toContain('thought');
+        }
+        state.session = { ...state.session, metadata: { flavor: 'agy' } };
+        renderChat(renderer);
+        expect(messageIds(renderer)).toContain('thought');
     });
 });

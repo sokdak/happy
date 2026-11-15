@@ -54,6 +54,9 @@ export const sessionToolCallStartEventSchema = z.object({
 export const sessionToolCallEndEventSchema = z.object({
   t: z.literal('tool-call-end'),
   call: z.string(),
+  // Matches the optional completion fields already accepted by the app.
+  result: z.string().optional(),
+  isError: z.boolean().optional(),
 });
 
 export const sessionFileEventSchema = z.object({
