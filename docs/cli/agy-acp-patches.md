@@ -5,9 +5,10 @@ turns. It forwards public text/thought notifications and tool lifecycle events
 through the existing Happy session protocol. The agent decides whether to emit
 thoughts or progress text; the adapter does not manufacture them.
 
-This patch stack is deliberately temporary and separable so the fork can adopt
-an upstream implementation later. It changes no app or wire schemas, adds no
-package dependencies, and leaves the generic `AcpBackend` unchanged.
+The fork can replace these patches with an upstream implementation later.
+The resume additions use optional app metadata/capability fields, change no wire
+event schemas, add no package dependencies, and leave the generic `AcpBackend`
+unchanged.
 
 ## Runtime behavior
 
@@ -87,8 +88,9 @@ happy agy --resume <native-ACP-session-id>
 HAPPY_AGY_TRANSPORT=print happy agy
 ```
 
-`--resume` creates a new Happy session around the explicitly selected native
-conversation. It does not reopen the old Happy session's mobile entry. It is a
+`happy agy --resume <native-ACP-session-id>` without a Happy reconnect identity
+creates a new Happy session around the explicitly selected native conversation.
+Use app/web Resume or `happy resume <Happy-ID>` to reopen the existing entry. It is a
 per-launch CLI option, not a daemon-wide environment variable that could make
 unrelated sessions share a conversation.
 
@@ -104,72 +106,62 @@ separate from merging the code.
 
 ## Patch boundaries and upstream replacement
 
-Preserve the commits with a merge commit or rebase merge. **Do not squash** this
-stack if individual reverts are desired.
+PR [#38](https://github.com/sokdak/happy/pull/38) was squash-merged as
+`4d58169`. Its original transport, title and runtime commits are therefore one
+baseline commit on `sokdak/main`; their original individual revert commands no
+longer apply to main.
+
+The follow-up app/web resume work is split as follows. Preserve these commits
+with a merge commit or rebase merge. **Do not squash** if individual reverts are
+desired.
 
 | Commit | Responsibility | Dependencies |
 | --- | --- | --- |
-| `e91413a` | Transport-independent tool-card mapping and diagnostic redaction, with tests (`toolDisplay.*`) | None |
-| `6aca0d1` | Structured progress for the existing print adapter (`streamJson.*`, `AgyBackend.*`, `cliArgs.*`) | Mapping |
-| `0f435d6` | Opt-in text flush method and its tests in `AcpSessionManager` | None; no behavior change for other callers |
-| `5533224` | Isolated persistent ACP engine, protocol/lifecycle tests and opt-in live probe | Mapping; live probe also uses the flush method |
-| `23bac14` | Happy title MCP, first-turn instructions, reconnect-safe session forwarding, exact title approvals and lifecycle tests/live probe | ACP engine and runtime integration |
-| `8cf5843` | Switch `runAgy` to ACP, Happy permissions/images/queue/shutdown integration, explicit CLI resume, metadata ID, explicit print fallback | Mapping, ACP engine, flush method |
+| `4d58169` | Merged #38: persistent ACP transport, title MCP, images, permissions and print fallback | Existing timeout PR #37 |
+| `9ecea62` | Same-Happy-session resume through CLI/daemon, native ID recovery, preserved metadata/settings and advertised capability | #38 ACP runtime |
+| `711e512` | Shared app/web resume eligibility, optional schemas, fallback command and RPC tests | CLI/daemon resume capability |
 
-Title integration can be removed independently with `git revert 23bac14`.
-Its only shared-server changes narrow the required client interface and close
-remaining HTTP connections on stop; the existing summary handler is reused.
-
-The print parser is not imported by the ACP engine. Reverting just `6aca0d1`
-leaves ACP functioning and restores the original plain-text print fallback.
-This combination was typechecked in a disposable worktree.
-
-To return to improved print mode in code while waiting for an upstream ACP
-replacement, revert the runtime integration first, then the unused engine:
+Remove app/web support alone with `git revert 711e512`. To remove all new resume
+code while retaining the merged ACP/title baseline:
 
 ```sh
-git revert 23bac14 8cf5843 5533224
+git revert 711e512 9ecea62
 ```
 
-To remove the entire code stack before adopting the upstream implementation,
-revert dependents before their foundations:
+If upstream replaces the entire fork integration, first revert the follow-up
+documentation commit(s), then remove the code dependents below. Reverting the
+documentation first avoids a modify/delete conflict when #38 removes this guide:
 
 ```sh
-git revert 23bac14 8cf5843 5533224 0f435d6 6aca0d1 e91413a
+git revert 711e512 9ecea62 4d58169
 ```
 
-The full sequence was checked in a disposable worktree and restores the exact
-pre-stack tracked tree (`f937489`). These commands apply to this PR's tree;
-later overlapping edits or rebased/squashed commit IDs need corresponding
-resolution. This documentation can be removed separately once the migration is
-complete. The previously merged timeout PR #37 is outside this stack and is not
-reverted by these commands.
-
-As of 2026-11-15, upstream progress PRs
-[#1742](https://github.com/slopus/happy/pull/1742) and
-[#1709](https://github.com/slopus/happy/pull/1709) are open. Compare the actual
-upstream behavior before replacement; similar PR titles do not imply equivalent
-session, approval, cancellation or resume semantics.
+These sequences were checked in a disposable worktree: the first restores the
+#38 source tree, and the second restores the pre-#38 source tree (`f937489`).
+Resume-only rollback can keep this guide. Later overlapping changes or rebased
+commit IDs require corresponding resolution. The timeout fix #37 is outside
+this stack. Compare actual upstream behavior before replacement, including
+session identity, approvals, cancellation and resume semantics.
 
 ## Validation
 
 From `packages/happy-cli`:
 
 ```sh
-pnpm exec vitest run --project unit src/agy/ src/agent/acp/AcpSessionManager.test.ts
+pnpm exec vitest run --project unit src/agy/ src/resume/ src/daemon/run.resume.test.ts src/daemon/sessionEnvironment.test.ts src/agent/acp/AcpSessionManager.test.ts src/api/apiMachine.test.ts src/api/apiMachine.resumeFallback.test.ts
 pnpm run typecheck
 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-acp.mts
 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-title.mts
 ```
 
-The unit/wire suite covers 126 cases, including shared mapper regressions,
+The unit/wire suite covers 216 cases across 19 files, including shared mapper regressions,
 continuous text delivery, permission allow/deny/pending-abort, explicit session
 loading and replay suppression, model/mode requests, unsupported inputs,
 control timeouts, spawn failure, disconnect recovery without prompt replay,
 cooperative/uncooperative cancellation, forced process cleanup, image ownership,
 FIFO settings and offline reconnection.
 
-The authenticated live probe uses a temporary fixture workspace and real `agy`
+The authenticated live probe, run for #38, uses a temporary fixture workspace and real `agy`
 credentials already installed on the host. It verifies text before completion,
 Read/Bash cards, multi-turn context, explicit resume after process restart,
 model switching, red-image interpretation, cancellation and a successful next
@@ -179,10 +171,48 @@ not part of the default unit suite. The observed six-turn run passed in about
 42 seconds. This is real ACP/Happy-envelope validation, not a physical-phone UI
 test.
 
-The separate title live probe verifies automatic initial title generation from
+The separate title live probe, also run for #38, verifies automatic initial title generation from
 an ordinary gardening question, an explicit topic/title change, and title
 updates after explicit resume, using real `agy acp` and the real Happy MCP
 server/bridge in default permission mode. It records fixture summaries through
 a local test client, without connecting to the production Happy API. All three
 scenarios passed, and the probe exited normally with no remaining bridge child.
 The MCP endpoint test also verifies routing after a Happy client swap.
+
+## App and web resume
+
+The shared session view now offers Resume for disconnected AGY ACP sessions
+with `agySessionId` on the same online machine. The daemon must advertise
+`resumeSupport.agy: true`; older daemons and explicit print transport do not
+enable this button. The normal encrypted machine resume RPC carries the original
+Happy ID and its per-session key, and launches `agy --resume <native-ID>`.
+The runner reattaches to the original Happy session, preserves saved metadata
+(including title/model choices), clears archive state, and skips replaying old
+messages. New messages continue the loaded ACP conversation. Model/permission
+launch arguments are honored. Native load failures never create a fresh native
+conversation. Old print sessions without a saved native ID remain unsupported
+and report the missing conversation identifier.
+
+`happy resume <Happy-ID>` also supports persisted AGY sessions. In contrast,
+`happy agy --resume <native-ID>` without a Happy reconnect identity still creates
+a new Happy chat wrapping the selected native conversation. AGY reconnect
+metadata is sent through a session-scoped child environment value which is
+removed from unrelated launches; incomplete/mismatched identities fail instead
+of silently creating a new Happy session.
+
+App/web validation (from `packages/happy-app`):
+
+```sh
+pnpm exec vitest run sources/utils/sessionResume.test.ts sources/utils/resumeCommand.test.ts sources/sync/ops.resume.test.ts
+pnpm run typecheck
+```
+
+All 21 cases across 3 files pass, as do CLI and app typechecks and the CLI build.
+Tests cover shared button eligibility, old-daemon gating, metadata schema
+preservation, the encrypted RPC payload, daemon launch/metadata refresh, the
+original Happy ID/key/cursors, retained title/settings, and historical-message
+suppression. App and web use the same view/action implementation. This is
+component-logic/RPC/runner validation with mocked transport boundaries, not a
+physical-phone or browser end-to-end test. The real native ACP load/resume path
+was verified separately by the authenticated live probes above. No app/web
+release, CLI installation or daemon restart is performed by this PR.

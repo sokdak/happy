@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { buildResumeCommand, buildResumeCommandBlock } from './resumeCommand';
 
 describe('buildResumeCommand', () => {
+    it('builds an explicit AGY fallback command and refuses print sessions without an ACP ID', () => {
+        expect(buildResumeCommand({ flavor: 'agy', agySessionId: 'agy-native', path: '/project' })).toBe("cd '/project' && happy agy --resume agy-native");
+        expect(buildResumeCommand({ flavor: 'agy', claudeSessionId: 'stale' })).toBeNull();
+    });
+
     it('never offers a native CLI resume command for Rig sessions', () => {
         expect(buildResumeCommand({
             path: '/tmp/project',

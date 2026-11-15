@@ -9,6 +9,7 @@ const fixture = vi.hoisted(() => {
   const session: any = {
     rpcHandlerManager: { registerHandler: vi.fn((name, handler) => rpc.set(name, handler)) },
     sendSessionProtocolMessage: vi.fn(), sendSessionEvent: vi.fn(), keepAlive: vi.fn(),
+    skipExistingMessages: vi.fn(), suppressNextArchiveSignal: vi.fn(),
     updateMetadata: vi.fn(), updateAgentState: vi.fn(), sendSessionDeath: vi.fn(), flush: vi.fn(), close: vi.fn(),
     onUserMessage: vi.fn((fn) => { session.user = fn; }),
     onFileEvent: vi.fn((fn) => { session.file = fn; }),
@@ -35,14 +36,14 @@ const fixture = vi.hoisted(() => {
     cancel = vi.fn(async () => {});
     dispose = vi.fn(async () => {});
   }
-  return { session, calls, rpc, listeners, initialSession: undefined as any, swap: undefined as any, backend: new FakeBackend(), FakeBackend };
+  return { createSession: vi.fn(async () => null), session, calls, rpc, listeners, reconnectResponse: undefined as any, initialSession: undefined as any, swap: undefined as any, backend: new FakeBackend(), FakeBackend };
 });
 vi.mock('./happyMcp', () => ({ AGY_TITLE_INSTRUCTION: 'title instruction', startAgyHappyMcp: vi.fn(async () => ({ mcpServers: [], stop: vi.fn() })) }));
-vi.mock('@/api/api', () => ({ ApiClient: { create: async () => ({ getOrCreateMachine: vi.fn(), getOrCreateSession: async () => null }) } }));
+vi.mock('@/api/api', () => ({ ApiClient: { create: async () => ({ getOrCreateMachine: vi.fn(), getOrCreateSession: fixture.createSession }) } }));
 vi.mock('@/persistence', () => ({ readSettings: async () => ({ machineId: 'fixture' }) }));
 vi.mock('@/daemon/run', () => ({ initialMachineMetadata: {} }));
 vi.mock('@/utils/createSessionMetadata', () => ({ createSessionMetadata: () => ({ state: {}, metadata: {} }) }));
-vi.mock('@/utils/setupOfflineReconnection', () => ({ setupOfflineReconnection: ({ onSessionSwap }: any) => { fixture.swap = onSessionSwap; return { session: fixture.initialSession ?? fixture.session }; } }));
+vi.mock('@/utils/setupOfflineReconnection', () => ({ setupOfflineReconnection: ({ onSessionSwap, response }: any) => { fixture.reconnectResponse = response; fixture.swap = onSessionSwap; return { session: fixture.initialSession ?? fixture.session }; } }));
 vi.mock('@/daemon/controlClient', () => ({ notifyDaemonSessionStarted: vi.fn() }));
 vi.mock('@/claude/registerKillSessionHandler', () => ({ registerKillSessionHandler: (_s: any, fn: any) => { fixture.session.kill = fn; } }));
 vi.mock('./AgyAcpBackend', () => ({ AgyAcpBackend: fixture.FakeBackend, AgyCancelledError: class extends Error {} }));
@@ -56,20 +57,36 @@ import { startAgyHappyMcp } from './happyMcp';
 import { createAgyBackend } from './createBackend';
 
 let running: Promise<void> | undefined;
-async function begin() {
-  running = runAgy({ credentials: {} as any });
+async function begin(options: Partial<Parameters<typeof runAgy>[0]> = {}) {
+  running = runAgy({ credentials: {} as any, ...options });
   await vi.waitFor(() => expect(fixture.session.kill).toBeTypeOf('function'));
 }
 beforeEach(() => {
   vi.clearAllMocks(); fixture.calls.length = 0; fixture.session.pending = []; fixture.session.kill = undefined; fixture.rpc.clear(); fixture.initialSession = undefined; fixture.swap = undefined;
 });
-afterEach(async () => { await fixture.session.kill?.(); await running; running = undefined; });
+afterEach(async () => { await fixture.session.kill?.(); await running; running = undefined; vi.unstubAllEnvs(); });
 
 function user(text: string, meta: Record<string, unknown> = {}) {
   fixture.session.user({ role: 'user', content: { type: 'text', text }, meta });
 }
 
 describe('Antigravity Happy runner integration', () => {
+  it('reattaches to the existing encrypted Happy session without creating or replaying messages', async () => {
+    vi.stubEnv('HAPPY_AGY_RECONNECT_METADATA', JSON.stringify({ flavor: 'agy', agySessionId: 'existing-agy', summary: { text: 'Keep title' } }));
+    const values = { SESSION_ID: 'existing-happy', ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), ENCRYPTION_VARIANT: 'dataKey', SEQ: '42', METADATA_VERSION: '3', AGENT_STATE_VERSION: '4' };
+    for (const [key, value] of Object.entries(values)) vi.stubEnv(`HAPPY_RECONNECT_${key}`, value);
+    await begin({ resumeSessionId: 'existing-agy', model: 'Gemini 4 Carbon', permissionMode: 'plan' });
+    expect(fixture.createSession).not.toHaveBeenCalled();
+    expect(fixture.reconnectResponse).toMatchObject({ id: 'existing-happy', metadata: { summary: { text: 'Keep title' } }, seq: 42, metadataVersion: 3, agentStateVersion: 4 });
+    expect(fixture.session.skipExistingMessages).toHaveBeenCalledTimes(1);
+    expect(fixture.session.suppressNextArchiveSignal).toHaveBeenCalledTimes(1);
+    expect(createAgyBackend).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: 'existing-agy', model: 'Gemini 4 Carbon', permissionMode: 'plan' }));
+    expect(fixture.calls).toHaveLength(0);
+    user('continue');
+    await vi.waitFor(() => expect(fixture.calls).toHaveLength(1));
+    expect(fixture.calls[0]).toMatchObject({ text: 'continue', model: 'Gemini 4 Carbon', mode: 'plan' });
+  });
+
   it('connects title MCP and instructions and stops its server on shutdown', async () => {
     await begin();
     expect(startAgyHappyMcp).toHaveBeenCalledTimes(1);

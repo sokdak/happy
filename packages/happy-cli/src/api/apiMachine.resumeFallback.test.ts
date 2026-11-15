@@ -79,6 +79,12 @@ describe('resume-happy-session fallback payload', () => {
         } as any);
     });
 
+    it('preserves AGY metadata over the encrypted machine resume RPC', async () => {
+        const fallback = { ...validFallback, metadata: { path: '/project', machineId: 'test-machine-id', flavor: 'agy', agySessionId: 'native-agy' } };
+        await handlers.get('resume-happy-session')!({ sessionId: 'session-1', fallback, model: 'Gemini 4 Carbon', permissionMode: 'plan' });
+        expect(resumeSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ fallback, model: 'Gemini 4 Carbon', permissionMode: 'plan' }));
+    });
+
     it('forwards a well-formed fallback so untracked sessions can resume', async () => {
         await handlers.get('resume-happy-session')!({ sessionId: 'session-1', fallback: validFallback });
         expect(resumeSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ fallback: validFallback }));

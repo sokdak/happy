@@ -22,6 +22,7 @@ export type LocalHappyAgentCredentials = {
 };
 
 export type ResumeSupport = {
+    agy?: boolean;
     rpcAvailable: boolean;
     requiresSameMachine: true;
     requiresHappyAgentAuth: true;
@@ -97,6 +98,7 @@ export function hasLocalHappyAgentAuth(happyHomeDir: string = configuration.happ
 export function detectResumeSupport(happyHomeDir: string = configuration.happyHomeDir): ResumeSupport {
     const happyAgentAuthenticated = hasLocalHappyAgentAuth(happyHomeDir);
     return {
+        agy: process.env.HAPPY_AGY_TRANSPORT !== 'print',
         rpcAvailable: happyAgentAuthenticated,
         requiresSameMachine: true,
         requiresHappyAgentAuth: true,

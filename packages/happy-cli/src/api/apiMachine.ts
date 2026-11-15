@@ -107,6 +107,7 @@ export const ResumeFallbackSchema = z.object({
         flavor: z.string().nullish(),
         claudeSessionId: z.string().optional(),
         codexThreadId: z.string().optional(),
+        agySessionId: z.string().optional(),
     }).passthrough(),
     metadataVersion: z.number().int().nonnegative(),
     agentStateVersion: z.number().int().nonnegative(),
@@ -610,7 +611,8 @@ export class ApiMachineClient {
             || prev.agy !== newAvailability.agy;
         const resumeSupportChanged = !prevResume
             || prevResume.rpcAvailable !== newResumeSupport.rpcAvailable
-            || prevResume.happyAgentAuthenticated !== newResumeSupport.happyAgentAuthenticated;
+            || prevResume.happyAgentAuthenticated !== newResumeSupport.happyAgentAuthenticated
+            || prevResume.agy !== newResumeSupport.agy;
         // POST /v1/machines returns the stored encrypted metadata when the
         // machine already exists. After a CLI upgrade that can leave the app
         // looking at the version from the machine's first registration even

@@ -127,6 +127,14 @@ describe('parseResumeCommandArgs', () => {
 });
 
 describe('buildResumeLaunch', () => {
+    it('builds AGY resume only from its own native ID, retaining Happy identity via the reconnect path', () => {
+        const session = createReconnectableSession();
+        session.metadata = { ...session.metadata, flavor: 'agy', agySessionId: 'native-agy' } as any;
+        expect(buildResumeLaunch(session, { startedBy: 'daemon' })).toEqual({ cwd: '/tmp/repo', args: ['agy', '--resume', 'native-agy', '--started-by', 'daemon'] });
+        delete (session.metadata as any).agySessionId;
+        expect(() => buildResumeLaunch(session)).toThrow('missing its Antigravity ACP session ID');
+    });
+
     it('builds a Codex resume command', () => {
         expect(buildResumeLaunch({
             id: 'session-1',

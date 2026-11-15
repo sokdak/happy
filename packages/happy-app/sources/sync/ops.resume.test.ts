@@ -25,6 +25,12 @@ describe('machine resume fallback', () => {
         machineRPC.mockResolvedValue({ type: 'success', sessionId: 'session-1' });
     });
 
+    it('carries the AGY native ID with the original Happy session identity and selected settings', async () => {
+        state.sessions['session-1'].metadata = { path: '/project', machineId: 'machine-1', flavor: 'agy', agySessionId: 'native-agy' };
+        await machineResumeSession({ machineId: 'machine-1', sessionId: 'session-1', model: 'Gemini 4 Carbon', permissionMode: 'plan' });
+        expect(machineRPC).toHaveBeenCalledWith('machine-1', 'resume-happy-session', expect.objectContaining({ sessionId: 'session-1', model: 'Gemini 4 Carbon', permissionMode: 'plan', fallback: expect.objectContaining({ metadata: expect.objectContaining({ agySessionId: 'native-agy' }) }) }));
+    });
+
     it('sends only the requested session data key and metadata to its owning machine', async () => {
         const result = await machineResumeSession({ machineId: 'machine-1', sessionId: 'session-1' });
         expect(result).toEqual({ type: 'success', sessionId: 'session-1' });
