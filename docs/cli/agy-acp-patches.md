@@ -128,7 +128,9 @@ code while retaining the merged ACP/title baseline:
 git revert 711e512 9ecea62
 ```
 
-If upstream replaces the entire fork integration, remove dependents first:
+If upstream replaces the entire fork integration, first revert the follow-up
+documentation commit(s), then remove the code dependents below. Reverting the
+documentation first avoids a modify/delete conflict when #38 removes this guide:
 
 ```sh
 git revert 711e512 9ecea62 4d58169
@@ -136,7 +138,7 @@ git revert 711e512 9ecea62 4d58169
 
 These sequences were checked in a disposable worktree: the first restores the
 #38 source tree, and the second restores the pre-#38 source tree (`f937489`).
-Documentation can be removed separately. Later overlapping changes or rebased
+Resume-only rollback can keep this guide. Later overlapping changes or rebased
 commit IDs require corresponding resolution. The timeout fix #37 is outside
 this stack. Compare actual upstream behavior before replacement, including
 session identity, approvals, cancellation and resume semantics.
