@@ -29,7 +29,8 @@ export function resolveDeepSeekOptions(options: StartOptions, env: NodeJS.Proces
             ...options.claudeEnvVars,
             ANTHROPIC_BASE_URL: DEEPSEEK_ANTHROPIC_BASE_URL,
             ANTHROPIC_AUTH_TOKEN: apiKey,
-            ANTHROPIC_API_KEY: apiKey,
+            // Claude Code's documented integration uses bearer auth only.
+            ANTHROPIC_API_KEY: '',
             CLAUDE_CODE_OAUTH_TOKEN: '',
             ANTHROPIC_MODEL: model,
             ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
