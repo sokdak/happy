@@ -27,7 +27,7 @@ export function AgentQuestionBanner({ sessionId }: { sessionId: string }) {
     const pendingCommunications = useSessionPendingCommunications(sessionId);
     const [openId, setOpenId] = React.useState<string | null>(null);
 
-    // Choice forms belong exclusively to the transcript renderer. Communication
+    // Inline forms belong exclusively to the transcript renderer. Communication
     // state can arrive one render before its request_user_input tool message; if
     // the fallback also claimed that intermediate frame, the legacy form flashed
     // before being replaced by the inline card. Keep the banner/modal solely for

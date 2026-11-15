@@ -571,6 +571,11 @@ export const ca: TranslationStructure = {
     },
 
     agentQuestion: {
+        waitingForAnswer: "Esperant la teva resposta",
+        answered: "Resposta enviada",
+        cancelled: "Cancel·lat",
+        expand: "Desplega les preguntes",
+        collapse: "Plega les preguntes",
         title: "Pregunta",
         submit: "Envia la resposta",
         chooseMultiple: "Tria totes les que apliquin",

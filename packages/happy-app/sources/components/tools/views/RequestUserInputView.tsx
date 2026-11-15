@@ -2,28 +2,15 @@ import * as React from 'react';
 
 import { sessionAnswerQuestion, sessionCancelCommunication } from '@/sync/ops';
 import { useSessionAgentFormCommunication } from '@/sync/storage';
+import { canRenderAgentFormInline } from '@/sync/agentCommunications';
 import type { AgentQuestionAnswer } from '@/sync/storageTypes';
 import { ToolViewProps } from './_all';
-import {
-    InlineQuestionForm,
-    type InlineQuestionAnswers,
-} from './InlineQuestionForm';
+import type { InlineQuestionAnswers } from './InlineQuestionForm';
+import { RequestUserInputCard } from './RequestUserInputCard';
 
 /** Inline renderer for Happy/Codex request_user_input communications. */
 export const RequestUserInputView = React.memo<ToolViewProps>(({ tool, sessionId }) => {
     const communication = useSessionAgentFormCommunication(sessionId ?? '', tool.callId ?? '');
-
-    const submittedAnswers = React.useMemo<InlineQuestionAnswers | null>(() => {
-        if (!communication || communication.status === 'pending') return null;
-        if (communication.status === 'cancelled' || !communication.answers) return {};
-        const answers: InlineQuestionAnswers = {};
-        for (const [questionId, answer] of Object.entries(communication.answers)) {
-            const values = [...answer.options];
-            if (answer.custom) values.push(answer.custom);
-            answers[questionId] = values;
-        }
-        return answers;
-    }, [communication]);
 
     const handleSubmit = React.useCallback(async (answers: InlineQuestionAnswers) => {
         if (!sessionId || !communication || communication.status !== 'pending') return;
@@ -49,15 +36,13 @@ export const RequestUserInputView = React.memo<ToolViewProps>(({ tool, sessionId
         await sessionCancelCommunication(sessionId, communication.id, communication.kind);
     }, [communication, sessionId]);
 
-    if (!communication || (communication.status === 'pending' && communication.questions.some(question => question.options.length === 0))) {
-        return null;
-    }
+    if (!communication || (communication.status === 'pending' && !canRenderAgentFormInline(communication))) return null;
 
     return (
-        <InlineQuestionForm
-            questions={communication.questions}
-            canInteract={tool.state === 'running' && communication.status === 'pending'}
-            submittedAnswers={submittedAnswers}
+        <RequestUserInputCard
+            key={communication.id}
+            communication={communication}
+            canInteract={Boolean(sessionId) && tool.state === 'running'}
             onSubmit={handleSubmit}
             onCancel={handleCancel}
         />

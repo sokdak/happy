@@ -590,6 +590,11 @@ export const en: TranslationStructure = {
 
     agentQuestion: {
         title: "Question",
+        waitingForAnswer: "Waiting for your answer",
+        answered: "Answered",
+        cancelled: "Cancelled",
+        expand: "Expand questions",
+        collapse: "Collapse questions",
         submit: "Send answer",
         chooseMultiple: "Choose as many as apply",
         ownAnswer: "Your own answer",

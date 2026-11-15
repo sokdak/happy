@@ -28,6 +28,7 @@ interface InlineQuestionFormProps {
     questions: InlineQuestion[];
     canInteract: boolean;
     submittedAnswers?: InlineQuestionAnswers | null;
+    showSubmittedQuestions?: boolean;
     onSubmit: (answers: InlineQuestionAnswers) => Promise<void>;
     onCancel?: () => Promise<void>;
 }
@@ -131,13 +132,16 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
             <ToolSectionView>
                 <View style={styles.submittedContainer}>
                     {questions.map(question => (
-                        <View key={question.id} style={styles.submittedItem}>
-                            <Text style={styles.submittedHeader}>{question.header}:</Text>
-                            <Text style={styles.submittedValue}>
-                                {question.isSecret && submittedAnswers[question.id]?.length
-                                    ? '••••••'
-                                    : submittedAnswers[question.id]?.join(', ') || '—'}
-                            </Text>
+                        <View key={question.id}>
+                            {props.showSubmittedQuestions && <Text style={styles.questionText}>{question.question}</Text>}
+                            <View style={styles.submittedItem}>
+                                <Text style={styles.submittedHeader}>{question.header}:</Text>
+                                <Text style={styles.submittedValue}>
+                                    {question.isSecret && submittedAnswers[question.id]?.length
+                                        ? '••••••'
+                                        : submittedAnswers[question.id]?.join(', ') || '—'}
+                                </Text>
+                            </View>
                         </View>
                     ))}
                 </View>
@@ -162,6 +166,10 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
                                     return (
                                         <TouchableOpacity
                                             key={`${question.id}:${optionIndex}`}
+                                            accessibilityRole={question.multiSelect ? 'checkbox' : 'radio'}
+                                            accessibilityState={{ checked: isSelected, disabled: !canInteract }}
+                                            aria-checked={isSelected}
+                                            aria-disabled={!canInteract}
                                             style={[
                                                 styles.optionButton,
                                                 isSelected && styles.optionButtonSelected,
@@ -221,11 +229,12 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
                 {canInteract && (
                     <View style={styles.actionsContainer}>
                         {props.onCancel && (
-                            <TouchableOpacity onPress={handleCancel} disabled={isSubmitting} style={styles.submitButton}>
+                            <TouchableOpacity accessibilityRole="button" onPress={handleCancel} disabled={isSubmitting} style={styles.submitButton}>
                                 <Text style={styles.submitButtonText}>{t('common.cancel')}</Text>
                             </TouchableOpacity>
                         )}
                         <TouchableOpacity
+                            accessibilityRole="button"
                             style={[
                                 styles.submitButton,
                                 allQuestionsAnswered && !isSubmitting && styles.submitButtonReady,
@@ -348,6 +357,7 @@ const styles = StyleSheet.create((theme) => ({
     },
     optionContent: {
         flex: 1,
+        minWidth: 0,
     },
     optionLabel: {
         fontSize: 14,
@@ -361,6 +371,7 @@ const styles = StyleSheet.create((theme) => ({
     },
     actionsContainer: {
         flexDirection: 'row',
+        flexWrap: 'wrap',
         gap: 12,
         marginTop: 8,
         justifyContent: 'flex-end',
