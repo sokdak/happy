@@ -9,6 +9,7 @@
  * Both adapters forward AgentMessage events through the existing Happy pipeline.
  */
 
+import { agyReconnectSession } from './reconnect';
 import { startAgyHappyMcp, AGY_TITLE_INSTRUCTION } from './happyMcp';
 import { randomUUID } from 'node:crypto';
 import React from 'react';
@@ -49,6 +50,9 @@ export interface RunAgyOptions {
   verbose?: boolean;
   /** Explicit native ACP session to load; never inferred from workspace cache. */
   resumeSessionId?: string;
+  model?: string;
+  effort?: string;
+  permissionMode?: PermissionMode;
 }
 
 export async function runAgy(opts: RunAgyOptions): Promise<void> {
@@ -74,12 +78,16 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     metadata: initialMachineMetadata,
   });
 
-  const { state, metadata } = createSessionMetadata({
+  const { state, metadata: initialMetadata } = createSessionMetadata({
     flavor: 'agy',
     machineId: settings.machineId,
     startedBy: opts.startedBy,
   });
-  const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  let metadata = initialMetadata;
+  if (opts.resumeSessionId) metadata.agySessionId = opts.resumeSessionId;
+  const reconnect = agyReconnectSession(metadata, state, opts.resumeSessionId);
+  if (reconnect) metadata = reconnect.metadata;
+  const response = reconnect ?? await api.getOrCreateSession({ tag: sessionTag, metadata, state });
   if (response) {
     log(`Happy Session ID: ${response.id}`);
   }
@@ -100,6 +108,12 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     },
   });
   session = initialSession;
+  if (reconnect) {
+    session.suppressNextArchiveSignal();
+    session.skipExistingMessages();
+    session.updateMetadata(current => ({ ...current, lifecycleState: 'running',
+      lifecycleStateSince: Date.now(), archivedBy: undefined, archiveReason: undefined }));
+  }
 
   if (response) {
     try {
@@ -118,15 +132,15 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   const sessionManager = new AcpSessionManager();
   type TurnSettings = { model: string; effort: string; permissionMode: PermissionMode };
   const messageQueue = new MessageQueue2<TurnSettings>(JSON.stringify);
-  let incomingPermissionMode: PermissionMode = 'default';
+  let incomingPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
   let enqueueTail = Promise.resolve();
   let shouldExit = false;
   let abortController = new AbortController();
   let thinking = false;
   let errorReportedForCurrentTurn = false;
 
-  let selectedModel = DEFAULT_AGY_MODEL;
-  let selectedEffort = DEFAULT_AGY_EFFORT;
+  let selectedModel = opts.model ?? DEFAULT_AGY_MODEL;
+  let selectedEffort = opts.effort ? normalizeAgyEffort(opts.effort) : DEFAULT_AGY_EFFORT;
   let displayedModel = resolveAgyModelName(selectedModel, selectedEffort);
 
   permissionHandler = new AgyPermissionHandler(session);
@@ -138,7 +152,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
       mcpServers: happyServer?.mcpServers,
       initialPrompt: happyServer ? AGY_TITLE_INSTRUCTION : undefined,
       cwd: process.cwd(),
-      permissionMode: 'default',
+      permissionMode: incomingPermissionMode,
       model: selectedModel,
       effort: selectedEffort,
       resumeSessionId: opts.resumeSessionId,

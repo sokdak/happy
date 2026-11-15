@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import type { PermissionMode } from '@/api/types';
+import { normalizeRemotePermissionMode } from '@/claude/utils/permissionMode';
 
 /**
  * CLI entry point for happy command
@@ -447,12 +449,25 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
       let resumeSessionId: string | undefined;
+      let model: string | undefined;
+      let effort: string | undefined;
+      let permissionMode: PermissionMode | undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
         } else if (args[i] === '--resume') {
           resumeSessionId = args[++i];
           if (!resumeSessionId || resumeSessionId.startsWith('--')) throw new Error('--resume requires an explicit Antigravity ACP session ID');
+        } else if (['--model', '--effort', '--permission-mode'].includes(args[i])) {
+          const flag = args[i];
+          const value = args[++i];
+          if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value`);
+          if (flag === '--model') model = value;
+          else if (flag === '--effort') effort = value;
+          else {
+            permissionMode = normalizeRemotePermissionMode(value);
+            if (!permissionMode) throw new Error(`Unsupported permission mode: ${value}`);
+          }
         } else if (args[i] === '--verbose') {
           verbose = true;
         }
@@ -465,7 +480,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         credentials,
         startedBy,
         verbose,
-        resumeSessionId,
+        resumeSessionId, model, effort, permissionMode,
       });
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

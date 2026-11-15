@@ -40,7 +40,8 @@ export function parseResumeCommandArgs(args: string[]): { showHelp: boolean; ses
     };
 }
 
-function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | null {
+function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'agy' | null {
+    if (metadata.flavor === 'agy') return 'agy';
     if (metadata.flavor === 'codex' || metadata.codexThreadId) {
         return 'codex';
     }
@@ -53,6 +54,16 @@ function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | null {
 export function buildResumeLaunch(session: ResumableHappySession, options: ResumeLaunchOptions = {}): ResumeLaunch {
     const { metadata } = session;
     const flavor = resolveFlavor(metadata);
+
+    if (flavor === 'agy') {
+        if (process.env.HAPPY_AGY_TRANSPORT === 'print') throw new Error('Antigravity session resume requires the ACP transport');
+        if (!metadata.agySessionId?.trim()) {
+            throw new Error(`Happy session ${session.id} is missing its Antigravity ACP session ID. Older print-mode sessions cannot be resumed automatically.`);
+        }
+        const args = ['agy', '--resume', metadata.agySessionId];
+        if (options.startedBy) args.push('--started-by', options.startedBy);
+        return { cwd: metadata.path, args };
+    }
 
     if (flavor === 'codex') {
         if (!metadata.codexThreadId) {
@@ -107,6 +118,7 @@ export function formatResumeHelp(): string {
 
 function buildReconnectEnv(session: ReconnectableHappySession): NodeJS.ProcessEnv {
     return buildSessionChildEnvironment(process.env, {
+        ...(session.metadata.flavor === 'agy' ? { HAPPY_AGY_RECONNECT_METADATA: JSON.stringify(session.metadata) } : {}),
         HAPPY_RECONNECT_SESSION_ID: session.id,
         HAPPY_RECONNECT_ENCRYPTION_KEY: encodeBase64(session.encryptionKey),
         HAPPY_RECONNECT_ENCRYPTION_VARIANT: session.encryptionVariant,

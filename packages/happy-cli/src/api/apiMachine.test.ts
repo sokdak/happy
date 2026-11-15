@@ -58,6 +58,7 @@ vi.mock('@/utils/detectCLI', () => ({
 
 vi.mock('@/resume/localHappyAgentAuth', () => ({
     detectResumeSupport: vi.fn(() => ({
+        agy: true,
         rpcAvailable: false,
         requiresSameMachine: false,
         requiresHappyAgentAuth: false,
@@ -256,6 +257,7 @@ describe('ApiMachineClient socket reconnection', () => {
 
         expect(publishedMetadata).toEqual(expect.objectContaining({
             displayName: 'My Mac',
+            resumeSupport: expect.objectContaining({ agy: true }),
             happyCliVersion: 'test',
             cliAvailability: expect.objectContaining({
                 claude: false,

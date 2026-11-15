@@ -802,6 +802,8 @@ export async function startDaemon(): Promise<void> {
         if (fallback && (fallback.metadata.flavor ?? 'claude') === flavor) {
           if (flavor === 'claude' && !metadata.claudeSessionId && fallback.metadata.claudeSessionId) {
             metadata = { ...metadata, claudeSessionId: fallback.metadata.claudeSessionId };
+          } else if (flavor === 'agy' && !metadata.agySessionId && fallback.metadata.agySessionId) {
+            metadata = { ...metadata, agySessionId: fallback.metadata.agySessionId };
           } else if (flavor === 'codex' && !metadata.codexThreadId && fallback.metadata.codexThreadId) {
             metadata = { ...metadata, codexThreadId: fallback.metadata.codexThreadId };
           }
@@ -816,7 +818,8 @@ export async function startDaemon(): Promise<void> {
         // The fetch is best effort: it reads the server's 150 most recent
         // sessions, and an older session simply keeps what the client sent.
         const needsFetch = (!metadata.claudeSessionId && (!metadata.flavor || metadata.flavor === 'claude'))
-          || (!metadata.codexThreadId && metadata.flavor === 'codex');
+          || (!metadata.codexThreadId && metadata.flavor === 'codex')
+          || (!metadata.agySessionId && metadata.flavor === 'agy');
         if (needsFetch) {
           logger.debug(`[DAEMON RUN] Session ${happySessionId} has no agent session ID in the metadata at hand, fetching from server`);
           const serverMetadata = await fetchServerSessionMetadata(happySessionId, encryption.encryptionKey, encryption.encryptionVariant);
@@ -867,6 +870,7 @@ export async function startDaemon(): Promise<void> {
           cwd: launch.cwd,
           reconnect: { happySessionId, happySessionMetadataFromLocalWebhook: metadata, encryption },
           env: buildSessionChildEnvironment(ambientEnvironment, {
+            ...(metadata.flavor === 'agy' ? { HAPPY_AGY_RECONNECT_METADATA: JSON.stringify(metadata) } : {}),
             HAPPY_RECONNECT_SESSION_ID: happySessionId,
             HAPPY_RECONNECT_ENCRYPTION_KEY: encodeBase64(encryption.encryptionKey),
             HAPPY_RECONNECT_ENCRYPTION_VARIANT: encryption.encryptionVariant,

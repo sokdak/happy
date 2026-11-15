@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   spawn: vi.fn(),
   access: vi.fn(),
   writeFile: vi.fn(),
-  availability: { claude: true, codex: true, gemini: false, openclaw: false, agy: false, detectedAt: 0 },
+  availability: { claude: true, codex: true, gemini: false, openclaw: false, agy: true, detectedAt: 0 },
   persistSession: vi.fn(),
   logger: { debug: vi.fn(), debugLargeJson: vi.fn(), warn: vi.fn() },
 }));
@@ -99,6 +99,22 @@ describe('daemon resume fallback', () => {
     vi.useRealTimers();
   });
 
+  it('resumes AGY in the same Happy session with its selected model and permissions', async () => {
+    await boot();
+    const agyMetadata = { path: '/project', machineId: 'machine-1', flavor: 'agy', agySessionId: 'agy-native' };
+    expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: agyMetadata }, model: 'Gemini 4 Carbon', permissionMode: 'plan' }))
+      .toEqual({ type: 'success', sessionId: 'old-session' });
+    expect(mocks.spawn).toHaveBeenCalledWith(['agy', '--resume', 'agy-native', '--started-by', 'daemon', '--model', 'Gemini 4 Carbon', '--permission-mode', 'plan'],
+      expect.objectContaining({ env: expect.objectContaining({ HAPPY_RECONNECT_SESSION_ID: 'old-session' }) }));
+  });
+
+  it('refuses AGY resume without its native ID instead of spawning a fresh conversation', async () => {
+    await boot();
+    expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: { path: '/project', machineId: 'machine-1', flavor: 'agy' } } }))
+      .toMatchObject({ type: 'error', errorMessage: expect.stringContaining('missing its Antigravity ACP session ID') });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
   it('resumes an untracked old session across fresh daemon boots without listing sessions', async () => {
     for (let restart = 0; restart < 2; restart++) {
       await boot();
@@ -164,20 +180,24 @@ describe('daemon resume fallback', () => {
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
-  it.each(['claude', 'codex'])('refreshes a missing %s provider ID from server metadata', async (flavor) => {
+  it.each(['claude', 'codex', 'agy'])('refreshes a missing %s provider ID from server metadata', async (flavor) => {
     await boot();
-    const complete = flavor === 'codex'
+    const complete = flavor === 'agy'
+      ? { path: '/project', machineId: 'machine-1', flavor, agySessionId: 'agy-old' }
+      : flavor === 'codex'
       ? { path: '/project', machineId: 'machine-1', flavor, codexThreadId: 'thread-old' }
       : metadata;
     mocks.get.mockResolvedValue({ data: { sessions: [{ id: 'old-session', metadata: encodeBase64(encrypt(dataKey, 'dataKey', complete)) }] } });
     expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: { path: '/project', machineId: 'machine-1', flavor } } }))
       .toEqual({ type: 'success', sessionId: 'old-session' });
     expect(mocks.get).toHaveBeenCalledTimes(1);
-    expect(mocks.spawn.mock.calls[0][0]).toContain(flavor === 'codex' ? 'thread-old' : 'claude-old');
+    expect(mocks.spawn.mock.calls[0][0]).toContain(flavor === 'agy' ? 'agy-old' : flavor === 'codex' ? 'thread-old' : 'claude-old');
   });
 
-  it.each(['claude', 'codex'])('uses a client %s ID when persisted startup metadata is stale beyond the 150-row page', async (flavor) => {
-    const complete = flavor === 'codex'
+  it.each(['claude', 'codex', 'agy'])('uses a client %s ID when persisted startup metadata is stale beyond the 150-row page', async (flavor) => {
+    const complete = flavor === 'agy'
+      ? { path: '/project', machineId: 'machine-1', flavor, agySessionId: 'agy-old' }
+      : flavor === 'codex'
       ? { path: '/client-stale-path', machineId: 'machine-1', flavor, codexThreadId: 'thread-old' }
       : { ...metadata, path: '/client-stale-path' };
     mocks.persisted = { 'old-session': { ...fallback, metadata: { path: '/tracked-path', machineId: 'machine-1', flavor } } };
@@ -185,7 +205,7 @@ describe('daemon resume fallback', () => {
     expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: complete } }))
       .toEqual({ type: 'success', sessionId: 'old-session' });
     expect(mocks.spawn.mock.calls[0][1].cwd).toBe('/tracked-path');
-    expect(mocks.spawn.mock.calls[0][0]).toContain(flavor === 'codex' ? 'thread-old' : 'claude-old');
+    expect(mocks.spawn.mock.calls[0][0]).toContain(flavor === 'agy' ? 'agy-old' : flavor === 'codex' ? 'thread-old' : 'claude-old');
     expect(mocks.get).not.toHaveBeenCalled();
   });
 
