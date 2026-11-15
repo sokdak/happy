@@ -265,6 +265,7 @@ function AgentTextBlock(props: {
     sync.sendMessage(props.sessionId, option.title, { source: 'option' });
   }, [props.sessionId]);
 
+  const { theme } = useUnistyles();
   const [thinkingExpanded, setThinkingExpanded] = React.useState(false);
   if (props.message.isThinking) {
     // AGY exposes public thought summaries through ACP; keep them discoverable
@@ -283,7 +284,7 @@ function AgentTextBlock(props: {
           style={styles.thinkingToggle}
         >
           <Text style={styles.thinkingText}>{t('sessionInfo.thinking')}</Text>
-          <Ionicons name={thinkingExpanded ? 'chevron-up' : 'chevron-down'} size={14} />
+          <Ionicons name={thinkingExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={theme.colors.agentEventText} />
         </Pressable>
         {thinkingExpanded ? <Text selectable style={styles.thinkingText}>{summary}</Text> : null}
       </View>

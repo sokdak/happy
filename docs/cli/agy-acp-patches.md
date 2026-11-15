@@ -35,9 +35,15 @@ unchanged.
   direct bridge process and closes the MCP server HTTP connections. Print mode
   retains its previous title behavior.
 - Replayed history from `session/load` is suppressed to avoid duplicate messages.
-- Text and supported thought deltas flush to Happy at most every 500 ms and
-  before tool cards or turn completion. Other runners retain their old buffering
-  behavior unless they opt into `flushPendingText()`.
+- Text and public thought deltas are buffered as contiguous segments until a
+  tool/type boundary or turn completion. Exact whitespace is retained for AGY.
+  Tool cards still arrive immediately; uninterrupted final prose arrives at
+  completion. The former 500 ms flush created separate Markdown rows and broke
+  syntax across chunks. Existing stored fragmented messages are not repaired.
+- AGY public thought summaries have an accessible, initially collapsed Thinking
+  toggle. Other agents retain their existing visibility.
+- Generic ACP search calls use native argument schemas to distinguish web,
+  filename and content search; unknown search calls remain generic.
 - Models are selected by matching the agent's advertised ID or exact display
   name, including the fork's Gemini effort variants. Unknown models fail before
   prompting rather than silently running a different model.
@@ -51,7 +57,9 @@ unchanged.
   rebinds input and approval handlers to the real session.
 - Raw protocol payloads, stderr, tool output and edited file bodies are not
   logged or copied into tool cards. Tool cards show sanitized scalar arguments
-  and start/end lifecycle; the current shared wire event has no tool-output body.
+  and start/end lifecycle. Optional wire result/isError fields carry only fixed
+  completion/failure/interruption status strings, never raw tool output. Other
+  runners retain previous behavior unless they opt into forwarding results.
 
 Verified with the installed Antigravity ACP Server **1.5.9**, on Ubuntu ARM64.
 The adapter advertises no client filesystem/terminal capabilities: the agent
@@ -111,37 +119,26 @@ PR [#38](https://github.com/sokdak/happy/pull/38) was squash-merged as
 baseline commit on `sokdak/main`; their original individual revert commands no
 longer apply to main.
 
-The follow-up app/web resume work is split as follows. Preserve these commits
-with a merge commit or rebase merge. **Do not squash** if individual reverts are
-desired.
+The resume work was also squash-merged: #39 is `05fd7fe`. Original
+pre-squash resume commit hashes are not independent main-branch revert targets.
+Preserve the output corrections using merge/rebase merge rather than squash:
 
-| Commit | Responsibility | Dependencies |
-| --- | --- | --- |
-| `4d58169` | Merged #38: persistent ACP transport, title MCP, images, permissions and print fallback | Existing timeout PR #37 |
-| `9ecea62` | Same-Happy-session resume through CLI/daemon, native ID recovery, preserved metadata/settings and advertised capability | #38 ACP runtime |
-| `711e512` | Shared app/web resume eligibility, optional schemas, fallback command and RPC tests | CLI/daemon resume capability |
+| Commit | Responsibility |
+| --- | --- |
+| `e5227e5` | Complete Markdown segments and exact whitespace (AGY opt-in) |
+| `64b8436` | Native search argument/name mapping |
+| `b3fb4bb` | Safe failed/interrupted tool status (optional protocol fields) |
+| `e415d04` | Collapsed AGY public Thinking UI |
+| Follow-up validation commit | Dark-theme chevron, regression fixtures, live probe and this guide |
 
-Remove app/web support alone with `git revert 711e512`. To remove all new resume
-code while retaining the merged ACP/title baseline:
-
-```sh
-git revert 711e512 9ecea62
-```
-
-If upstream replaces the entire fork integration, first revert the follow-up
-documentation commit(s), then remove the code dependents below. Reverting the
-documentation first avoids a modify/delete conflict when #38 removes this guide:
-
-```sh
-git revert 711e512 9ecea62 4d58169
-```
-
-These sequences were checked in a disposable worktree: the first restores the
-#38 source tree, and the second restores the pre-#38 source tree (`f937489`).
-Resume-only rollback can keep this guide. Later overlapping changes or rebased
-commit IDs require corresponding resolution. The timeout fix #37 is outside
-this stack. Compare actual upstream behavior before replacement, including
-session identity, approvals, cancellation and resume semantics.
+Revert the validation follow-up first, then `e415d04`, `b3fb4bb`, `64b8436`,
+and `e5227e5` to restore the #39 baseline. Search mapping and Thinking are
+independent features; failure-status and Markdown touch the same manager/runner,
+so use reverse order when removing the full stack.
+If upstream replaces the complete integration, remove this output stack before
+`05fd7fe` (resume) and `4d58169` (ACP/title). The timeout fix #37 is separate.
+Compare upstream session identity, approvals, cancellation, resume and output
+behavior before replacement; overlapping later edits may need resolution.
 
 ## Validation
 
@@ -154,15 +151,15 @@ pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-acp.mts
 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-title.mts
 ```
 
-The unit/wire suite covers 216 cases across 19 files, including shared mapper regressions,
-continuous text delivery, permission allow/deny/pending-abort, explicit session
+The unit/wire suites include shared mapper regressions,
+slow-chunk Markdown integrity, safe tool failure/interruption status, permission allow/deny/pending-abort, explicit session
 loading and replay suppression, model/mode requests, unsupported inputs,
 control timeouts, spawn failure, disconnect recovery without prompt replay,
 cooperative/uncooperative cancellation, forced process cleanup, image ownership,
 FIFO settings and offline reconnection.
 
 The authenticated live probe, run for #38, uses a temporary fixture workspace and real `agy`
-credentials already installed on the host. It verifies text before completion,
+credentials already installed on the host. The updated probe verifies tool cards before completion,
 Read/Bash cards, multi-turn context, explicit resume after process restart,
 model switching, red-image interpretation, cancellation and a successful next
 turn. It prints event types/timing only, not credentials, image contents, prompt
@@ -216,3 +213,13 @@ component-logic/RPC/runner validation with mocked transport boundaries, not a
 physical-phone or browser end-to-end test. The real native ACP load/resume path
 was verified separately by the authenticated live probes above. No app/web
 release, CLI installation or daemon restart is performed by this PR.
+
+## Output regression validation
+
+The app fixture `sources/sync/agyOutput.spec.ts` exercises the shared wire
+constructor, app normalization and reducer with synthetic Markdown and both
+successful/failed tool completions. No production conversation is checked in.
+`MessageView.test.ts` covers collapsed/expanded AGY thoughts and unchanged
+visibility for other agents. The runner test deliberately pauses between chunks
+to reproduce timer fragmentation. Historical live probe results above refer to
+#38; reruns of the updated probe are reported separately in the PR.

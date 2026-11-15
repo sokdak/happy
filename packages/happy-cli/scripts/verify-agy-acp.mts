@@ -14,7 +14,7 @@ const texts = new Map<number, string>();
 const started = Date.now();
 let turn = 0;
 let toolStarted: (() => void) | undefined;
-const manager = new AcpSessionManager();
+const manager = new AcpSessionManager({ preserveTextWhitespace: true, forwardToolResults: true });
 const envelopes: Array<{ turn: number; elapsedMs: number; type: string }> = [];
 const emitEnvelopes = (items: ReturnType<typeof manager.mapMessage>) => {
   for (const item of items) envelopes.push({ turn, elapsedMs: Date.now() - started, type: item.ev.t });
@@ -28,18 +28,17 @@ function observe(message: AgentMessage) {
 const options = { cwd, permissionMode: 'yolo' as const, model: 'Gemini 3.8 Flash', effort: 'low' };
 let backend = new AgyAcpBackend(options);
 backend.onMessage(observe);
-const flushTimer = setInterval(() => emitEnvelopes(manager.flushPendingText()), 500);
 const deadline = setTimeout(() => { void backend.dispose(); }, 180_000);
 try {
   const { sessionId } = await backend.startSession();
   turn = 1; emitEnvelopes(manager.startTurn());
   await backend.sendPrompt(sessionId, `Remember marker ACP_CONTEXT_PINE_731. First say 'Checking the fixture now.' Then use read_file to read only line 1 of ${join(cwd, 'README.md')}. Then use run_command for exactly 'sleep 2'. Finally reply ACP_STREAM_OK. Use no other tools and modify nothing.`);
+  const completedAt = Date.now() - started;
   emitEnvelopes(manager.endTurn('completed'));
   assert.match(texts.get(1) ?? '', /ACP_STREAM_OK/);
   assert(events.some(e => e.turn === 1 && e.tool === 'Read'));
   assert(events.some(e => e.turn === 1 && e.tool === 'Bash'));
-  const endedAt = Date.now() - started;
-  assert(envelopes.some(e => e.turn === 1 && e.type === 'text' && e.elapsedMs < endedAt));
+  assert(envelopes.some(e => e.turn === 1 && e.type === 'tool-call-start' && e.elapsedMs < completedAt));
 
   turn = 2; emitEnvelopes(manager.startTurn());
   await backend.sendPrompt(sessionId, 'Reply with only the exact marker I asked you to remember. Do not use tools.');
@@ -84,6 +83,6 @@ try {
   assert.match(texts.get(6) ?? '', /ACP_RECOVERY_OK/);
   console.log(JSON.stringify({ passed: true, server: 'agy acp', scenarios: ['streaming', 'native tools', 'multi-turn context', 'explicit resume', 'model switch', 'image', 'cancel', 'post-cancel recovery'], events, envelopes }, null, 2));
 } finally {
-  clearInterval(flushTimer); clearTimeout(deadline);
+  clearTimeout(deadline);
   await backend.dispose(); await rm(cwd, { recursive: true, force: true });
 }

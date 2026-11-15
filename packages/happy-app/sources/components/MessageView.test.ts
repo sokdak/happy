@@ -150,6 +150,7 @@ describe('agent message copy button', () => {
 describe('AGY public thought summaries', () => {
     const thought: AgentTextMessage = { kind: 'agent-text', id: 'thought', localId: null, createdAt: 1, text: '*Checking the manual*', isThinking: true };
     it('shows a collapsed accessible summary and expands without legacy emphasis', () => {
+        vi.mocked(Clipboard.setStringAsync).mockClear();
         const renderer = render(thought, undefined, { flavor: 'agy' });
         const button = renderer.root.findByType('Pressable');
         expect(button.props.accessibilityState).toEqual({ expanded: false });
