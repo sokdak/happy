@@ -5,13 +5,14 @@ import { Modal } from '@/modal';
 import { machineResumeSession, sessionArchive, sessionKill, sessionSetAgentModes, forkAndSpawn, type ForkSource } from '@/sync/ops';
 import { maybeCleanupWorktree } from '@/hooks/useWorktreeCleanup';
 import { storage, useLocalSetting, useMachine, useSetting } from '@/sync/storage';
-import { Machine, Session } from '@/sync/storageTypes';
+import { Session } from '@/sync/storageTypes';
 import { sync } from '@/sync/sync';
 import { resolveMessageModeMeta, UnsupportedPermissionModeError } from '@/sync/messageMeta';
 import { t } from '@/text';
 import { HappyError } from '@/utils/errors';
 import { copySessionMetadataToClipboard, copySessionMetadataAndLogsToClipboard } from '@/utils/copySessionMetadataToClipboard';
 import { useSessionStatus } from '@/utils/sessionUtils';
+import { getResumeAvailability } from '@/utils/sessionResume';
 import { isMachineOnline } from '@/utils/machineUtils';
 import { getSessionForkSource } from '@/utils/sessionFork';
 import { useRouter } from 'expo-router';
@@ -50,91 +51,6 @@ interface UseSessionQuickActionsOptions {
     onAfterCopySessionMetadata?: () => void;
 }
 
-type ResumeAvailability = {
-    canResume: boolean;
-    canShowResume: boolean;
-    subtitle: string;
-    message: string;
-};
-
-function getResumeAvailability(session: Session, machine: Machine | null | undefined, isConnected: boolean): ResumeAvailability {
-    if (isRigMetadata(session.metadata) || session.metadata?.capabilities?.resume === false) {
-        return {
-            canResume: false,
-            canShowResume: false,
-            subtitle: '',
-            message: '',
-        };
-    }
-    if (isConnected) {
-        return {
-            canResume: false,
-            canShowResume: false,
-            subtitle: '',
-            message: '',
-        };
-    }
-
-    const machineId = session.metadata?.machineId;
-    if (!machineId) {
-        const message = t('sessionInfo.resumeSessionMissingMachine');
-        return {
-            canResume: false,
-            canShowResume: true,
-            subtitle: message,
-            message,
-        };
-    }
-
-    const hasBackendResumeId = Boolean(session.metadata?.claudeSessionId || session.metadata?.codexThreadId);
-    if (!hasBackendResumeId) {
-        const message = t('sessionInfo.resumeSessionMissingBackendId');
-        return {
-            canResume: false,
-            canShowResume: true,
-            subtitle: message,
-            message,
-        };
-    }
-
-    if (!machine) {
-        const message = t('sessionInfo.resumeSessionSameMachineOnly');
-        return {
-            canResume: false,
-            canShowResume: true,
-            subtitle: message,
-            message,
-        };
-    }
-
-    if (!isMachineOnline(machine)) {
-        return {
-            canResume: false,
-            canShowResume: true,
-            subtitle: t('sessionInfo.resumeSessionMachineOffline'),
-            message: t('sessionInfo.resumeSessionMachineOffline'),
-        };
-    }
-
-    // Older daemons do not publish resumeSupport and do not implement the
-    // resume RPC. Capability presence is the compatibility check; the UI is
-    // hidden instead of offering an action that the machine cannot execute.
-    if (machine.metadata?.resumeSupport?.rpcAvailable !== true) {
-        return {
-            canResume: false,
-            canShowResume: false,
-            subtitle: '',
-            message: '',
-        };
-    }
-
-    return {
-        canResume: true,
-        canShowResume: true,
-        subtitle: t('sessionInfo.resumeSessionSubtitle'),
-        message: t('sessionInfo.resumeSessionSubtitle'),
-    };
-}
 
 export function useSessionQuickActions(
     session: Session,

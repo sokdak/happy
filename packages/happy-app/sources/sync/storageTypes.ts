@@ -173,6 +173,7 @@ export const MetadataSchema = z.object({
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(), // Claude Code session ID
     codexThreadId: z.string().optional(), // Codex app-server thread ID
+    agySessionId: z.string().optional(), // Antigravity ACP session ID
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     mcpServers: z.array(z.object({ name: z.string(), status: z.string() })).optional(),
@@ -641,6 +642,7 @@ export const MachineMetadataSchema = z.object({
         resultKinds: z.array(z.string()).optional(),
     }).passthrough().optional().catch(undefined),
     resumeSupport: z.object({
+        agy: z.boolean().optional(),
         rpcAvailable: z.boolean().optional(),
         requiresSameMachine: z.boolean().optional(),
         requiresHappyAgentAuth: z.boolean().optional(),
