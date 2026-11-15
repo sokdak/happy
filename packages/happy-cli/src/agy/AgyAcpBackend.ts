@@ -253,7 +253,7 @@ export class AgyAcpBackend implements AgentBackend {
       }
       if (update.status === 'completed' || update.status === 'failed') {
         // Raw outputs may contain entire files/secrets. Happy currently renders lifecycle only.
-        this.emit({ type: 'tool-result', callId, toolName: this.tools.get(callId)!, result: update.status === 'failed' ? 'Antigravity tool failed.' : 'Completed.', isError: update.status === 'failed' });
+        this.emit({ type: 'tool-result', callId, toolName: this.tools.get(callId)!, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
         this.tools.delete(callId);
         this.completedTools.add(callId);
       }

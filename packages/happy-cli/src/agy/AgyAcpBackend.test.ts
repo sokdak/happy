@@ -140,7 +140,7 @@ describe('persistent Antigravity ACP', () => {
     const results = messages.filter(m => m.type === 'tool-result');
     expect(results).toEqual([{
       type: 'tool-result', callId: 'cmd', toolName: 'Bash', isError: status !== 'completed',
-      result: status === 'completed' ? 'Completed.' : status === 'failed' ? 'Antigravity tool failed.' : 'Tool interrupted before completion.',
+      result: status === 'completed' ? null : status === 'failed' ? 'Antigravity tool failed.' : 'Tool interrupted before completion.',
     }]);
     expect(JSON.stringify(messages)).not.toContain('not-for-display');
   });
