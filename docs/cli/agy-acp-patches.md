@@ -24,6 +24,15 @@ package dependencies, and leaves the generic `AcpBackend` unchanged.
   create a fresh conversation.
 - Session IDs come from ACP, never `last_conversations.json`. Native IDs are
   recorded in Happy metadata as `agySessionId` and in the CLI debug log.
+- The ACP runner starts the existing loopback Happy MCP server and passes its
+  stdio bridge on both session creation and loading. The first successful turn
+  carries title instructions (including explicit resume); subsequent title
+  updates are model-driven when the topic changes. `change_title` uses the
+  existing Happy summary/metadata path. Reconnection routes calls to the current
+  Happy client. Only exact title tool names/native labels are auto-approved;
+  similarly named tools still require normal approval. Shutdown terminates the
+  direct bridge process and closes the MCP server HTTP connections. Print mode
+  retains its previous title behavior.
 - Replayed history from `session/load` is suppressed to avoid duplicate messages.
 - Text and supported thought deltas flush to Happy at most every 500 ms and
   before tool cards or turn completion. Other runners retain their old buffering
@@ -104,7 +113,12 @@ stack if individual reverts are desired.
 | `6aca0d1` | Structured progress for the existing print adapter (`streamJson.*`, `AgyBackend.*`, `cliArgs.*`) | Mapping |
 | `0f435d6` | Opt-in text flush method and its tests in `AcpSessionManager` | None; no behavior change for other callers |
 | `5533224` | Isolated persistent ACP engine, protocol/lifecycle tests and opt-in live probe | Mapping; live probe also uses the flush method |
+| `23bac14` | Happy title MCP, first-turn instructions, reconnect-safe session forwarding, exact title approvals and lifecycle tests/live probe | ACP engine and runtime integration |
 | `8cf5843` | Switch `runAgy` to ACP, Happy permissions/images/queue/shutdown integration, explicit CLI resume, metadata ID, explicit print fallback | Mapping, ACP engine, flush method |
+
+Title integration can be removed independently with `git revert 23bac14`.
+Its only shared-server changes narrow the required client interface and close
+remaining HTTP connections on stop; the existing summary handler is reused.
 
 The print parser is not imported by the ACP engine. Reverting just `6aca0d1`
 leaves ACP functioning and restores the original plain-text print fallback.
@@ -114,14 +128,14 @@ To return to improved print mode in code while waiting for an upstream ACP
 replacement, revert the runtime integration first, then the unused engine:
 
 ```sh
-git revert 8cf5843 5533224
+git revert 23bac14 8cf5843 5533224
 ```
 
 To remove the entire code stack before adopting the upstream implementation,
 revert dependents before their foundations:
 
 ```sh
-git revert 8cf5843 5533224 0f435d6 6aca0d1 e91413a
+git revert 23bac14 8cf5843 5533224 0f435d6 6aca0d1 e91413a
 ```
 
 The full sequence was checked in a disposable worktree and restores the exact
@@ -145,9 +159,10 @@ From `packages/happy-cli`:
 pnpm exec vitest run --project unit src/agy/ src/agent/acp/AcpSessionManager.test.ts
 pnpm run typecheck
 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-acp.mts
+pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-title.mts
 ```
 
-The unit/wire suite covers 118 cases, including shared mapper regressions,
+The unit/wire suite covers 126 cases, including shared mapper regressions,
 continuous text delivery, permission allow/deny/pending-abort, explicit session
 loading and replay suppression, model/mode requests, unsupported inputs,
 control timeouts, spawn failure, disconnect recovery without prompt replay,
@@ -163,3 +178,11 @@ responses or arbitrary tool output. It consumes provider requests and is opt-in,
 not part of the default unit suite. The observed six-turn run passed in about
 42 seconds. This is real ACP/Happy-envelope validation, not a physical-phone UI
 test.
+
+The separate title live probe verifies automatic initial title generation from
+an ordinary gardening question, an explicit topic/title change, and title
+updates after explicit resume, using real `agy acp` and the real Happy MCP
+server/bridge in default permission mode. It records fixture summaries through
+a local test client, without connecting to the production Happy API. All three
+scenarios passed, and the probe exited normally with no remaining bridge child.
+The MCP endpoint test also verifies routing after a Happy client swap.
