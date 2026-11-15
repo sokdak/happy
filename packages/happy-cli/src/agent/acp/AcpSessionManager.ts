@@ -39,7 +39,7 @@ export class AcpSessionManager {
   private pendingText = '';
   private pendingType: 'thinking' | 'output' | null = null;
 
-  constructor(private readonly options: { preserveTextWhitespace?: boolean } = {}) {}
+  constructor(private readonly options: { preserveTextWhitespace?: boolean; forwardToolResults?: boolean } = {}) {}
 
   private nextTime(): number {
     this.lastTime = Math.max(this.lastTime + 1, Date.now());
@@ -183,7 +183,11 @@ export class AcpSessionManager {
       const call = this.ensureSessionCallId(msg.callId);
       return [
         ...flushed,
-        createEnvelope('agent', { t: 'tool-call-end', call }, turnOptions(this.currentTurnId, this.nextTime())),
+        createEnvelope('agent', {
+          t: 'tool-call-end', call,
+          ...(this.options.forwardToolResults && typeof msg.result === 'string' ? { result: msg.result } : {}),
+          ...(this.options.forwardToolResults && msg.isError !== undefined ? { isError: msg.isError } : {}),
+        }, turnOptions(this.currentTurnId, this.nextTime())),
       ];
     }
 

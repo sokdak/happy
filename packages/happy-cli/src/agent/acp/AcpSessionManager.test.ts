@@ -447,3 +447,19 @@ describe('AGY Markdown segment preservation', () => {
     ]);
   });
 });
+
+
+describe('opt-in tool completion status', () => {
+  it.each([true, false])('forwards safe result and error status when opted in (%s)', (isError) => {
+    const mapper = new AcpSessionManager({ forwardToolResults: true });
+    mapper.startTurn();
+    const [start] = mapper.mapMessage({ type: 'tool-call', callId: 'c1', toolName: 'Bash', args: {} });
+    const [end] = mapper.mapMessage({ type: 'tool-result', callId: 'c1', toolName: 'Bash', result: 'Safe status.', isError });
+    expect(end.ev).toEqual({ t: 'tool-call-end', call: (start.ev as any).call, result: 'Safe status.', isError });
+  });
+  it('does not change completion payloads for other runners', () => {
+    const mapper = new AcpSessionManager();
+    expect(mapper.mapMessage({ type: 'tool-result', callId: 'c1', toolName: 'Bash', result: 'Private output', isError: true })[0].ev)
+      .toEqual({ t: 'tool-call-end', call: expect.any(String) });
+  });
+});

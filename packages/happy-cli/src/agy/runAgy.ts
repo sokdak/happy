@@ -129,7 +129,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     }
   }
 
-  const sessionManager = new AcpSessionManager({ preserveTextWhitespace: true });
+  const sessionManager = new AcpSessionManager({ preserveTextWhitespace: true, forwardToolResults: true });
   type TurnSettings = { model: string; effort: string; permissionMode: PermissionMode };
   const messageQueue = new MessageQueue2<TurnSettings>(JSON.stringify);
   let incomingPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
