@@ -59,10 +59,10 @@ export interface AgyBackendOptions {
   resolveConversationId?: (cwd: string) => string | null;
 }
 
-/** Parse an agy duration string ("10m", "30s", "1h") to milliseconds; defaults to 10m. */
+/** Parse an agy duration string ("30m", "30s", "1h") to milliseconds; defaults to 30m. */
 function parsePrintTimeoutMs(value: string): number {
   const m = /^(\d+)\s*(s|m|h)$/.exec(value.trim());
-  if (!m) return 10 * 60_000;
+  if (!m) return 30 * 60_000;
   const n = Number(m[1]);
   return m[2] === 'h' ? n * 3_600_000 : m[2] === 'm' ? n * 60_000 : n * 1_000;
 }
