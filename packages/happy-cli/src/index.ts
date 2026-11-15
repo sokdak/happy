@@ -446,9 +446,13 @@ Conversation history is preserved on the server, but in-flight tool calls are in
 
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
+      let resumeSessionId: string | undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--resume') {
+          resumeSessionId = args[++i];
+          if (!resumeSessionId || resumeSessionId.startsWith('--')) throw new Error('--resume requires an explicit Antigravity ACP session ID');
         } else if (args[i] === '--verbose') {
           verbose = true;
         }
@@ -461,6 +465,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         credentials,
         startedBy,
         verbose,
+        resumeSessionId,
       });
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
