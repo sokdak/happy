@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createOfflineSessionStub, transferOfflineRegistrations } from '@/utils/offlineSessionStub';
 import type { AgentMessage } from '@/agent/core/AgentBackend';
+import type { SessionEvent } from '@slopus/happy-wire';
 
 const fixture = vi.hoisted(() => {
   const listeners = new Set<(m: any) => void>();
@@ -136,17 +137,17 @@ describe('Antigravity Happy runner integration', () => {
     });
     user('long turn');
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'), { timeout: 2000 });
-    const before = fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev);
+    const before: SessionEvent[] = fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev);
     expect(before.filter(e => e.t === 'text')).toEqual([{ t: 'text', text: '\n**Still working**\n' }]);
-    expect(before.at(-1).t).toBe('tool-call-start');
+    expect(before.at(-1)?.t).toBe('tool-call-start');
     finish();
     await vi.waitFor(() => expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
-    const after = fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev);
+    const after: SessionEvent[] = fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev);
     expect(after.filter(e => e.t === 'text')).toEqual([
       { t: 'text', text: '\n**Still working**\n' },
       { t: 'text', text: '```ts\nconst answer = 42;\n```\n' },
     ]);
-    expect(after.at(-1).t).toBe('turn-end');
+    expect(after.at(-1)?.t).toBe('turn-end');
   });
   it('starts offline and routes messages transferred during reconnection through the real session', async () => {
     const stub = createOfflineSessionStub('fixture');
