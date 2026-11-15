@@ -129,9 +129,10 @@ Preserve the output corrections using merge/rebase merge rather than squash:
 | `64b8436` | Native search argument/name mapping |
 | `b3fb4bb` | Safe failed/interrupted tool status (optional protocol fields) |
 | `e415d04` | Collapsed AGY public Thinking UI |
+| `1046e40` | Legacy optimistic prompt order under device clock skew |
 | Follow-up validation commit | Dark-theme chevron, regression fixtures, live probe and this guide |
 
-Revert the validation follow-up first, then `e415d04`, `b3fb4bb`, `64b8436`,
+Revert the validation follow-up first, then `1046e40`, `e415d04`, `b3fb4bb`, `64b8436`,
 and `e5227e5` to restore the #39 baseline. Search mapping and Thinking are
 independent features; failure-status and Markdown touch the same manager/runner,
 so use reverse order when removing the full stack.
@@ -218,8 +219,12 @@ release, CLI installation or daemon restart is performed by this PR.
 
 The app fixture `sources/sync/agyOutput.spec.ts` exercises the shared wire
 constructor, app normalization and reducer with synthetic Markdown and both
-successful/failed tool completions. No production conversation is checked in.
+successful/failed tool completions, including a three-column Markdown table
+through the actual app parser. Clock-skew tests verify immediate prompt order,
+server echo reconciliation, consecutive sends and history reload. No production conversation is checked in.
 `MessageView.test.ts` covers collapsed/expanded AGY thoughts and unchanged
-visibility for other agents. The runner test deliberately pauses between chunks
+visibility for other agents. Legacy optimistic prompts are clamped after existing visible messages, then
+reconciled once to server time; receipt-driven ordering remains authoritative.
+The runner test deliberately pauses between chunks
 to reproduce timer fragmentation. Historical live probe results above refer to
 #38; reruns of the updated probe are reported separately in the PR.
