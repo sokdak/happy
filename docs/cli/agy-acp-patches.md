@@ -58,7 +58,8 @@ unchanged.
 - Raw protocol payloads, stderr, tool output and edited file bodies are not
   logged or copied into tool cards. Tool cards show sanitized scalar arguments
   and start/end lifecycle. Optional wire result/isError fields carry only fixed
-  completion/failure/interruption status strings, never raw tool output. Other
+  failure/interruption status strings and explicit success/error flags, never raw
+  tool output. Successful tools retain the existing empty-output state. Other
   runners retain previous behavior unless they opt into forwarding results.
 
 Verified with the installed Antigravity ACP Server **1.5.9**, on Ubuntu ARM64.
@@ -134,7 +135,8 @@ Preserve the output corrections using merge/rebase merge rather than squash:
 
 Revert the validation follow-up first, then `1046e40`, `e415d04`, `b3fb4bb`, `64b8436`,
 and `e5227e5` to restore the #39 baseline. Search mapping and Thinking are
-independent features; failure-status and Markdown touch the same manager/runner,
+independent features; selective reverts may need context resolution in adjacent
+tests or follow-up edits. Failure-status and Markdown touch the same manager/runner,
 so use reverse order when removing the full stack.
 If upstream replaces the complete integration, remove this output stack before
 `05fd7fe` (resume) and `4d58169` (ACP/title). The timeout fix #37 is separate.
@@ -223,8 +225,17 @@ successful/failed tool completions, including a three-column Markdown table
 through the actual app parser. Clock-skew tests verify immediate prompt order,
 server echo reconciliation, consecutive sends and history reload. No production conversation is checked in.
 `MessageView.test.ts` covers collapsed/expanded AGY thoughts and unchanged
-visibility for other agents. Legacy optimistic prompts are clamped after existing visible messages, then
+visibility for other agents. Transcript grouping and ChatList integration tests
+also cover both grouping settings, live flavor changes, empty wrapped thoughts
+and interrupted turns without a final answer. Legacy optimistic prompts are clamped after existing visible messages, then
 reconciled once to server time; receipt-driven ordering remains authoritative.
 The runner test deliberately pauses between chunks
 to reproduce timer fragmentation. Historical live probe results above refer to
 #38; reruns of the updated probe are reported separately in the PR.
+
+Carbon review identified an additional transcript-filter blocker in the original
+Thinking patch: the grouping layer removed thoughts before MessageView rendered
+them. A separate follow-up opts AGY into that layer, retains default filtering
+for other agents, and excludes thoughts when identifying the final answer. Revert
+this follow-up before the original Thinking commit. Review follow-ups and test/
+documentation commits must be removed first when dropping the full output stack.

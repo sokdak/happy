@@ -65,7 +65,7 @@ async function begin(options: Partial<Parameters<typeof runAgy>[0]> = {}) {
 beforeEach(() => {
   vi.clearAllMocks(); fixture.calls.length = 0; fixture.session.pending = []; fixture.session.kill = undefined; fixture.rpc.clear(); fixture.initialSession = undefined; fixture.swap = undefined;
 });
-afterEach(async () => { await fixture.session.kill?.(); await running; running = undefined; vi.unstubAllEnvs(); });
+afterEach(async () => { await fixture.session.kill?.(); await running; expect(fixture.backend.dispose).toHaveBeenCalled(); running = undefined; vi.unstubAllEnvs(); });
 
 function user(text: string, meta: Record<string, unknown> = {}) {
   fixture.session.user({ role: 'user', content: { type: 'text', text }, meta });
