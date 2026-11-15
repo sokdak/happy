@@ -57,7 +57,7 @@ function createMcpServer(handler: (title: string) => Promise<{ success: boolean;
     return mcp;
 }
 
-export async function startHappyServer(client: ApiSessionClient) {
+export async function startHappyServer(client: Pick<ApiSessionClient, 'sessionId' | 'sendClaudeSessionMessage'>) {
     logger.debug(`[happyMCP] server:start sessionId=${client.sessionId}`);
 
     const handler = async (title: string) => {
@@ -110,6 +110,7 @@ export async function startHappyServer(client: ApiSessionClient) {
         stop: () => {
             logger.debug(`[happyMCP] server:stop sessionId=${client.sessionId}`);
             server.close();
+            server.closeAllConnections();
         }
     }
 }

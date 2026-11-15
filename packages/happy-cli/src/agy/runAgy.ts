@@ -9,6 +9,7 @@
  * Both adapters forward AgentMessage events through the existing Happy pipeline.
  */
 
+import { startAgyHappyMcp, AGY_TITLE_INSTRUCTION } from './happyMcp';
 import { randomUUID } from 'node:crypto';
 import React from 'react';
 import { render, type Instance as InkInstance } from 'ink';
@@ -129,16 +130,27 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   let displayedModel = resolveAgyModelName(selectedModel, selectedEffort);
 
   permissionHandler = new AgyPermissionHandler(session);
-  const backend = createAgyBackend({
-    cwd: process.cwd(),
-    permissionMode: 'default',
-    model: selectedModel,
-    effort: selectedEffort,
-    resumeSessionId: opts.resumeSessionId,
-    requestPermission: (id, tool, input) => permissionHandler!.handleToolCall(id, tool, input),
-    resetPermissions: () => permissionHandler?.reset(),
-    log,
-  });
+  const happyServer = (process.env.HAPPY_AGY_TRANSPORT ?? 'acp') === 'acp'
+    ? await startAgyHappyMcp(() => session) : undefined;
+  let backend: ReturnType<typeof createAgyBackend>;
+  try {
+    backend = createAgyBackend({
+      mcpServers: happyServer?.mcpServers,
+      initialPrompt: happyServer ? AGY_TITLE_INSTRUCTION : undefined,
+      cwd: process.cwd(),
+      permissionMode: 'default',
+      model: selectedModel,
+      effort: selectedEffort,
+      resumeSessionId: opts.resumeSessionId,
+      requestPermission: (id, tool, input) => permissionHandler!.handleToolCall(id, tool, input),
+      resetPermissions: () => permissionHandler?.reset(),
+      log,
+    });
+  } catch (error) {
+    happyServer?.stop();
+    reconnectionHandle?.cancel();
+    throw error;
+  }
 
   // Terminal UI (only with a real TTY; the daemon runs headless).
   const messageBuffer = new MessageBuffer();
@@ -377,7 +389,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     reconnectionHandle?.cancel();
 
     backend.offMessage(onBackendMessage);
-    await backend.dispose();
+    try { await backend.dispose(); } finally { happyServer?.stop(); }
     inkInstance?.unmount();
 
     try {

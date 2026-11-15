@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import {
   ClientSideConnection, ndJsonStream,
-  type ContentBlock, type NewSessionResponse, type SessionNotification,
+  type McpServer, type ContentBlock, type NewSessionResponse, type SessionNotification,
   type RequestPermissionRequest, type RequestPermissionResponse,
 } from '@agentclientprotocol/sdk';
 import type { PermissionMode } from '@/api/types';
@@ -18,6 +18,8 @@ export class AgyCancelledError extends Error {
 export interface AgyAcpOptions {
   cwd: string;
   permissionMode: PermissionMode;
+  mcpServers?: McpServer[];
+  initialPrompt?: string;
   model?: string;
   effort?: string;
   /** Explicit ACP session ID only; never consult the workspace conversation cache. */
@@ -54,6 +56,7 @@ export class AgyAcpBackend implements AgentBackend {
   private effort?: string;
   private appliedModel: string | null = null;
   private appliedMode: string | null = null;
+  private initialPromptDelivered = false;
 
   constructor(private readonly options: AgyAcpOptions) {
     this.sessionId = options.resumeSessionId ?? null;
@@ -156,11 +159,11 @@ export class AgyAcpBackend implements AgentBackend {
         this.replaying = true;
         try {
           this.metadata = await this.control(Promise.race([connection.loadSession({
-            sessionId: this.sessionId, cwd: this.options.cwd, mcpServers: [],
+            sessionId: this.sessionId, cwd: this.options.cwd, mcpServers: this.options.mcpServers ?? [],
           }), this.lifetime]));
         } finally { this.replaying = false; }
       } else {
-        const created = await this.control(Promise.race([connection.newSession({ cwd: this.options.cwd, mcpServers: [] }), this.lifetime]));
+        const created = await this.control(Promise.race([connection.newSession({ cwd: this.options.cwd, mcpServers: this.options.mcpServers ?? [] }), this.lifetime]));
         this.sessionId = created.sessionId;
         this.metadata = created;
       }
@@ -214,10 +217,12 @@ export class AgyAcpBackend implements AgentBackend {
       await this.configure();
       if (this.cancelled) throw new AgyCancelledError();
       const response = await Promise.race([this.connection!.prompt({
-        sessionId: this.sessionId!, prompt: [{ type: 'text', text: prompt }, ...images],
+        sessionId: this.sessionId!, prompt: [{ type: 'text', text: this.options.initialPrompt && !this.initialPromptDelivered
+          ? `${this.options.initialPrompt}\n\n${prompt}` : prompt }, ...images],
       }), this.lifetime]);
       if (this.cancelled || response.stopReason === 'cancelled') throw new AgyCancelledError();
       if (response.stopReason !== 'end_turn') throw new Error(`Antigravity stopped: ${response.stopReason}`);
+      this.initialPromptDelivered = true;
       this.emit({ type: 'status', status: 'idle' });
     } catch (error) {
       if (this.cancelled || error instanceof AgyCancelledError) throw new AgyCancelledError();
@@ -259,7 +264,11 @@ export class AgyAcpBackend implements AgentBackend {
     const input = update.rawInput && typeof update.rawInput === 'object' ? update.rawInput as Record<string, unknown> : {};
     // ACP titles are human labels ('File README.md', 'sleep 2'), not tool IDs.
     const kindTool: Record<string, string> = { read: 'read_file', edit: 'edit_file', execute: 'run_command', search: 'grep_search', fetch: 'read_url_content' };
-    const name = typeof input.name === 'string' ? input.name
+    // Antigravity 1.5.9 labels MCP calls as kind=other and omits their name in rawInput.
+    // Match only the exact native label for our configured Happy server.
+    const isHappyTitle = this.options.mcpServers?.some(server => server.name === 'happy')
+      && update.title === 'Run mcp_happy_change_title';
+    const name = isHappyTitle ? 'mcp__happy__change_title' : typeof input.name === 'string' ? input.name
       : update.kind ? kindTool[update.kind] ?? update.kind : 'agy_tool';
     return mapAgyToolToDisplay(name, input.parameters ?? input.arguments ?? input);
   }

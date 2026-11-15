@@ -37,6 +37,7 @@ const fixture = vi.hoisted(() => {
   }
   return { session, calls, rpc, listeners, initialSession: undefined as any, swap: undefined as any, backend: new FakeBackend(), FakeBackend };
 });
+vi.mock('./happyMcp', () => ({ AGY_TITLE_INSTRUCTION: 'title instruction', startAgyHappyMcp: vi.fn(async () => ({ mcpServers: [], stop: vi.fn() })) }));
 vi.mock('@/api/api', () => ({ ApiClient: { create: async () => ({ getOrCreateMachine: vi.fn(), getOrCreateSession: async () => null }) } }));
 vi.mock('@/persistence', () => ({ readSettings: async () => ({ machineId: 'fixture' }) }));
 vi.mock('@/daemon/run', () => ({ initialMachineMetadata: {} }));
@@ -45,12 +46,14 @@ vi.mock('@/utils/setupOfflineReconnection', () => ({ setupOfflineReconnection: (
 vi.mock('@/daemon/controlClient', () => ({ notifyDaemonSessionStarted: vi.fn() }));
 vi.mock('@/claude/registerKillSessionHandler', () => ({ registerKillSessionHandler: (_s: any, fn: any) => { fixture.session.kill = fn; } }));
 vi.mock('./AgyAcpBackend', () => ({ AgyAcpBackend: fixture.FakeBackend, AgyCancelledError: class extends Error {} }));
-vi.mock('./createBackend', () => ({ createAgyBackend: () => fixture.backend }));
+vi.mock('./createBackend', () => ({ createAgyBackend: vi.fn(() => fixture.backend) }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn() } }));
 vi.mock('ink', () => ({ render: vi.fn() }));
 vi.mock('@/ui/ink/AgyDisplay', () => ({ AgyDisplay: () => null }));
 vi.mock('@/utils/serverConnectionErrors', () => ({ connectionState: { setBackend: vi.fn() } }));
 import { runAgy } from './runAgy';
+import { startAgyHappyMcp } from './happyMcp';
+import { createAgyBackend } from './createBackend';
 
 let running: Promise<void> | undefined;
 async function begin() {
@@ -67,6 +70,15 @@ function user(text: string, meta: Record<string, unknown> = {}) {
 }
 
 describe('Antigravity Happy runner integration', () => {
+  it('connects title MCP and instructions and stops its server on shutdown', async () => {
+    await begin();
+    expect(startAgyHappyMcp).toHaveBeenCalledTimes(1);
+    expect(createAgyBackend).toHaveBeenCalledWith(expect.objectContaining({ mcpServers: [], initialPrompt: 'title instruction' }));
+    const server = await vi.mocked(startAgyHappyMcp).mock.results[0].value;
+    await fixture.session.kill(); await running;
+    expect(server.stop).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps FIFO order, per-message images, and model/permission snapshots while downloads overlap', async () => {
     await begin();
     let complete!: (data: Uint8Array) => void;

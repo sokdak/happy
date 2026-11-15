@@ -65,6 +65,19 @@ async function promptRequest(agent: ReturnType<typeof fakeAgent>) {
 }
 
 describe('persistent Antigravity ACP', () => {
+  it.each([undefined, 'saved-session'])('passes Happy MCP on new/load and title instructions only on the first successful turn (%s)', async (resumeSessionId) => {
+    const mcpServers = [{ name: 'happy', command: '/node', args: ['/bridge', '--url', 'http://127.0.0.1:1234'], env: [] }];
+    const { backend, agent } = setup({ resumeSessionId, mcpServers, initialPrompt: 'Use change_title at start and on topic changes.' });
+    await backend.startSession();
+    expect(agent.received.find(r => r.method === (resumeSessionId ? 'session/load' : 'session/new'))?.params.mcpServers).toEqual(mcpServers);
+    await backend.sendPrompt('', 'first');
+    await backend.sendPrompt('', 'second');
+    const prompts = agent.received.filter(r => r.method === 'session/prompt');
+    expect(prompts[0].params.prompt[0].text).toContain('change_title');
+    expect(prompts[0].params.prompt[0].text).toContain('first');
+    expect(prompts[1].params.prompt[0].text).toBe('second');
+  });
+
   it('reuses the exact server session and process across turns without print flags or cache lookup', async () => {
     const { backend, spawnFn, agent } = setup();
     expect(await backend.startSession()).toEqual({ sessionId: 'session-1' });
@@ -217,6 +230,24 @@ describe('persistent Antigravity ACP', () => {
       options: [{ optionId: 'sticky', name: 'Always', kind: 'allow_always' }, { optionId: 'allow', name: 'Once', kind: 'allow_once' }, { optionId: 'reject', name: 'Reject', kind: 'reject_once' }],
     } }) + '\n');
     await vi.waitFor(() => expect(agent.received.find(r => r.id === 900)?.result).toEqual({ outcome: { outcome: 'selected', optionId } }));
+    agent.respond(prompt.id!, { stopReason: 'end_turn' }); await turn;
+  });
+
+  it.each([
+    [true, 'Run mcp_happy_change_title', 'mcp__happy__change_title'],
+    [true, 'Run mcp_happy_change_title_and_run_command', 'other'],
+    [false, 'Run mcp_happy_change_title', 'other'],
+  ] as const)('maps the exact native title label only with the Happy server configured (%s, %s)', async (configured, title, expectedName) => {
+    const requestPermission = vi.fn(async () => ({ decision: 'approved' as const }));
+    const { backend, agent } = setup({ requestPermission, mcpServers: configured ? [{ name: 'happy', command: '/node', args: [], env: [] }] : [] });
+    agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+    const turn = backend.sendPrompt('', 'title');
+    const prompt = await promptRequest(agent);
+    agent.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 950, method: 'session/request_permission', params: {
+      sessionId: 'session-1', toolCall: { toolCallId: 'title-1', title, kind: 'other', rawInput: { title: 'Test title' } },
+      options: [{ optionId: 'allow', name: 'Once', kind: 'allow_once' }],
+    } }) + '\n');
+    await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledWith('title-1', expectedName, expect.anything()));
     agent.respond(prompt.id!, { stopReason: 'end_turn' }); await turn;
   });
 
