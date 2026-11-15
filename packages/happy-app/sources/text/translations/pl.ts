@@ -587,6 +587,11 @@ export const pl: TranslationStructure = {
     },
 
     agentQuestion: {
+        waitingForAnswer: "Oczekiwanie na odpowiedź",
+        answered: "Odpowiedziano",
+        cancelled: "Anulowano",
+        expand: "Rozwiń pytania",
+        collapse: "Zwiń pytania",
         title: "Pytanie",
         submit: "Wyślij odpowiedź",
         chooseMultiple: "Wybierz wszystkie pasujące",

@@ -572,6 +572,11 @@ export const zhHans: TranslationStructure = {
     },
 
     agentQuestion: {
+        waitingForAnswer: "等待你的回答",
+        answered: "已回答",
+        cancelled: "已取消",
+        expand: "展开问题",
+        collapse: "收起问题",
         title: "问题",
         submit: "发送回答",
         chooseMultiple: "选择所有适用项",

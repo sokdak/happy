@@ -163,6 +163,14 @@ describe('selectAgentFormCommunication', () => {
 });
 
 describe('canRenderAgentFormInline', () => {
+    it('keeps Codex text-only and mixed questions in the collapsible transcript card', () => {
+        for (const questions of [[question({ options: [], allowCustom: true })], [question(), question({ options: [], allowCustom: true })]]) {
+            const communication = { id: 'codex', toolUseId: 'call', createdAt: 0, kind: 'form' as const, questions };
+            expect(canRenderAgentFormInline(communication)).toBe(true);
+            expect(shouldUseAgentQuestionFallback(communication)).toBe(false);
+        }
+    });
+
     it('accepts choice forms and keeps text-only forms on the modal fallback', () => {
         expect(canRenderAgentFormInline({
             id: 'choice',

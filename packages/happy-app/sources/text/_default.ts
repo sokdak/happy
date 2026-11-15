@@ -604,6 +604,11 @@ export const en = {
     },
 
     agentQuestion: {
+        waitingForAnswer: "Waiting for your answer",
+        answered: "Answered",
+        cancelled: "Cancelled",
+        expand: "Expand questions",
+        collapse: "Collapse questions",
         title: 'Question',
         submit: 'Send answer',
         chooseMultiple: 'Choose as many as apply',

@@ -60,6 +60,7 @@ describe('terminal tool display helpers', () => {
             expect(shouldRenderToolCardHeader('CodexPatch', platform)).toBe(false);
             expect(shouldRenderToolCardHeader('GeminiPatch', platform)).toBe(false);
             expect(shouldRenderToolCardHeader('apply_patch', platform)).toBe(false);
+            expect(shouldRenderToolCardHeader('request_user_input', platform)).toBe(false);
         }
         // Everything else still needs a header to say what it was.
         expect(shouldRenderToolCardHeader('CodexBash', 'web')).toBe(true);

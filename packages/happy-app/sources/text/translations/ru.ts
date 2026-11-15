@@ -587,6 +587,11 @@ export const ru: TranslationStructure = {
     },
 
     agentQuestion: {
+        waitingForAnswer: "Ожидается ваш ответ",
+        answered: "Ответ отправлен",
+        cancelled: "Отменено",
+        expand: "Развернуть вопросы",
+        collapse: "Свернуть вопросы",
         title: "Вопрос",
         submit: "Отправить ответ",
         chooseMultiple: "Выберите все подходящие",

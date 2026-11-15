@@ -571,6 +571,11 @@ export const zhHant: TranslationStructure = {
     },
 
     agentQuestion: {
+        waitingForAnswer: "等待你的回答",
+        answered: "已回答",
+        cancelled: "已取消",
+        expand: "展開問題",
+        collapse: "收合問題",
         title: "問題",
         submit: "傳送回答",
         chooseMultiple: "選擇所有適用項",
