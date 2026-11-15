@@ -7,11 +7,11 @@ import HappyWire
 public enum AgentDefaults {
     public enum Agent: String, CaseIterable, Sendable {
         case claude
-        case deepseek
         case codex
         case gemini
         case openclaw
         case agy
+        case deepseek
 
         /// utils/harnessCatalog.ts `HARNESS_NAMES`.
         public var name: String {

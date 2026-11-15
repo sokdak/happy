@@ -7,11 +7,11 @@ import kotlinx.serialization.json.JsonPrimitive
 /** happy-app sync/agentDefaults.ts `agentKeys`. */
 enum class AgentKey(val wire: String) {
     Claude("claude"),
-    DeepSeek("deepseek"),
     Codex("codex"),
     Gemini("gemini"),
     Openclaw("openclaw"),
-    Agy("agy");
+    Agy("agy"),
+    DeepSeek("deepseek");
 
     companion object {
         /** normalizeAgentKey: an unknown or missing flavor is Claude. */
