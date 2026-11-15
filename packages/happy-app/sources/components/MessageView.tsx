@@ -17,6 +17,7 @@ import { Typography } from '@/constants/Typography';
 import { parseLocalCommandMessage, isUserSlashCommandEcho } from './parseLocalCommandMessage';
 import { resolveUserMessageBubbleColor } from '@/utils/userMessageBubbleColor';
 import { LongPressCopyable } from './LongPressCopyable';
+import { thinkingSummary } from '@/utils/thinkingSummary';
 
 
 export const MessageView = React.memo((props: {
@@ -273,7 +274,8 @@ function AgentTextBlock(props: {
     if (!props.showThinking) return null;
     const text = props.message.text;
     // The reducer wraps thinking in Markdown emphasis for legacy renderers.
-    const summary = text.startsWith('*') && text.endsWith('*') ? text.slice(1, -1) : text;
+    const summary = thinkingSummary(text);
+    if (!summary.trim()) return null;
     return (
       <View style={styles.agentMessageContainer}>
         <Pressable

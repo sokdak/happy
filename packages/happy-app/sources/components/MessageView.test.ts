@@ -15,7 +15,7 @@ vi.mock('react-native', async () => {
     };
 });
 vi.mock('react-native-unistyles', () => ({
-    useUnistyles: () => ({ theme: { dark: false, colors: { text: '#000' } } }),
+    useUnistyles: () => ({ theme: { dark: false, colors: { text: '#000', agentEventText: '#666' } } }),
     StyleSheet: { create: (factory: (theme: any) => unknown) => factory({ colors: { input: {} } }) },
 }));
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));

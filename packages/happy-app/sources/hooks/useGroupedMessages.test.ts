@@ -354,3 +354,26 @@ describe('useGroupedMessages', () => {
         expect(items.every((item) => item.type === 'message')).toBe(true);
     });
 });
+
+
+describe('AGY public Thinking in transcript grouping', () => {
+    const thought: Message = { kind: 'agent-text', id: 'thought', localId: null, createdAt: 3, text: '*Public summary*', isThinking: true };
+    const final: Message = { kind: 'agent-text', id: 'final', localId: null, createdAt: 4, text: 'Done' };
+    it.each([false, true])('retains public thoughts with grouping=%s and hides them by default', enabled => {
+        const input = [final, thought, toolMessage('tool', 2)];
+        const items = groupMessagesForDisplay(input, enabled, { showThinking: true });
+        const visible = items.flatMap(item => item.type === 'agent-work-group' ? item.messages : [item.message]);
+        expect(visible.map(message => message.id)).toContain('thought');
+        const hidden = groupMessagesForDisplay(input, enabled).flatMap(item => item.type === 'agent-work-group' ? item.messages : [item.message]);
+        expect(hidden.map(message => message.id)).not.toContain('thought');
+    });
+    it.each([false, true])('filters empty wrapped thoughts with grouping=%s', enabled => {
+        const blank = { ...thought, text: '*\n  *' };
+        expect(groupMessagesForDisplay([blank], enabled, { showThinking: true })).toEqual([]);
+    });
+    it('does not use a trailing thought as the final answer of an interrupted turn', () => {
+        const items = groupMessagesForDisplay([thought, toolMessage('tool', 2)], true, { showThinking: true });
+        expect(items.map(item => item.type)).toEqual(['message', 'message']);
+        expect(items.map(item => item.id)).toEqual(['tool', 'thought']);
+    });
+});
