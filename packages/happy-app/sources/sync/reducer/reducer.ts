@@ -343,6 +343,24 @@ function joinUserMessageServerId(state: ReducerState, serverId: string, internal
     return settleUserMessage(state, internalId, receipt);
 }
 
+/** Reconcile a legacy optimistic row with the server clock exactly once. */
+function reconcileUserEcho(state: ReducerState, msg: NormalizedMessage, internalId: string, receiptDriven: boolean): boolean {
+    const message = state.messages.get(internalId);
+    let repositioned = false;
+    if (message?.role === 'user' && msg.localId && msg.id !== msg.localId
+        && message.realID === msg.localId) {
+        // Receipt-driven sessions already own their run-order position.
+        if (!receiptDriven && !message.pending) {
+            message.createdAt = msg.createdAt;
+            delete message.sortAt;
+            repositioned = true;
+        }
+        message.realID = msg.id;
+    }
+    const settled = joinUserMessageServerId(state, msg.id, internalId);
+    return repositioned || settled;
+}
+
 /**
  * Feeds the send ack into the reducer: the POST response is the only place the
  * server id and local id of an own message are guaranteed to appear together.
@@ -419,7 +437,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
             // this too, through registerUserMessageServerIds; whichever runs first
             // wins and the other is a no-op.)
             const internalId = state.localIds.get(msg.localId)!;
-            if (joinUserMessageServerId(state, msg.id, internalId)) {
+            if (reconcileUserEcho(state, msg, internalId, options?.holdUserMessagesUntilAccepted === true)) {
                 changed.add(internalId);
                 settledIds.add(internalId);
             }
@@ -829,7 +847,7 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 // past Phase 0.5's guard — localIds is not written until here —
                 // so this dedupe is its only stop. Record the join it carries.
                 const internalId = state.localIds.get(msg.localId)!;
-                if (joinUserMessageServerId(state, msg.id, internalId)) {
+                if (reconcileUserEcho(state, msg, internalId, options?.holdUserMessagesUntilAccepted === true)) {
                     changed.add(internalId);
                     settledIds.add(internalId);
                 }
@@ -850,6 +868,15 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
             const hold = options?.holdUserMessagesUntilAccepted === true
                 && (isOptimisticLocalCopy || msg.meta?.expectsAcceptance === true);
 
+            // A slow device clock must not place a new prompt above an answer
+            // already visible. The first server echo supplies its final time.
+            let optimisticSortAt = msg.createdAt;
+            if (isOptimisticLocalCopy && !hold) {
+                for (const existing of state.messages.values()) {
+                    const position = existing.pending ? existing.createdAt : (existing.sortAt ?? existing.createdAt);
+                    optimisticSortAt = Math.max(optimisticSortAt, position + 1);
+                }
+            }
             // Create a new message
             let mid = allocateId();
             state.messages.set(mid, {
@@ -865,7 +892,8 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                 claudeUuid: msg.claudeUuid,
                 codexItemId: msg.codexItemId,
                 author: msg.author,
-                ...(hold ? { pending: true, sortAt: msg.createdAt + PENDING_SORT_OFFSET } : {}),
+                ...(hold ? { pending: true, sortAt: msg.createdAt + PENDING_SORT_OFFSET }
+                    : isOptimisticLocalCopy ? { sortAt: optimisticSortAt } : {}),
             });
 
             // Track both localId and messageId
