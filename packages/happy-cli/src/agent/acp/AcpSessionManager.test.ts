@@ -412,3 +412,19 @@ describe('AcpSessionManager id consistency', () => {
     expect(isCuid(secondStart.turn!)).toBe(true);
   });
 });
+
+
+describe('opt-in incremental text delivery', () => {
+  it('flushes text and thinking during an unfinished turn without duplicating them at the end', () => {
+    const mapper = new AcpSessionManager();
+    const [start] = mapper.startTurn();
+    expect(mapper.mapMessage({ type: 'model-output', textDelta: 'Still working' })).toEqual([]);
+    const [text] = mapper.flushPendingText();
+    expect(text.ev).toEqual({ t: 'text', text: 'Still working' });
+    expect(text.turn).toBe(start.turn);
+    expect(mapper.flushPendingText()).toEqual([]);
+    mapper.mapMessage({ type: 'event', name: 'thinking', payload: { text: 'Checking', streaming: true } });
+    expect(mapper.flushPendingText()[0].ev).toEqual({ t: 'text', text: 'Checking', thinking: true });
+    expect(mapper.endTurn('completed').map(e => e.ev)).toEqual([{ t: 'turn-end', status: 'completed' }]);
+  });
+});

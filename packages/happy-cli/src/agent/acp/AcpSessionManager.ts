@@ -73,6 +73,11 @@ export class AcpSessionManager {
     return [createEnvelope('agent', { t: 'text', text }, turnOptions(this.currentTurnId, this.nextTime()))];
   }
 
+  /** Opt-in bounded-latency delivery for runners that receive continuous ACP deltas. */
+  flushPendingText(): SessionEnvelope[] {
+    return this.flush();
+  }
+
   startTurn(): SessionEnvelope[] {
     if (this.currentTurnId) {
       return [];

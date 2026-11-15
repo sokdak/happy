@@ -3,12 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { buildAgyArgs } from './cliArgs';
 
 describe('buildAgyArgs', () => {
-  it('uses --sandbox for non-skip permission modes and puts the prompt last', () => {
+  it('uses --sandbox for non-skip permission modes, requests stream-json, and puts the prompt last', () => {
     const args = buildAgyArgs({ prompt: 'hello world', permissionMode: 'default' });
 
     expect(args).toContain('--sandbox');
     expect(args).not.toContain('--dangerously-skip-permissions');
-    expect(args.slice(-2)).toEqual(['--print', 'hello world']);
+    expect(args.slice(-4)).toEqual(['--output-format', 'stream-json', '--print', 'hello world']);
   });
 
   it('uses --dangerously-skip-permissions for yolo-style modes', () => {
