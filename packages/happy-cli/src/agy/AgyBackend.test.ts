@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
+import { AcpSessionManager } from '@/agent/acp/AcpSessionManager';
 import { AgyBackend, type SpawnFn } from './AgyBackend';
 import type { AgentMessage } from '@/agent/core/AgentBackend';
 
@@ -67,9 +68,15 @@ describe('AgyBackend', () => {
     await backend.startSession();
     const turn = backend.sendPrompt('/work', 'hi');
 
-    // Stream two chunks then exit cleanly.
-    stdout.emit('data', 'Hello ');
-    stdout.emit('data', 'world');
+    // Stream NDJSON records split across arbitrary stdout chunks, then exit cleanly.
+    stdout.emit(
+      'data',
+      '{"event":"init","conversation_id":"cid-stream-1"}\n{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_',
+    );
+    stdout.emit(
+      'data',
+      'delta":"Hello "}}\n{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"world"}}\n{"event":"result","result":{"status":"SUCCESS","response":"Hello world"}}\n',
+    );
     child.emit('close', 0);
 
     await expect(turn).resolves.toBeUndefined();
@@ -85,10 +92,10 @@ describe('AgyBackend', () => {
     const timeoutIdx = spawnArgs.indexOf('--print-timeout');
     expect(timeoutIdx).toBeGreaterThanOrEqual(0);
     expect(spawnArgs[timeoutIdx + 1]).toBe('30m');
+    expect(spawnArgs.slice(-4)).toEqual(['--output-format', 'stream-json', '--print', 'hi']);
 
     expect(messages.filter((m) => m.type === 'model-output')).toEqual([
-      { type: 'model-output', textDelta: 'Hello ' },
-      { type: 'model-output', textDelta: 'world' },
+      { type: 'model-output', textDelta: 'Hello world' },
     ]);
     expect(messages.at(-1)).toMatchObject({ type: 'status', status: 'idle' });
   });
@@ -349,5 +356,201 @@ describe('AgyBackend', () => {
     // The kill surfaces as a non-zero close, which rejects the turn.
     child.emit('close', null);
     await expect(turn).rejects.toThrow();
+  });
+
+  it('delivers intermediate progress and tool envelopes before the child process exits', async () => {
+    const { child, stdout } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'yolo',
+      spawnFn,
+      resolveConversationId: () => null,
+    });
+
+    const mapper = new AcpSessionManager();
+    const envelopes = mapper.startTurn();
+    backend.onMessage((msg) => envelopes.push(...mapper.mapMessage(msg)));
+
+    const turn = backend.sendPrompt('/work', 'investigate');
+
+    stdout.emit(
+      'data',
+      `${JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_index: 1,
+          state: 'DONE',
+          step_type: 'agent_response',
+          text_delta: '로그를 먼저 확인하겠습니다.\n',
+        },
+      })}\n${JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_index: 2,
+          state: 'ACTIVE',
+          step_type: 'tool',
+          tool_name: 'run_command',
+          tool_info: { parameters: { CommandLine: 'git status -sb' } },
+        },
+      })}\n`,
+    );
+
+    // Before the command finishes or the process exits, Happy already has the intermediate text + active tool card!
+    expect(envelopes.map((e) => e.ev)).toEqual([
+      { t: 'turn-start' },
+      { t: 'text', text: '로그를 먼저 확인하겠습니다.' },
+      {
+        t: 'tool-call-start',
+        call: expect.any(String),
+        name: 'Bash',
+        title: 'Bash',
+        description: 'Running Bash',
+        args: { command: 'git status -sb' },
+      },
+    ]);
+
+    stdout.emit(
+      'data',
+      `${JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_index: 2,
+          state: 'DONE',
+          step_type: 'tool',
+          tool_name: 'run_command',
+          tool_info: { output: '## main' },
+        },
+      })}\n${JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_index: 3,
+          state: 'DONE',
+          step_type: 'agent_response',
+          text_delta: '상태가 정상입니다.',
+        },
+      })}\n${JSON.stringify({
+        event: 'result',
+        result: { status: 'SUCCESS', response: '상태가 정상입니다.' },
+      })}\n`,
+    );
+    child.emit('close', 0);
+    await turn;
+    envelopes.push(...mapper.endTurn('completed'));
+
+    expect(envelopes.map((e) => e.ev.t)).toEqual([
+      'turn-start',
+      'text',
+      'tool-call-start',
+      'tool-call-end',
+      'text',
+      'turn-end',
+    ]);
+  });
+
+  it('pins conversation_id directly from stream-json init over a concurrent cwd cache entry', async () => {
+    const spawnCalls: string[][] = [];
+    let current = makeFakeChild();
+    const spawnFn = vi.fn((_bin: string, args: string[]) => {
+      spawnCalls.push(args);
+      return current.child;
+    }) as unknown as SpawnFn;
+
+    let cwdCache = 'concurrent-session-before';
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => cwdCache,
+    });
+
+    const t1 = backend.sendPrompt('/work', 'first');
+    current.stdout.emit('data', '{"event":"init","conversation_id":"exact-stream-cid"}\n');
+    cwdCache = 'concurrent-session-overwrote-cache';
+    current.child.emit('close', 0);
+    await t1;
+
+    current = makeFakeChild();
+    const t2 = backend.sendPrompt('/work', 'second');
+    current.child.emit('close', 0);
+    await t2;
+
+    const idx = spawnCalls[1].indexOf('--conversation');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(spawnCalls[1][idx + 1]).toBe('exact-stream-cid');
+  });
+
+  it('flushes partial buffered output and redacts stderr secrets on non-zero exit', async () => {
+    const { child, stdout, stderr } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+    const log = vi.fn();
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      log,
+      resolveConversationId: () => null,
+    });
+
+    const messages: AgentMessage[] = [];
+    backend.onMessage((m) => messages.push(m));
+
+    const turn = backend.sendPrompt('/work', 'long turn');
+    stdout.emit(
+      'data',
+      `${JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_index: 1,
+          state: 'ACTIVE',
+          step_type: 'agent_response',
+          text_delta: 'partial answer before timeout',
+        },
+      })}\n`,
+    );
+    stderr.emit(
+      'data',
+      '[agy] print timeout after 30m0s with turn in progress\nAuthorization: Bearer secret-stderr-token\n',
+    );
+    child.emit('close', 3);
+
+    await expect(turn).rejects.toThrow(/print timeout after 30m0s/);
+    expect(messages).toContainEqual({
+      type: 'model-output',
+      textDelta: 'partial answer before timeout',
+    });
+    expect(JSON.stringify(messages)).not.toContain('secret-stderr-token');
+    expect(log.mock.calls.flat().join(' ')).not.toContain('secret-stderr-token');
+  });
+
+  it('rejects when stream-json result status is ERROR even if exit code is 0', async () => {
+    const { child, stdout } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => null,
+    });
+
+    const messages: AgentMessage[] = [];
+    backend.onMessage((m) => messages.push(m));
+
+    const turn = backend.sendPrompt('/work', 'hi');
+    stdout.emit(
+      'data',
+      `${JSON.stringify({
+        event: 'result',
+        result: { status: 'ERROR', error: 'Quota exceeded for model' },
+      })}\n`,
+    );
+    child.emit('close', 0);
+
+    await expect(turn).rejects.toThrow('agy stream reported failure: Quota exceeded for model');
+    expect(messages.at(-1)).toMatchObject({
+      type: 'status',
+      status: 'error',
+      detail: 'agy stream reported failure: Quota exceeded for model',
+    });
   });
 });

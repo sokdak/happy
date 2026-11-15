@@ -1,18 +1,14 @@
 /**
  * Agy AgentBackend Implementation
  *
- * Custom AgentBackend that drives the agy (Antigravity) CLI. Unlike the ACP-based
- * backends, agy has no streaming-event protocol — its only non-interactive surface
- * is `agy --print "<prompt>"`, which streams the final answer as plain text and
- * exits. So this backend spawns one `agy --print` process per turn and maps:
+ * Drives the `agy` (Antigravity) CLI per turn via:
+ *   `agy ... --output-format stream-json --print "<prompt>"`
  *
- *   spawn            → { type: 'status', status: 'running' }
- *   stdout chunk     → { type: 'model-output', textDelta }
- *   exit code 0      → { type: 'status', status: 'idle' }
- *   exit code != 0   → { type: 'status', status: 'error', detail }
- *
- * There are no tool-call or permission events: print mode is one-shot and governed
- * by the CLI flags (see cliArgs.ts) plus agy's own settings.json.
+ * `stream-json` emits NDJSON `init`, `step_update`, and `result` events over stdout,
+ * allowing Happy to surface intermediate progress messages, reasoning/thinking, and
+ * native tool cards (`Read`, `Edit`, `Write`, `Bash`, `LS`, `Grep`, `Glob`, etc.)
+ * in real time during long-running turns while keeping per-turn `--model` and
+ * permission-mode flags intact.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -27,18 +23,13 @@ import type {
 import { resolveAgyBin, AGY_PRINT_TIMEOUT, resolveAgyModelName } from './constants';
 import { buildAgyArgs } from './cliArgs';
 import { readAgyConversationId } from './conversationStore';
+import { AgyStreamTurnParser } from './streamJson';
+import { containsCredentialCarrier, sanitizeDiagnosticText } from './toolDisplay';
 
 /** Signature of node's `spawn`, injectable so tests can supply a fake process. */
 export type SpawnFn = typeof spawn;
 
 const MAX_AGY_ERROR_DETAIL_CHARS = 2_000;
-
-function cleanAgyErrorOutput(value: string): string {
-  return value
-    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
-    .trim()
-    .slice(-MAX_AGY_ERROR_DETAIL_CHARS);
-}
 
 export interface AgyBackendOptions {
   /** Working directory the agy process runs in (and the conversation cache key). */
@@ -80,6 +71,7 @@ export class AgyBackend implements AgentBackend {
   private effort?: string;
   private conversationId: string | null = null;
   private child: ChildProcess | null = null;
+  private turnSequence = 0;
 
   constructor(opts: AgyBackendOptions) {
     this.cwd = opts.cwd;
@@ -111,12 +103,12 @@ export class AgyBackend implements AgentBackend {
     // agy spawns lazily per prompt; there is nothing long-lived to start.
     // Deliberately do NOT seed from the cwd conversation cache: it holds whatever
     // conversation last ran in this cwd — possibly another live session's — so
-    // seeding would cross-resume it. A fresh session starts a fresh conversation;
-    // resuming a specific one across restarts needs explicit id plumbing (follow-up).
+    // seeding would cross-resume it. A fresh session starts a fresh conversation.
     return { sessionId: this.cwd };
   }
 
   async sendPrompt(_sessionId: SessionId, prompt: string): Promise<void> {
+    const turnNumber = ++this.turnSequence;
     const args = buildAgyArgs({
       prompt,
       model: this.model ? resolveAgyModelName(this.model, this.effort) : undefined,
@@ -128,9 +120,9 @@ export class AgyBackend implements AgentBackend {
 
     this.emit({ type: 'status', status: 'running' });
 
-    // Until we have pinned our own conversation, snapshot the cwd cache so we can
-    // tell after the turn whether the entry is ours (changed → our turn wrote it)
-    // or a leftover from another session (unchanged → not ours to adopt).
+    // Snapshot the cwd cache as a fallback in case the child exits before emitting
+    // `init` on stdout; `stream-json` normally announces the exact `conversation_id`
+    // directly in its `init` / `step_update` / `result` events.
     const preTurnCacheId =
       this.conversationId === null ? this.resolveConversationId(this.cwd) : null;
 
@@ -145,6 +137,12 @@ export class AgyBackend implements AgentBackend {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       this.child = child;
+
+      const parser = new AgyStreamTurnParser({
+        turnNumber,
+        emit: (msg) => this.emit(msg),
+        log: (msg) => this.log(msg),
+      });
 
       // Node can fire both 'error' and 'close' on spawn failure; act on the first only.
       let settled = false;
@@ -163,7 +161,7 @@ export class AgyBackend implements AgentBackend {
       child.stdout?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => {
         if (chunk) {
-          this.emit({ type: 'model-output', textDelta: chunk });
+          parser.feed(chunk);
         }
       });
 
@@ -171,7 +169,11 @@ export class AgyBackend implements AgentBackend {
       child.stderr?.on('data', (chunk: string) => {
         const text = chunk.trimEnd();
         if (text) {
-          this.log(`stderr: ${text}`);
+          if (containsCredentialCarrier(text)) {
+            this.log(`agy stderr redacted (${Buffer.byteLength(chunk, 'utf8')} bytes)`);
+          } else {
+            this.log(`stderr: ${text}`);
+          }
         }
         stderrTail = `${stderrTail}${chunk}`.slice(-MAX_AGY_ERROR_DETAIL_CHARS * 2);
       });
@@ -182,7 +184,7 @@ export class AgyBackend implements AgentBackend {
         cleanup();
         const detail = (err as NodeJS.ErrnoException).code === 'ENOENT'
           ? `agy executable not found. Install the Antigravity CLI, or set HAPPY_AGY_PATH to its absolute path (tried 'agy' on PATH and ~/.local/bin/agy).`
-          : err.message;
+          : sanitizeDiagnosticText(err.message, MAX_AGY_ERROR_DETAIL_CHARS) || 'agy spawn failed';
         this.emit({ type: 'status', status: 'error', detail });
         reject(err);
       });
@@ -191,33 +193,37 @@ export class AgyBackend implements AgentBackend {
         if (settled) return;
         settled = true;
         cleanup();
-        // Pin the conversation our first turn created so later turns resume it.
-        // Once pinned, never re-read the cache: another session in the same cwd
-        // may have updated it since, and adopting that id would cross-resume.
-        // Best effort while unpinned: any concurrent same-cwd write that differs
-        // from the pre-turn snapshot (another session's turn, or bare interactive
-        // agy) would be adopted just the same — agy doesn't echo the id it
-        // created, so we cannot attribute the cache entry more precisely.
-        // Deliberately runs on failed turns too: agy may have created the
-        // conversation before the turn errored, and resuming it keeps context.
+        parser.finish();
+
+        // Prefer the deterministic `conversation_id` emitted by our child's
+        // `stream-json` events; fall back to the cwd cache diff only if stdout
+        // produced no id (e.g. early crash before `init`).
         if (this.conversationId === null) {
-          const cid = this.resolveConversationId(this.cwd);
-          if (cid && cid !== preTurnCacheId) {
-            this.conversationId = cid;
-            this.log(`pinned agy conversation ${cid}`);
+          if (parser.conversationId) {
+            this.conversationId = parser.conversationId;
+            this.log(`pinned agy conversation ${parser.conversationId} from stream-json`);
           } else {
-            this.log('agy conversation cache unchanged after turn; not adopting (will retry next turn)');
+            const cid = this.resolveConversationId(this.cwd);
+            if (cid && cid !== preTurnCacheId) {
+              this.conversationId = cid;
+              this.log(`pinned agy conversation ${cid}`);
+            } else {
+              this.log('agy conversation cache unchanged after turn; not adopting (will retry next turn)');
+            }
           }
         }
 
-        if (code === 0) {
+        const stderrDetail = sanitizeDiagnosticText(stderrTail, MAX_AGY_ERROR_DETAIL_CHARS);
+        if (code === 0 && !parser.streamFailure) {
           this.emit({ type: 'status', status: 'idle' });
           resolve();
         } else {
-          const stderrDetail = cleanAgyErrorOutput(stderrTail);
-          const detail = stderrDetail
-            ? `agy exited with code ${code ?? 'null'}: ${stderrDetail}`
-            : `agy exited with code ${code ?? 'null'}`;
+          const failureReason = stderrDetail || parser.streamFailure;
+          const detail = code === 0
+            ? (failureReason ?? 'agy stream reported failure')
+            : failureReason
+              ? `agy exited with code ${code ?? 'null'}: ${failureReason}`
+              : `agy exited with code ${code ?? 'null'}`;
           this.emit({ type: 'status', status: 'error', detail });
           reject(new Error(detail));
         }
