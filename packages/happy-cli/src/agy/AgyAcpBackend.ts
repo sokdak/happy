@@ -9,7 +9,7 @@ import {
 import type { PermissionMode } from '@/api/types';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import { resolveAgyBin, resolveAgyModelName } from './constants';
-import { mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
+import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
 
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
@@ -263,14 +263,23 @@ export class AgyAcpBackend implements AgentBackend {
   private displayTool(update: RequestPermissionRequest['toolCall']) {
     const input = update.rawInput && typeof update.rawInput === 'object' ? update.rawInput as Record<string, unknown> : {};
     // ACP titles are human labels ('File README.md', 'sleep 2'), not tool IDs.
-    const kindTool: Record<string, string> = { read: 'read_file', edit: 'edit_file', execute: 'run_command', search: 'grep_search', fetch: 'read_url_content' };
+    const kindTool: Record<string, string> = { read: 'read_file', edit: 'edit_file', execute: 'run_command', fetch: 'read_url_content' };
     // Antigravity 1.5.9 labels MCP calls as kind=other and omits their name in rawInput.
     // Match only the exact native label for our configured Happy server.
     const isHappyTitle = this.options.mcpServers?.some(server => server.name === 'happy')
       && update.title === 'Run mcp_happy_change_title';
+    const parameters = isPlainRecord(input.parameters) ? input.parameters
+      : isPlainRecord(input.arguments) ? input.arguments
+      : isPlainRecord(input.args) ? input.args : input;
+    // ACP kind is a broad category: web, content and filename searches all use
+    // "search". Native argument shapes distinguish them when no tool ID exists.
+    const searchTool = typeof parameters.query === 'string' ? 'search_web'
+      : typeof parameters.Pattern === 'string' ? 'find_by_name'
+      : typeof parameters.Query === 'string' ? 'grep_search' : 'search';
     const name = isHappyTitle ? 'mcp__happy__change_title' : typeof input.name === 'string' ? input.name
+      : update.kind === 'search' ? searchTool
       : update.kind ? kindTool[update.kind] ?? update.kind : 'agy_tool';
-    return mapAgyToolToDisplay(name, input.parameters ?? input.arguments ?? input);
+    return mapAgyToolToDisplay(name, parameters);
   }
 
   private async permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {

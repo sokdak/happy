@@ -110,6 +110,24 @@ describe('persistent Antigravity ACP', () => {
     await turn;
   });
 
+  it.each([
+    [{ query: 'controller manual' }, 'WebSearch', { query: 'controller manual' }],
+    [{ Query: 'controller', SearchPath: '/work' }, 'Grep', { pattern: 'controller', path: '/work' }],
+    [{ Pattern: '*.ts', SearchDirectory: '/work' }, 'Glob', { pattern: '*.ts', path: '/work' }],
+    [{ name: 'search_web', args: { query: 'manual' } }, 'WebSearch', { query: 'manual' }],
+    [{}, 'search', {}],
+  ])('maps native search arguments without guessing from generic kind (%j)', async (rawInput, toolName, args) => {
+    const { backend, agent, messages } = setup();
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method !== 'session/prompt') return fallback(rpc);
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'search', title: 'Search', kind: 'search', status: 'in_progress', rawInput });
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'search', status: 'completed' });
+      agent.respond(rpc.id!, { stopReason: 'end_turn' });
+    });
+    await backend.sendPrompt('', 'search');
+    expect(messages).toContainEqual({ type: 'tool-call', callId: 'search', toolName, args });
+  });
+
   it('does not turn control deadlines or a pause between chunks into prompt timeouts', async () => {
     const { backend, agent } = setup({ requestTimeoutMs: 30 });
     agent.setHandler((rpc, fallback) => {
