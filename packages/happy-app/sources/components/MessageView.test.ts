@@ -39,8 +39,8 @@ const base: UserTextMessage = {
     kind: 'user-text', id: 'message', localId: 'local', createdAt: Date.now(), text: 'hello',
 };
 
-function render(message: UserTextMessage | AgentTextMessage, renderer?: ReturnType<typeof create>) {
-    const element = React.createElement(MessageView, { message, sessionId: 'session', metadata: null });
+function render(message: UserTextMessage | AgentTextMessage, renderer?: ReturnType<typeof create>, metadata: any = null) {
+    const element = React.createElement(MessageView, { message, sessionId: 'session', metadata });
     if (renderer) {
         act(() => renderer.update(element));
         return renderer;
@@ -143,5 +143,25 @@ describe('agent message copy button', () => {
 
     it('does not show on thinking rows', () => {
         expect(render({ ...agent, isThinking: true }).root.findAllByType('Pressable')).toHaveLength(0);
+    });
+});
+
+
+describe('AGY public thought summaries', () => {
+    const thought: AgentTextMessage = { kind: 'agent-text', id: 'thought', localId: null, createdAt: 1, text: '*Checking the manual*', isThinking: true };
+    it('shows a collapsed accessible summary and expands without legacy emphasis', () => {
+        const renderer = render(thought, undefined, { flavor: 'agy' });
+        const button = renderer.root.findByType('Pressable');
+        expect(button.props.accessibilityState).toEqual({ expanded: false });
+        expect(labels(renderer)).toEqual(['sessionInfo.thinking']);
+        act(() => button.props.onPress());
+        expect(labels(renderer)).toContain('Checking the manual');
+        expect(renderer.root.findByType('Pressable').props.accessibilityState).toEqual({ expanded: true });
+        act(() => button.props.onPress());
+        expect(labels(renderer)).toEqual(['sessionInfo.thinking']);
+        expect(Clipboard.setStringAsync).not.toHaveBeenCalled();
+    });
+    it.each(['codex', 'claude', 'gemini'])('keeps existing %s thinking visibility unchanged', flavor => {
+        expect(render(thought, undefined, { flavor }).root.findAllByType('Pressable')).toHaveLength(0);
     });
 });
