@@ -44,6 +44,7 @@ type FieldConfig = {
 
 const agentLabels: Record<AgentKey, string> = {
     claude: getHarnessName('claude'),
+    deepseek: getHarnessName('deepseek'),
     codex: getHarnessName('codex'),
     gemini: getHarnessName('gemini'),
     openclaw: getHarnessName('openclaw'),

@@ -31,6 +31,7 @@ import { handleSandboxCommand } from './commands/sandbox'
 import { handleServerCommand } from './commands/server'
 import { spawnHappyCLI } from './utils/spawnHappyCLI'
 import { claudeCliPath } from './claude/claudeLocal'
+import { resolveDeepSeekOptions } from './deepseek/options'
 import { CLAUDE_EFFORT_LEVELS } from './utils/effortLevels'
 import { execFileSync } from 'node:child_process'
 import { extractNoSandboxFlag } from './utils/sandboxFlags'
@@ -628,13 +629,14 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
     return;
   } else {
 
-    // If the first argument is claude, remove it
-    if (args.length > 0 && args[0] === 'claude') {
+    const isDeepSeek = args[0] === 'deepseek'
+    // DeepSeek uses the Claude Code harness with its own backend configuration.
+    if (args.length > 0 && (args[0] === 'claude' || isDeepSeek)) {
       args.shift()
     }
 
     // Parse command line arguments for main command
-    const options: StartOptions = {}
+    let options: StartOptions = isDeepSeek ? { flavor: 'deepseek' } : {}
     let showHelp = false
     let showVersion = false
     let chromeOverride: boolean | undefined = undefined  // Track explicit --chrome or --no-chrome
@@ -730,6 +732,7 @@ ${chalk.bold('Usage:')}
   happy [options]         Start Claude with mobile control
   happy auth              Manage authentication
   happy resume            Resume a previous Happy session by Happy session ID
+  happy deepseek          Start DeepSeek via Claude Code (DEEPSEEK_API_KEY required)
   happy codex             Start Codex mode
   happy gemini            Start Gemini mode (ACP) [deprecated — use agy]
   happy agy               Start agy (Antigravity CLI) mode
@@ -807,6 +810,16 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       }
 
       process.exit(0)
+    }
+
+    // Validate DeepSeek configuration before creating a Happy session or daemon.
+    if (isDeepSeek) {
+      try {
+        options = resolveDeepSeekOptions(options)
+      } catch (error) {
+        console.error(chalk.red(error instanceof Error ? error.message : String(error)))
+        process.exit(1)
+      }
     }
 
     // Normal flow - auth and machine setup

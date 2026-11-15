@@ -29,7 +29,7 @@ function needsFreshMetadata(metadata: Metadata): boolean {
     if (metadata.flavor === 'codex') {
         return !metadata.codexThreadId;
     }
-    if (metadata.flavor === 'claude' || !metadata.flavor) {
+    if (metadata.flavor === 'claude' || metadata.flavor === 'deepseek' || !metadata.flavor) {
         return !metadata.claudeSessionId;
     }
     return false;

@@ -17,6 +17,7 @@ data class CliAvailability(
     /** Rig runs its own Happy-connected daemon. */
     val rig: Boolean?,
     val detectedAt: Long,
+    val deepseek: Boolean? = null,
 )
 
 @Immutable
@@ -104,6 +105,7 @@ data class MachineMetadata(
                         gemini = o.required("gemini", Read.boolean),
                         openclaw = o.required("openclaw", Read.boolean),
                         agy = o.optional("agy", Read.boolean),
+                        deepseek = o.optional("deepseek", Read.boolean),
                         rig = o.optional("rig", Read.boolean),
                         detectedAt = o.required("detectedAt", Read.long),
                     )

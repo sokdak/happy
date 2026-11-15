@@ -28,6 +28,30 @@ This will:
 3. Allow real-time session control — all communication is end-to-end encrypted
 4. Start new sessions directly from your phone or web while your computer is online
 
+### DeepSeek
+
+Set `DEEPSEEK_API_KEY` on the computer running Happy, then start a session:
+
+```bash
+export DEEPSEEK_API_KEY="your-api-key"
+happy deepseek
+happy deepseek --model deepseek-v4-pro --effort max
+```
+
+In PowerShell, use `$env:DEEPSEEK_API_KEY="your-api-key"`.
+
+Happy uses its bundled Claude Code harness with DeepSeek's Anthropic-compatible
+endpoint (`https://api.deepseek.com/anthropic`). The app lists **DeepSeek** once
+the machine reports a configured key. If the daemon is already running, restart
+it from the shell containing the key with `happy daemon stop` and `happy daemon start`.
+`HAPPY_ENABLED_AGENTS` / `HAPPY_DISABLED_AGENTS` accept `deepseek`.
+
+The current [DeepSeek API models](https://api-docs.deepseek.com/quick_start/pricing)
+(verified November 15, 2026) are `deepseek-flash` (default, DeepSeek V4.1 Flash)
+and `deepseek-v4-pro`. Both offer `low`, `high` (default), and `max` reasoning
+effort. Retired model aliases are omitted from the pickers. API keys stay in the
+machine environment; session metadata contains model selections only.
+
 ### More agents
 
 ```

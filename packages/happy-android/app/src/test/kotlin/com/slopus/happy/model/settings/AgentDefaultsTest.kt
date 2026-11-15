@@ -7,6 +7,18 @@ import org.junit.Test
 
 /** happy-app sync/agentDefaults.test.ts and utils/versionUtils.ts. */
 class AgentDefaultsTest {
+    @Test
+    fun deepSeekKeepsItsOwnModelsAndDefaults() {
+        assertEquals(AgentKey.DeepSeek, AgentKey.normalize("deepseek"))
+        assertEquals("deepseek-flash", AgentDefaults.codeDefaults("deepseek").modelMode)
+        assertEquals("high", AgentDefaults.codeDefaults("deepseek").effortLevel)
+        assertEquals(listOf("deepseek-flash", "deepseek-v4-pro"), ModeOptions.modelModes("deepseek").map { it.key })
+        assertEquals(listOf("low", "high", "max"), ModeOptions.effortLevelsForModel("deepseek", "deepseek-v4-pro").map { it.key })
+        val saved = AgentDefaults.resolve(overrides(AgentKey.DeepSeek to AgentDefaultOverride(modelMode = "deepseek-v4-pro", effortLevel = "max")), "deepseek")
+        assertEquals("deepseek-v4-pro", saved.modelMode)
+        assertEquals("max", saved.effortLevel)
+    }
+
     private fun overrides(vararg agents: Pair<AgentKey, AgentDefaultOverride>) = AgentDefaultOverrides(agents.toMap())
 
     @Test

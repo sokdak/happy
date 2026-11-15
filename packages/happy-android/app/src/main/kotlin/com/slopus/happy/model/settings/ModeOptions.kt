@@ -128,6 +128,7 @@ object ModeOptions {
 
     /** getHardcodedModelModes: Claude's for an unknown flavor. */
     fun modelModes(flavor: String?): List<ModeOption> = when (flavor) {
+        "deepseek" -> listOf(ModeOption("deepseek-flash", "DeepSeek Flash"), ModeOption("deepseek-v4-pro", "DeepSeek V4 Pro"))
         "codex" -> codexModelModes
         "gemini" -> geminiModelModes
         "openclaw" -> openClawModelModes
@@ -176,6 +177,7 @@ object ModeOptions {
 
     /** getEffortLevelsForModel without rig metadata: empty when the model has no effort. */
     fun effortLevelsForModel(flavor: String?, modelKey: String?): List<ModeOption> = when (flavor) {
+        "deepseek" -> effortLevels(listOf("low", "high", "max"))
         "claude" -> effortLevels(claudeEfforts)
         "codex" -> effortLevels(codexEffortsByModel[modelKey] ?: codexEffortsFallback)
         "agy" -> effortLevels(agyEffortsByModel[modelKey] ?: emptyList())
@@ -266,7 +268,7 @@ object ModeOptions {
             }
             return modes
         }
-        if (flavor == "claude" || flavor == "codex" || flavor == "openclaw" || flavor == "agy") {
+        if (flavor == "deepseek" || flavor == "claude" || flavor == "codex" || flavor == "openclaw" || flavor == "agy") {
             return hackModes(filterPermissionModesForCli(permissionModes(flavor, translate), metadata?.version))
         }
         val published = metadataOptions(metadata?.operatingModes)

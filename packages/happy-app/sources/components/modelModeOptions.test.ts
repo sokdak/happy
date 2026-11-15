@@ -29,6 +29,13 @@ import { rigMetadataFixture } from '@/sync/__testdata__/rigMetadata';
 const translate = (key: string) => `tr:${key}`;
 
 describe('modelModeOptions', () => {
+    it('keeps DeepSeek models, defaults, and native reasoning levels separate from Claude', () => {
+        expect(getAvailableModels('deepseek', null, translate).map((model) => model.key)).toEqual(['deepseek-flash', 'deepseek-v4-pro']);
+        expect(getDefaultModelKey('deepseek')).toBe('deepseek-flash');
+        expect(getDefaultEffortKey('deepseek')).toBe('high');
+        expect(getEffortLevelsForModel('deepseek', 'deepseek-v4-pro').map((effort) => effort.key)).toEqual(['low', 'high', 'max']);
+        expect(getAvailablePermissionModes('deepseek', null, translate).map((mode) => mode.key)).toEqual(getClaudePermissionModes(translate).map((mode) => mode.key));
+    });
     it('groups models by provider without sorting providers or rows', () => {
         const groups = groupModelModesByProvider([
             { key: 'codex:sol', name: 'Sol', providerId: 'codex', providerName: 'OpenAI Codex' },

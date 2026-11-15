@@ -1,3 +1,4 @@
+import { DEEPSEEK_MODELS, DEEPSEEK_EFFORT_LEVELS } from '@slopus/happy-wire';
 import type { Metadata } from '@/sync/storageTypes';
 import { hackModes } from '@/sync/modeHacks';
 import { sortPermissionModes } from '@/utils/permissionModeLabels';
@@ -371,6 +372,9 @@ export function getAgyModelModes(): ModelMode[] {
 }
 
 export function getHardcodedModelModes(flavor: AgentFlavor, _translate: Translate): ModelMode[] {
+    if (flavor === 'deepseek') {
+        return DEEPSEEK_MODELS.map((model) => ({ key: model.id, name: model.name, contextWindow: model.contextWindow }));
+    }
     if (flavor === 'codex') {
         return getCodexModelModes();
     }
@@ -483,7 +487,7 @@ export function getAvailablePermissionModes(
         }
         return modes;
     }
-    if (flavor === 'claude' || flavor === 'codex' || flavor === 'openclaw' || flavor === 'agy') {
+    if (flavor === 'deepseek' || flavor === 'claude' || flavor === 'codex' || flavor === 'openclaw' || flavor === 'agy') {
         // metadata.version is the happy-cli version running this session
         // (createSessionMetadata.ts), which is what has to parse the mode.
         return hackModes(filterPermissionModesForCli(
@@ -599,6 +603,7 @@ export function getCodexEffortLevels(modelKey?: string | null): EffortLevel[] {
 }
 
 export function getHardcodedEffortLevels(flavor: AgentFlavor): EffortLevel[] {
+    if (flavor === 'deepseek') return effortLevels(DEEPSEEK_EFFORT_LEVELS);
     if (flavor === 'claude') return getClaudeEffortLevels();
     if (flavor === 'codex') return getCodexEffortLevels();
     if (flavor === 'agy') return getAgyEffortLevels(getDefaultModelKey('agy'));
@@ -626,6 +631,7 @@ export function getEffortLevelsForModel(
     // silently downgraded rather than rejected (sdk.d.ts:174). Codex is the
     // opposite — each model publishes its own supported levels — so it is asked
     // per model.
+    if (flavor === 'deepseek') return effortLevels(DEEPSEEK_EFFORT_LEVELS);
     if (flavor === 'claude') {
         return getClaudeEffortLevels();
     }

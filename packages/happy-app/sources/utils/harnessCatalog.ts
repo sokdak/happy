@@ -7,6 +7,7 @@ import type { NewSessionAgentType } from '@/sync/persistence';
  */
 export const HARNESS_NAMES: Record<NewSessionAgentType, string> = {
     claude: 'Claude Code',
+    deepseek: 'DeepSeek',
     codex: 'Codex',
     rig: 'Happy',
     agy: 'Antigravity',
@@ -33,6 +34,7 @@ export const HARNESS_ORDER: readonly NewSessionAgentType[] = [
     'claude',
     'codex',
     'agy',
+    'deepseek',
     'rig',
 ];
 
@@ -62,9 +64,9 @@ export function isHarnessAvailable({
     key: NewSessionAgentType;
 }): boolean {
     if (key === 'rig') return happyAgentAvailable;
-    // Antigravity is niche enough that an old or incomplete capability report
-    // must not advertise it speculatively. Its daemon has to say it is installed.
-    if (key === 'agy') return availability?.agy === true;
+    // Antigravity needs an installation report; DeepSeek needs a configured key.
+    // Older daemons must not advertise either speculatively.
+    if (key === 'agy' || key === 'deepseek') return availability?.[key] === true;
     return !availability || availability[key] === true;
 }
 
@@ -90,10 +92,10 @@ export function listAvailableHarnesses({
     selected?: NewSessionAgentType | null;
 }): HarnessOption[] {
     const keys = HARNESS_ORDER.filter((key) => (
-        (key === selected && key !== 'agy')
+        (key === selected && key !== 'agy' && key !== 'deepseek')
         || isHarnessAvailable({ availability, happyAgentAvailable, key })
     ));
-    const fallback = HARNESS_ORDER.filter((key) => key !== 'agy');
+    const fallback = HARNESS_ORDER.filter((key) => key !== 'agy' && key !== 'deepseek');
     return (keys.length > 0 ? keys : fallback).map((key) => ({
         key,
         name: HARNESS_NAMES[key],

@@ -8,7 +8,7 @@ import HappyWire
 public struct NewSessionDraft: Equatable, Sendable {
     /// `NewSessionAgentType`.
     public enum Agent: String, CaseIterable, Sendable {
-        case claude, codex, gemini, openclaw, agy, rig
+        case claude, codex, gemini, openclaw, agy, rig, deepseek
 
         /// The harness's defaults, for every agent but Happy Agent, whose
         /// machine publishes its own.

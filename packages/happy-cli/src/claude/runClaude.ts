@@ -1,3 +1,5 @@
+import { DEEPSEEK_MODELS, DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_EFFORT_LEVELS } from '@slopus/happy-wire';
+import { resolveDeepSeekOptions } from '@/deepseek/options';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -45,6 +47,7 @@ import { RawJSONLinesSchema, type RawJSONLines } from './types';
 export type JsRuntime = 'node' | 'bun'
 
 export interface StartOptions {
+    flavor?: 'claude' | 'deepseek'
     model?: string
     permissionMode?: PermissionMode
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -72,6 +75,7 @@ type PendingClaudeGoalAction = {
 };
 
 export async function runClaude(credentials: Credentials, options: StartOptions = {}): Promise<void> {
+    if (options.flavor === 'deepseek') options = resolveDeepSeekOptions(options);
     logger.debug(`[CLAUDE] ===== CLAUDE MODE STARTING =====`);
     logger.debug(`[CLAUDE] This is the Claude agent, NOT Gemini`);
     
@@ -143,7 +147,13 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Initialize lifecycle state
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
-        flavor: 'claude',
+        flavor: options.flavor ?? 'claude',
+        ...(options.flavor === 'deepseek' ? {
+            currentModelCode: options.model,
+            modelMode: options.model,
+            effortLevel: options.effort,
+            models: DEEPSEEK_MODELS.map((model) => ({ code: model.id, value: model.name })),
+        } : {}),
         sandbox: sandboxConfig?.enabled ? sandboxConfig : null,
         dangerouslySkipPermissions,
         ...(forkedFromSessionId ? { parentSessionId: forkedFromSessionId } : {}),
@@ -732,8 +742,14 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Resolve model - use message.meta.model if provided, otherwise use current model
         let messageModel = currentModel;
         if (message.meta?.hasOwnProperty('model')) {
-            messageModel = message.meta.model || undefined; // null becomes undefined
-            currentModel = messageModel;
+            const requestedModel = message.meta.model || (options.flavor === 'deepseek' ? DEEPSEEK_DEFAULT_MODEL : undefined);
+            if (options.flavor !== 'deepseek' || DEEPSEEK_MODELS.some((model) => model.id === requestedModel)) {
+                messageModel = requestedModel;
+                currentModel = messageModel;
+                if (options.flavor === 'deepseek') {
+                    session.updateMetadata((metadata) => ({ ...metadata, currentModelCode: messageModel, modelMode: messageModel }));
+                }
+            }
             logger.debug(`[loop] Model updated from user message: ${messageModel || 'reset to default'}`);
         } else {
             logger.debug(`[loop] User message received with no model override, using current: ${currentModel || 'default'}`);
@@ -793,12 +809,12 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Validate against the SDK's accepted set so a stale/garbage value
         // from the wire doesn't poison the session.
         let messageEffort = currentEffort;
-        const VALID_EFFORTS: ReadonlySet<string> = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+        const VALID_EFFORTS: ReadonlySet<string> = new Set(options.flavor === 'deepseek' ? DEEPSEEK_EFFORT_LEVELS : ['low', 'medium', 'high', 'xhigh', 'max']);
         if (message.meta?.hasOwnProperty('effort')) {
             const incoming = (message.meta as Record<string, unknown>).effort;
             if (incoming === null || incoming === undefined) {
-                messageEffort = undefined;
-                currentEffort = undefined;
+                messageEffort = options.flavor === 'deepseek' ? 'high' : undefined;
+                currentEffort = messageEffort;
                 logger.debug(`[loop] Effort reset to default`);
             } else if (typeof incoming === 'string' && VALID_EFFORTS.has(incoming)) {
                 messageEffort = incoming as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -809,6 +825,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             }
         } else {
             logger.debug(`[loop] User message received with no effort override, using current: ${currentEffort ?? 'default'}`);
+        }
+
+        if (options.flavor === 'deepseek' && message.meta?.hasOwnProperty('effort')) {
+            session.updateMetadata((metadata) => ({ ...metadata, effortLevel: messageEffort }));
         }
 
         // Check for special commands before processing

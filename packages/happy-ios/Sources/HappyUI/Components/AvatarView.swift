@@ -237,6 +237,7 @@ enum AvatarImages {
 
     static func harness(_ harness: SessionAvatar.Harness) -> UIImage? {
         switch harness {
+        case .deepseek: UIImage.happy("icon-deepseek")
         case .claude: UIImage.happy("icon-claude")
         case .codex: UIImage.happy("icon-gpt")
         case .agy: UIImage.happy("icon-agy")

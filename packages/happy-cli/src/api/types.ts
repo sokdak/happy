@@ -142,6 +142,7 @@ export const MachineMetadataSchema = z.object({
   happyLibDir: z.string(),
   cliAvailability: z.object({
     claude: z.boolean(),
+    deepseek: z.boolean().optional(),
     codex: z.boolean(),
     gemini: z.boolean(),
     openclaw: z.boolean(),
@@ -300,6 +301,8 @@ export type Metadata = {
   // `code` = protocol value ID, `value` = human label
   models?: Array<{ code: string; value: string; description?: string | null }>,
   currentModelCode?: string,
+  modelMode?: string | null,
+  effortLevel?: string | null,
   operatingModes?: Array<{ code: string; value: string; description?: string | null }>,
   currentOperatingModeCode?: string,
   thoughtLevels?: Array<{ code: string; value: string; description?: string | null }>,

@@ -47,8 +47,11 @@ vi.mock('@/sync/storage', () => ({
     },
 }));
 
-vi.mock('@/sync/agentDefaults', () => ({
-    getCodeAgentDefaults: (_agentType: string, cliVersion?: string) => ({
+vi.mock('@/sync/agentDefaults', async () => {
+    const actual = await vi.importActual<typeof import('@/sync/agentDefaults')>('@/sync/agentDefaults');
+    return ({
+    ...actual,
+    getCodeAgentDefaults: (_agentType: string, cliVersion?: string) => _agentType === 'deepseek' ? actual.getCodeAgentDefaults(_agentType, cliVersion) : ({
         permissionMode: cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1' ? 'default' : 'auto',
         modelMode: 'default',
         effortLevel: null,
@@ -57,13 +60,14 @@ vi.mock('@/sync/agentDefaults', () => ({
         overrides: Record<string, unknown>,
         agentType: string,
         cliVersion?: string,
-    ) => overrides[agentType] ?? ({
+    ) => agentType === 'deepseek' ? actual.resolveAgentDefaultConfig(overrides, agentType, cliVersion) : overrides[agentType] ?? ({
         permissionMode: cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1' ? 'default' : 'auto',
         modelMode: 'default',
         effortLevel: null,
     }),
     retireModelMode: (_agentType: string, modelMode: string | null | undefined) => modelMode,
-}));
+});
+});
 
 vi.mock('@/sync/ops', () => ({
     machineSpawnNewSession: mocks.machineSpawnNewSession,
@@ -112,7 +116,9 @@ vi.mock('@/utils/worktree', () => ({
 
 vi.mock('@/utils/time', () => ({ delay: mocks.delay }));
 
-vi.mock('@/components/modelModeOptions', () => ({
+vi.mock('@/components/modelModeOptions', async () => {
+    const actual = await vi.importActual<typeof import('@/components/modelModeOptions')>('@/components/modelModeOptions');
+    return ({
     filterPermissionModesForCli: (modes: any[], cliVersion?: string) => (
         cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1'
             ? modes.filter((mode) => mode.key !== 'auto')
@@ -125,11 +131,11 @@ vi.mock('@/components/modelModeOptions', () => ({
         { key: 'yolo', name: 'YOLO' },
         { key: 'bypassPermissions', name: 'YOLO' },
     ],
-    getHardcodedModelModes: () => [
+    getHardcodedModelModes: (flavor: string) => flavor === 'deepseek' ? actual.getHardcodedModelModes(flavor, (key) => key) : [
         { key: 'default', name: 'Default' },
         { key: 'opus', name: 'Opus' },
     ],
-    getEffortLevelsForModel: () => [
+    getEffortLevelsForModel: (flavor: string, model: string) => flavor === 'deepseek' ? actual.getEffortLevelsForModel(flavor, model) : [
         { key: 'medium', name: 'Medium' },
     ],
     getSupportsWorktree: (agentType: string) => agentType !== 'openclaw',
@@ -143,7 +149,8 @@ vi.mock('@/components/modelModeOptions', () => ({
         && !models.some((model) => model.key === configuredModelKey)
         ? [...models, { key: configuredModelKey, name: configuredModelKey }]
         : models,
-}));
+});
+});
 
 vi.mock('@/modal', () => ({
     Modal: {
@@ -343,6 +350,15 @@ describe('useStartSessionFromDraft', () => {
             agent: 'claude',
             permissionMode: 'bypassPermissions',
         }));
+    });
+
+    it('starts DeepSeek with its selected model and native effort', async () => {
+        mocks.machines = [{ id: 'machine-1', online: true, metadata: { homeDir: '/Users/dev', cliAvailability: { deepseek: true } } }];
+        mocks.draft = createDraft({ agentType: 'deepseek', modelMode: 'deepseek-v4-pro', effortLevel: 'max' });
+        const { startSession } = useStartSessionFromDraft();
+        await expect(startSession()).resolves.toBe(true);
+        expect(mocks.machineSpawnNewSession).toHaveBeenCalledWith(expect.objectContaining({ agent: 'deepseek', modelMode: 'deepseek-v4-pro', effortLevel: 'max' }));
+        expect(mocks.sessionSetAgentModes).toHaveBeenCalledWith('session-1', expect.objectContaining({ modelMode: 'deepseek-v4-pro', effortLevel: 'max' }));
     });
 
     it('starts codex with a custom model saved in agent settings', async () => {

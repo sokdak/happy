@@ -145,6 +145,7 @@ public enum SessionDetails {
         if let identity = RigIdentity(metadata) { return identity.providerName }
         let flavor = truthy(metadata?["flavor"]) ?? "claude"
         switch flavor {
+        case "deepseek": return "DeepSeek"
         case "claude": return "Claude"
         case "gpt", "openai": return "Codex"
         case "gemini": return "Gemini"

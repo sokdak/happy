@@ -175,6 +175,12 @@ describe('buildResumeLaunch', () => {
         });
     });
 
+    it('resumes DeepSeek with the same backend and selected model', () => {
+        expect(buildResumeLaunch({ id: 'deepseek-session', active: false, metadata: { path: '/repo', flavor: 'deepseek', claudeSessionId: 'underlying-claude-id', currentModelCode: 'deepseek-v4-pro', effortLevel: 'max' } } as any, { startedBy: 'daemon', claudeStartingMode: 'remote' })).toEqual({
+            cwd: '/repo', args: ['deepseek', '--model', 'deepseek-v4-pro', '--effort', 'max', '--happy-starting-mode', 'remote', '--started-by', 'daemon', '--resume', 'underlying-claude-id'],
+        });
+    });
+
     it('rejects unsupported flavors', () => {
         expect(() => buildResumeLaunch({
             id: 'session-3',

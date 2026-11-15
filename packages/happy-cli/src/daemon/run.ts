@@ -3,6 +3,8 @@ import os from 'os';
 import * as tmp from 'tmp';
 import axios from 'axios';
 
+import { resolveDeepSeekOptions } from '@/deepseek/options';
+import type { StartOptions } from '@/claude/runClaude';
 import { ApiClient } from '@/api/api';
 import { TrackedSession, SessionEncryptionData } from './types';
 import { MachineMetadata, DaemonState, Metadata } from '@/api/types';
@@ -436,6 +438,10 @@ export async function startDaemon(): Promise<void> {
           };
         }
 
+        if (resolvedAgent === 'deepseek') {
+          resolveDeepSeekOptions({ model: spawnOptions.modelMode, effort: spawnOptions.effortLevel as StartOptions['effort'] }, { ...ambientEnvironment, ...extraEnv });
+        }
+
         // Check if tmux is available and should be used
         const tmuxAvailable = await isTmuxAvailable();
         let useTmux = tmuxAvailable;
@@ -463,7 +469,7 @@ export async function startDaemon(): Promise<void> {
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
           const agent = resolvedAgent;
-          const resumeId = agent === 'claude'
+          const resumeId = (agent === 'claude' || agent === 'deepseek')
             ? spawnOptions.resumeClaudeSessionId
             : (agent === 'codex' ? spawnOptions.resumeCodexThreadId : undefined);
           const resumeFragment = resumeId
@@ -569,7 +575,7 @@ export async function startDaemon(): Promise<void> {
 
           // Resume ids attach the new Happy session to a pre-existing provider
           // conversation created by the fork / duplicate RPC.
-          if (spawnOptions.resumeClaudeSessionId && agentCommand === 'claude') {
+          if (spawnOptions.resumeClaudeSessionId && (agentCommand === 'claude' || agentCommand === 'deepseek')) {
             args.push('--resume', spawnOptions.resumeClaudeSessionId);
           }
           if (spawnOptions.resumeCodexThreadId && agentCommand === 'codex') {
@@ -800,7 +806,7 @@ export async function startDaemon(): Promise<void> {
         // client has it. Fill only that gap; keep the tracked path and live IDs.
         const flavor = metadata.flavor ?? 'claude';
         if (fallback && (fallback.metadata.flavor ?? 'claude') === flavor) {
-          if (flavor === 'claude' && !metadata.claudeSessionId && fallback.metadata.claudeSessionId) {
+          if ((flavor === 'claude' || flavor === 'deepseek') && !metadata.claudeSessionId && fallback.metadata.claudeSessionId) {
             metadata = { ...metadata, claudeSessionId: fallback.metadata.claudeSessionId };
           } else if (flavor === 'agy' && !metadata.agySessionId && fallback.metadata.agySessionId) {
             metadata = { ...metadata, agySessionId: fallback.metadata.agySessionId };
@@ -817,7 +823,7 @@ export async function startDaemon(): Promise<void> {
         // the field being absent, not by which side supplied the metadata.
         // The fetch is best effort: it reads the server's 150 most recent
         // sessions, and an older session simply keeps what the client sent.
-        const needsFetch = (!metadata.claudeSessionId && (!metadata.flavor || metadata.flavor === 'claude'))
+        const needsFetch = (!metadata.claudeSessionId && (!metadata.flavor || metadata.flavor === 'claude' || metadata.flavor === 'deepseek'))
           || (!metadata.codexThreadId && metadata.flavor === 'codex')
           || (!metadata.agySessionId && metadata.flavor === 'agy');
         if (needsFetch) {

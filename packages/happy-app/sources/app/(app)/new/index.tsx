@@ -105,7 +105,8 @@ import {
 } from '@/components/AnimatedOverlay';
 
 // Agent icon assets
-const agentIcons = {
+const agentIcons: Record<NewSessionAgentType, number> = {
+    deepseek: require('@/assets/images/icon-deepseek.png'),
     rig: require('@/assets/images/logo-black.png'),
     claude: require('@/assets/images/icon-claude.png'),
     codex: require('@/assets/images/icon-gpt.png'),
@@ -120,6 +121,7 @@ type AgentKey = NewSessionAgentType;
 const ALL_AGENTS: { key: AgentKey; label: string }[] = [
     { key: 'claude', label: 'claude code' },
     { key: 'codex', label: 'codex' },
+    { key: 'deepseek', label: 'deepseek' },
     { key: 'agy', label: 'antigravity' },
     { key: 'rig', label: 'happy' },
 ];

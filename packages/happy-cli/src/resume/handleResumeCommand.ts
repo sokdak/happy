@@ -40,7 +40,8 @@ export function parseResumeCommandArgs(args: string[]): { showHelp: boolean; ses
     };
 }
 
-function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'agy' | null {
+function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'agy' | 'deepseek' | null {
+    if (metadata.flavor === 'deepseek') return 'deepseek';
     if (metadata.flavor === 'agy') return 'agy';
     if (metadata.flavor === 'codex' || metadata.codexThreadId) {
         return 'codex';
@@ -79,11 +80,16 @@ export function buildResumeLaunch(session: ResumableHappySession, options: Resum
         };
     }
 
-    if (flavor === 'claude') {
+    if (flavor === 'claude' || flavor === 'deepseek') {
         if (!metadata.claudeSessionId) {
             throw new Error(`Happy session ${session.id} is missing its Claude session ID.`);
         }
-        const args = ['claude'];
+        const args: string[] = [flavor];
+        if (flavor === 'deepseek') {
+            const model = metadata.modelMode !== undefined ? metadata.modelMode : metadata.currentModelCode;
+            if (model) args.push('--model', model);
+            if (metadata.effortLevel) args.push('--effort', metadata.effortLevel);
+        }
         if (options.claudeStartingMode) {
             args.push('--happy-starting-mode', options.claudeStartingMode);
         }

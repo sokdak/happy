@@ -7,6 +7,7 @@ import { applyAgentPolicy } from './agentPolicy';
 
 export interface CLIAvailability {
   claude: boolean;
+  deepseek?: boolean;
   codex: boolean;
   gemini: boolean;
   openclaw: boolean;
@@ -50,7 +51,7 @@ function detectPosix(env: NodeJS.ProcessEnv): CLIAvailability {
   const openclawEnv = !!env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, detectedAt: Date.now() };
+  return { claude, deepseek: Boolean(env.DEEPSEEK_API_KEY?.trim()), codex, gemini, openclaw, agy, detectedAt: Date.now() };
 }
 
 function detectWindows(env: NodeJS.ProcessEnv): CLIAvailability {
@@ -74,5 +75,5 @@ function detectWindows(env: NodeJS.ProcessEnv): CLIAvailability {
   const openclawEnv = !!env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, detectedAt: Date.now() };
+  return { claude, deepseek: Boolean(env.DEEPSEEK_API_KEY?.trim()), codex, gemini, openclaw, agy, detectedAt: Date.now() };
 }

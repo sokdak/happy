@@ -22,6 +22,13 @@ const mockedFindAgyBin = vi.mocked(findAgyBin);
 const mockedPlatform = vi.mocked(os.platform);
 
 describe('CLI availability detection', () => {
+  it('advertises DeepSeek only with a nonblank API key and an allowing policy', () => {
+    expect(detectCLIAvailability({}).deepseek).toBe(false);
+    expect(detectCLIAvailability({ DEEPSEEK_API_KEY: '  ' }).deepseek).toBe(false);
+    expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key' }).deepseek).toBe(true);
+    expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key', HAPPY_ENABLED_AGENTS: 'codex' }).deepseek).toBe(false);
+    expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key', HAPPY_ENABLED_AGENTS: 'deepseek' }).deepseek).toBe(true);
+  });
   beforeEach(() => {
     mockedExecSync.mockReset();
     mockedExecSync.mockImplementation(() => {

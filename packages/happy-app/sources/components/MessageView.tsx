@@ -199,7 +199,7 @@ function UserTextBlock(props: {
   // Codex/Gemini don't reliably emit the <command-*> wrapper, so hiding the
   // echo there would drop the command with nothing to replace it. (Absent
   // flavor == Claude, matching the convention used elsewhere.)
-  const isClaudeFlavor = !props.metadata?.flavor || props.metadata.flavor === 'claude';
+  const isClaudeFlavor = !props.metadata?.flavor || (props.metadata.flavor === 'claude' || props.metadata.flavor === 'deepseek');
   if (isClaudeFlavor && isUserSlashCommandEcho(props.message.text, props.message.localId != null)) {
     return null;
   }

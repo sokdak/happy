@@ -75,6 +75,19 @@ async function boot() {
 }
 
 describe('daemon resume fallback', () => {
+  it('launches DeepSeek with its selections and preserves the daemon API key for the child', async () => {
+    vi.stubEnv('DEEPSEEK_API_KEY', 'test-deepseek-key');
+    await boot();
+    expect(await mocks.handlers.spawnSession({ directory: '/project', agent: 'deepseek', modelMode: 'deepseek-v4-pro', effortLevel: 'max' })).toMatchObject({ type: 'success' });
+    expect(mocks.spawn).toHaveBeenCalledWith(['deepseek', '--happy-starting-mode', 'remote', '--started-by', 'daemon', '--model', 'deepseek-v4-pro', '--effort', 'max'], expect.objectContaining({ env: expect.objectContaining({ DEEPSEEK_API_KEY: 'test-deepseek-key' }) }));
+  });
+
+  it('reports a missing DeepSeek key before starting a process', async () => {
+    vi.stubEnv('DEEPSEEK_API_KEY', '');
+    await boot();
+    expect(await mocks.handlers.spawnSession({ directory: '/project', agent: 'deepseek' })).toMatchObject({ type: 'error', errorMessage: expect.stringContaining('DEEPSEEK_API_KEY') });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.persisted = {};
