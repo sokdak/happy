@@ -129,7 +129,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     }
   }
 
-  const sessionManager = new AcpSessionManager();
+  const sessionManager = new AcpSessionManager({ preserveTextWhitespace: true });
   type TurnSettings = { model: string; effort: string; permissionMode: PermissionMode };
   const messageQueue = new MessageQueue2<TurnSettings>(JSON.stringify);
   let incomingPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
@@ -311,9 +311,8 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   const keepAliveInterval = setInterval(() => {
     session.keepAlive(thinking, 'remote');
   }, 2000);
-  const textFlushInterval = setInterval(() => {
-    sendEnvelopes(sessionManager.flushPendingText());
-  }, 500);
+  // Each text envelope is a complete Markdown block in the app, not a delta.
+  // Flush on tool/type boundaries and turn completion, as the Codex runner does.
 
   async function handleAbort() {
     log('Abort requested');
@@ -399,7 +398,6 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     messageQueue.close();
     permissionHandler?.reset();
     clearInterval(keepAliveInterval);
-    clearInterval(textFlushInterval);
     reconnectionHandle?.cancel();
 
     backend.offMessage(onBackendMessage);

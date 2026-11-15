@@ -122,23 +122,31 @@ describe('Antigravity Happy runner integration', () => {
     expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'message', message: expect.stringContaining('attachment') }));
   });
 
-  it('flushes ongoing text to the Happy wire before the backend finishes and disposes on shutdown', async () => {
+  it('keeps Markdown intact across slow chunks and flushes before tools and at completion', async () => {
     await begin();
-    const original = fixture.backend.sendPrompt.getMockImplementation();
     let finish!: () => void;
     fixture.backend.sendPrompt.mockImplementationOnce(async () => {
-      for (const fn of fixture.listeners) fn({ type: 'status', status: 'running' } satisfies AgentMessage);
-      for (const fn of fixture.listeners) fn({ type: 'model-output', textDelta: 'Still working' } satisfies AgentMessage);
+      for (const fn of fixture.listeners) fn({ type: 'model-output', textDelta: '\n**Still' } satisfies AgentMessage);
+      await new Promise(resolve => setTimeout(resolve, 600));
+      for (const fn of fixture.listeners) fn({ type: 'model-output', textDelta: ' working**\n' } satisfies AgentMessage);
+      for (const fn of fixture.listeners) fn({ type: 'tool-call', callId: 'read', toolName: 'Read', args: { file_path: '/work/a' } } satisfies AgentMessage);
+      for (const fn of fixture.listeners) fn({ type: 'model-output', textDelta: '```ts\nconst answer = ' } satisfies AgentMessage);
       await new Promise<void>(resolve => { finish = resolve; });
+      for (const fn of fixture.listeners) fn({ type: 'model-output', textDelta: '42;\n```\n' } satisfies AgentMessage);
     });
     user('long turn');
-    await vi.waitFor(() => expect(fixture.session.sendSessionProtocolMessage).toHaveBeenCalledWith(expect.objectContaining({ ev: { t: 'text', text: 'Still working' } })), { timeout: 2000 });
-    expect(fixture.session.sendSessionProtocolMessage.mock.calls.some(([e]: [any]) => e.ev.t === 'turn-end')).toBe(false);
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'), { timeout: 2000 });
+    const before = fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev);
+    expect(before.filter(e => e.t === 'text')).toEqual([{ t: 'text', text: '\n**Still working**\n' }]);
+    expect(before.at(-1).t).toBe('tool-call-start');
     finish();
     await vi.waitFor(() => expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
-    fixture.backend.sendPrompt.mockImplementation(original!);
-    await fixture.session.kill(); await running;
-    expect(fixture.backend.dispose).toHaveBeenCalled();
+    const after = fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev);
+    expect(after.filter(e => e.t === 'text')).toEqual([
+      { t: 'text', text: '\n**Still working**\n' },
+      { t: 'text', text: '```ts\nconst answer = 42;\n```\n' },
+    ]);
+    expect(after.at(-1).t).toBe('turn-end');
   });
   it('starts offline and routes messages transferred during reconnection through the real session', async () => {
     const stub = createOfflineSessionStub('fixture');

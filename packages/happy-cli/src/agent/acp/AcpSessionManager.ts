@@ -39,6 +39,8 @@ export class AcpSessionManager {
   private pendingText = '';
   private pendingType: 'thinking' | 'output' | null = null;
 
+  constructor(private readonly options: { preserveTextWhitespace?: boolean } = {}) {}
+
   private nextTime(): number {
     this.lastTime = Math.max(this.lastTime + 1, Date.now());
     return this.lastTime;
@@ -59,7 +61,9 @@ export class AcpSessionManager {
     if (!this.pendingText || !this.pendingType) {
       return [];
     }
-    const text = this.pendingText.replace(/^\n+|\n+$/g, '');
+    const text = this.options.preserveTextWhitespace
+      ? this.pendingText
+      : this.pendingText.replace(/^\n+|\n+$/g, '');
     const type = this.pendingType;
     this.pendingText = '';
     this.pendingType = null;

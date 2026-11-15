@@ -428,3 +428,22 @@ describe('opt-in incremental text delivery', () => {
     expect(mapper.endTurn('completed').map(e => e.ev)).toEqual([{ t: 'turn-end', status: 'completed' }]);
   });
 });
+
+
+describe('AGY Markdown segment preservation', () => {
+  it('retains every whitespace character and keeps tool-delimited segments separate', () => {
+    const mapper = new AcpSessionManager({ preserveTextWhitespace: true });
+    mapper.startTurn();
+    const parts = ['\n**bold', ' text**\n\n', '```ts\n', 'const a = 1;\n', '```\n'];
+    expect(parts.flatMap(textDelta => mapper.mapMessage({ type: 'model-output', textDelta }))).toEqual([]);
+    const boundary = mapper.mapMessage({ type: 'tool-call', callId: 'read', toolName: 'Read', args: {} });
+    expect(boundary.map(e => e.ev)).toEqual([
+      { t: 'text', text: parts.join('') },
+      expect.objectContaining({ t: 'tool-call-start' }),
+    ]);
+    mapper.mapMessage({ type: 'model-output', textDelta: 'Final answer\n' });
+    expect(mapper.endTurn('completed').map(e => e.ev)).toEqual([
+      { t: 'text', text: 'Final answer\n' }, { t: 'turn-end', status: 'completed' },
+    ]);
+  });
+});
