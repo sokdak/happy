@@ -81,6 +81,10 @@ describe('AgyBackend', () => {
     // empty stdin (immediate EOF), not an open pipe.
     const spawnOpts = (spawnFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2];
     expect(spawnOpts.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    const spawnArgs = (spawnFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    const timeoutIdx = spawnArgs.indexOf('--print-timeout');
+    expect(timeoutIdx).toBeGreaterThanOrEqual(0);
+    expect(spawnArgs[timeoutIdx + 1]).toBe('30m');
 
     expect(messages.filter((m) => m.type === 'model-output')).toEqual([
       { type: 'model-output', textDelta: 'Hello ' },

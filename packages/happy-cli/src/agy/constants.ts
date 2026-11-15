@@ -126,7 +126,7 @@ export function resolveAgyModelName(
 }
 
 /** Timeout passed to `agy --print-timeout` for a single print turn. */
-export const AGY_PRINT_TIMEOUT = '10m';
+export const AGY_PRINT_TIMEOUT = '30m';
 
 /**
  * Path to agy's per-workspace conversation cache. agy records the most recent

@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  AGY_PRINT_TIMEOUT,
   DEFAULT_AGY_EFFORT,
   DEFAULT_AGY_MODEL,
   findAgyBin,
@@ -122,5 +123,11 @@ describe('resolveAgyModelName', () => {
       .toBe('Claude Opus 4.6 (Thinking)');
     expect(resolveAgyModelName('Gemini 3.6 Flash (High)', 'medium'))
       .toBe('Gemini 3.6 Flash (High)');
+  });
+});
+
+describe('AGY_PRINT_TIMEOUT', () => {
+  it('defaults print turns to 30 minutes', () => {
+    expect(AGY_PRINT_TIMEOUT).toBe('30m');
   });
 });
