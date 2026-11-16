@@ -40,7 +40,7 @@ by this implementation.
   and `fullyIdle === false`. Cancellation, errors and native budget limits
   are never overridden. `continuationActive` is validated but is not a loop
   counter: AGY 1.5.9 reports false even during forced continuations.
-- At most **12** continuations per user request; at most **4** without a newly
+- This compatibility hook requests at most **12** continuations per user request; at most **4** without a newly
   completed command; at most **5 minutes** since the first continuation, checked
   at each Stop decision. These are continuation budgets, not a prompt timeout
   or a guaranteed token-cost ceiling. Completed status/wait tools do not reset
@@ -84,7 +84,7 @@ Authenticated probes require a logged-in AGY 1.5.9:
 
 ```sh
 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-stop-hook.mts single
-# Also: chain, parallel, failure, denied, cancel, watcher, hooks, broken-hook, collision
+# Also: chain, parallel, failure, denied, cancel, cancel-after-hook, watcher, hooks, broken-hook, collision
 HAPPY_AGY_STOP_HOOK=1 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-acp.mts
 HAPPY_AGY_STOP_HOOK=1 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-title.mts
 ```
