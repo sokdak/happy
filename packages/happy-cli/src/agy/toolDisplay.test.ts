@@ -168,4 +168,66 @@ describe('mapAgyToolToDisplay', () => {
         .toEqual({ toolName: 'Bash', args: { command: 'schedule' } });
     }
   });
+
+  it('shows question and options for ask_question without forwarding credentials', () => {
+    expect(mapAgyToolToDisplay('ask_question', {
+      questions: [{ question: 'Which branch to merge?', options: ['main', 'develop'] }],
+    })).toEqual({ toolName: 'Bash', args: { command: 'ask_question "Which branch to merge?" (main, develop)' } });
+
+    expect(mapAgyToolToDisplay('ask_question', {
+      questions: [
+        { question: 'Q1', options: ['opt1', 'opt2', 'opt3', 'opt4'] },
+        { question: 'Q2', options: [] },
+      ],
+    })).toEqual({ toolName: 'Bash', args: { command: 'ask_question "Q1" (opt1, opt2, opt3...) [+1 more]' } });
+
+    expect(mapAgyToolToDisplay('ask_question', {
+      question: 'Direct question without array',
+      options: ['a', 'b'],
+    })).toEqual({ toolName: 'Bash', args: { command: 'ask_question "Direct question without array" (a, b)' } });
+
+    expect(mapAgyToolToDisplay('ask_question', {
+      questions: [{ question: 'Bearer secret_token_value', options: ['yes', 'no'] }],
+    })).toEqual({ toolName: 'Bash', args: { command: 'ask_question [redacted] (yes, no)' } });
+
+    expect(mapAgyToolToDisplay('ask_question', {})).toEqual({
+      toolName: 'Bash',
+      args: { command: 'ask_question' },
+    });
+  });
+
+  it('shows target recipient for send_message without forwarding message body', () => {
+    expect(mapAgyToolToDisplay('send_message', {
+      Recipient: 'session-abc/worker-1',
+      Message: 'private message body with secret',
+    })).toEqual({ toolName: 'Bash', args: { command: 'send_message to worker-1' } });
+
+    expect(mapAgyToolToDisplay('send_message', {
+      Message: 'private message without recipient',
+    })).toEqual({ toolName: 'Bash', args: { command: 'send_message' } });
+  });
+
+  it('shows subagent name for define_subagent without forwarding prompt or description', () => {
+    expect(mapAgyToolToDisplay('define_subagent', {
+      Name: 'code-reviewer',
+      Description: 'private description',
+      SystemPrompt: 'private system instructions',
+    })).toEqual({ toolName: 'Bash', args: { command: 'define_subagent code-reviewer' } });
+
+    expect(mapAgyToolToDisplay('define_subagent', {})).toEqual({
+      toolName: 'Bash',
+      args: { command: 'define_subagent' },
+    });
+  });
+
+  it('shows target subagent for manage_subagents kill', () => {
+    expect(mapAgyToolToDisplay('manage_subagents', {
+      Action: 'kill',
+      ConversationIds: ['swarm-root/worker-2'],
+    })).toEqual({ toolName: 'Bash', args: { command: 'manage_subagents kill worker-2' } });
+
+    expect(mapAgyToolToDisplay('manage_subagents', {
+      Action: 'list',
+    })).toEqual({ toolName: 'Bash', args: { command: 'manage_subagents list' } });
+  });
 });

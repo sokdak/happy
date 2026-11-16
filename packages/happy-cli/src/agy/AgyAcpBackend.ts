@@ -23,6 +23,7 @@ const NATIVE_TOOL_LABELS = new Set([
   'call_mcp_tool', 'list_resources', 'read_resource', 'search_web',
   'grep_search', 'find_by_name', 'open_browser_url', 'read_url_content',
   'invoke_subagent', 'manage_subagents', 'swarm', 'run_workflow',
+  'ask_question', 'send_message', 'define_subagent',
 ]);
 
 export class AgyCancelledError extends Error {
