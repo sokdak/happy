@@ -16,8 +16,8 @@ html.happy-app-zoomed {
 }
 
 html.happy-app-zoomed body {
-    width: calc(100vw / var(--happy-app-zoom));
-    height: calc(100vh / var(--happy-app-zoom));
+    width: calc(100% / var(--happy-app-zoom));
+    height: calc(100% / var(--happy-app-zoom));
     transform-origin: top left;
 }
 
