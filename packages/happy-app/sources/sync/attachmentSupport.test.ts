@@ -7,11 +7,12 @@ import {
 } from './attachmentSupport';
 
 describe('supportsImageAttachmentsForFlavor', () => {
-    it('supports legacy sessions, Claude, and Codex', () => {
+    it('supports legacy sessions, Claude, Codex, and Antigravity', () => {
         expect(supportsImageAttachmentsForFlavor(undefined)).toBe(true);
         expect(supportsImageAttachmentsForFlavor(null)).toBe(true);
         expect(supportsImageAttachmentsForFlavor('claude')).toBe(true);
         expect(supportsImageAttachmentsForFlavor('codex')).toBe(true);
+        expect(supportsImageAttachmentsForFlavor('agy')).toBe(true);
     });
 
     it('rejects Gemini, OpenClaw, and unknown explicit flavors', () => {
@@ -25,6 +26,19 @@ describe('getImageAttachmentSendPlan', () => {
     it('uses attachments and sends text for Codex', () => {
         expect(getImageAttachmentSendPlan({
             flavor: 'codex',
+            text: '',
+            attachmentCount: 1,
+        })).toEqual({
+            supportsAttachments: true,
+            shouldUseAttachments: true,
+            shouldShowUnsupportedAlert: false,
+            shouldSendText: true,
+        });
+    });
+
+    it('uses attachments and sends text for Antigravity', () => {
+        expect(getImageAttachmentSendPlan({
+            flavor: 'agy',
             text: '',
             attachmentCount: 1,
         })).toEqual({
