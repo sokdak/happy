@@ -40,15 +40,14 @@ by this implementation.
   and `fullyIdle === false`. Cancellation, errors and native budget limits
   are never overridden. `continuationActive` is validated but is not a loop
   counter: AGY 1.5.9 reports false even during forced continuations.
-- This compatibility hook requests at most **12** continuations per user request; at most **4** without a newly
+- This compatibility hook requests at most **20** continuations per user request; at most **8** without a newly
   completed command; at most **5 minutes** since the first continuation, checked
-  at each Stop decision. These are continuation budgets, not a prompt timeout
+  at each Stop decision. Stalled continuations apply progressive backoff (**5s → 10s → 15s**) on the private control socket before returning `continue`, waking early as soon as a `run_command` completes over ACP or the turn is cancelled. These are continuation budgets, not a prompt timeout
   or a guaranteed token-cost ceiling. Completed status/wait tools do not reset
-  the no-command-progress allowance. The native model can still use tokens
+  the no-command-progress allowance or wake an in-flight backoff early. The native model can still use tokens
   or wait within an invocation.
 - No automatic new user prompt is sent. A hook `continue` still invokes the
-  model again and may consume additional tokens. Existing task status/wait
-  facilities are requested; existing commands must not be rerun.
+  model again and may consume additional tokens. A single status check per wakeup is requested without creating redundant `schedule` timers; existing commands must not be rerun.
 - Intentionally long-running servers/watchers cannot reliably be identified
   from `fullyIdle`. They receive the same bounded policy. A limit produces an
   explicit **unconfirmed completion / failed turn**, not a claim that the server
@@ -84,7 +83,7 @@ Authenticated probes require a logged-in AGY 1.5.9:
 
 ```sh
 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-stop-hook.mts single
-# Also: chain, parallel, failure, denied, cancel, cancel-after-hook, watcher, hooks, broken-hook, collision
+# Also: slow, chain, parallel, failure, denied, cancel, cancel-after-hook, watcher, hooks, broken-hook, collision
 HAPPY_AGY_STOP_HOOK=1 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-acp.mts
 HAPPY_AGY_STOP_HOOK=1 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-title.mts
 ```

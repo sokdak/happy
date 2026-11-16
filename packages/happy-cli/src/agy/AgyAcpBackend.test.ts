@@ -7,6 +7,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentMessage } from '@/agent/core/AgentBackend';
 import { AgyAcpBackend, AgyCancelledError, type AgyAcpOptions } from './AgyAcpBackend';
+import { STOP_HOOK_LIMITS } from './stopHook';
 
 const model = { modelId: 'flash-medium', name: 'Gemini 3.8 Flash (Medium)' };
 const metadata = {
@@ -54,7 +55,10 @@ const backends: AgyAcpBackend[] = [];
 function setup(options: Partial<AgyAcpOptions> = {}) {
   const agent = fakeAgent();
   const spawnFn = vi.fn(() => agent.child) as unknown as typeof spawn;
-  const backend = new AgyAcpBackend({ cwd: '/work', stopHook: false, permissionMode: 'default', model: 'Gemini 3.8 Flash', effort: 'medium', spawnFn, ...options });
+  const backend = new AgyAcpBackend({
+    cwd: '/work', stopHook: false, stopHookLimits: { maxBackoffMs: 0 },
+    permissionMode: 'default', model: 'Gemini 3.8 Flash', effort: 'medium', spawnFn, ...options,
+  });
   backends.push(backend);
   const messages: AgentMessage[] = [];
   backend.onMessage(m => messages.push(m));
@@ -88,11 +92,12 @@ describe('persistent Antigravity ACP', () => {
       const pending = backend.sendPrompt('', 'background');
       const rejected = expect(pending).rejects.toThrow('no completed tool progress');
       const request = await promptRequest(agent);
-      for (let i = 0; i < 5; i++) {
+      const limit = STOP_HOOK_LIMITS.maxStalledContinuations;
+      for (let i = 0; i <= limit; i++) {
         agent.notify({ sessionUpdate: 'tool_call', toolCallId: `status-${i}`, title, kind: 'other', status: 'in_progress', rawInput });
         agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: `status-${i}`, status: 'completed' });
         await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(i + 1));
-        expect(await invokeStop(spawnFn, i, false)).toEqual(i < 4 ? { decision: 'continue', reason: expect.any(String) } : {});
+        expect(await invokeStop(spawnFn, i, false)).toEqual(i < limit ? { decision: 'continue', reason: expect.any(String) } : {});
       }
       expect(messages.filter(m => m.type === 'tool-call').every(m => m.type === 'tool-call' && m.toolName === 'Bash')).toBe(true);
       agent.respond(request.id!, { stopReason: 'end_turn' }); await rejected;
@@ -102,13 +107,38 @@ describe('persistent Antigravity ACP', () => {
       agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
       const pending = backend.sendPrompt('', 'background');
       const request = await promptRequest(agent);
-      for (let i = 0; i < 4; i++) expect((await invokeStop(spawnFn, i, false)).decision).toBe('continue');
+      const limit = STOP_HOOK_LIMITS.maxStalledContinuations;
+      for (let i = 0; i < limit; i++) expect((await invokeStop(spawnFn, i, false)).decision).toBe('continue');
       agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'command', title, kind: 'execute', status: 'completed', rawInput: { CommandLine: 'printf DONE' } });
       await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(1));
       expect(messages).toContainEqual({ type: 'tool-call', callId: 'command', toolName: 'Bash', args: { command: 'printf DONE' } });
-      expect((await invokeStop(spawnFn, 4, false)).decision).toBe('continue');
-      await invokeStop(spawnFn, 5, true);
+      expect((await invokeStop(spawnFn, limit, false)).decision).toBe('continue');
+      await invokeStop(spawnFn, limit + 1, true);
       agent.respond(request.id!, { stopReason: 'end_turn' }); await pending;
+    });
+    it('wakes Stop-hook backoff immediately when run_command finishes, ignoring status/schedule completions', async () => {
+      const { backend, agent, spawnFn } = setup({
+        stopHook: true,
+        stopHookLimits: { initialBackoffMs: 2_000, maxBackoffMs: 2_000 },
+      });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'background');
+      const request = await promptRequest(agent);
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'bg-cmd', title: 'npm install', kind: 'execute', status: 'in_progress', rawInput: { CommandLine: 'npm install' } });
+      const startedAt = Date.now();
+      const hookCall = invokeStop(spawnFn, 0, false);
+      let settled = false;
+      void hookCall.then(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'poll-1', title: 'Run manage_task', kind: 'other', status: 'completed', rawInput: { Action: 'status', TaskId: 'session/task-1' } });
+      await new Promise(resolve => setTimeout(resolve, 80));
+      expect(settled).toBe(false);
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'bg-cmd', status: 'completed' });
+      expect((await hookCall).decision).toBe('continue');
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      await invokeStop(spawnFn, 1, true);
+      agent.respond(request.id!, { stopReason: 'end_turn' });
+      await pending;
     });
     it('keeps the prompt open across Stop continuation, tool completion and a final idle hook', async () => {
       const { backend, agent, spawnFn, messages } = setup({ stopHook: true });

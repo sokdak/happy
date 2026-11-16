@@ -4,14 +4,16 @@ import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { projectPath } from '@/projectPath';
 import { afterEach, describe, expect, it } from 'vitest';
-import { agyStopHookEnabled, AgyStopHook, AgyStopPolicy, STOP_HOOK_LIMITS } from './stopHook';
+import { agyStopHookEnabled, AgyStopHook, AgyStopPolicy, STOP_HOOK_LIMITS, type StopHookLimits } from './stopHook';
 
 const payload = (executionNum = 0, extra = {}) => ({ conversationId: 'session', hookEventName: 'Stop',
   terminationReason: 'NO_TOOL_CALL', fullyIdle: false, continuationActive: false, executionNum, ...extra });
 function policy() { const p = new AgyStopPolicy(); p.begin('session'); return p; }
 const hooks: AgyStopHook[] = [];
 afterEach(() => { for (const hook of hooks.splice(0)) hook.close(); });
-async function hook() { const h = await AgyStopHook.create(); hooks.push(h); h.policy.begin('session'); return h; }
+async function hook(limits: Partial<StopHookLimits> = { maxBackoffMs: 0 }) {
+  const h = await AgyStopHook.create(limits); hooks.push(h); h.policy.begin('session'); return h;
+}
 function invokeHook(h: AgyStopHook, input: unknown): Promise<any> {
   const config = JSON.parse(readFileSync(join(h.workspace, '.agents/hooks.json'), 'utf8'));
   return new Promise((resolve, reject) => {
@@ -45,15 +47,36 @@ describe('AGY Stop policy', () => {
   });
   it('bounds repeated waiting for servers/watchers without claiming they completed', () => {
     const p = policy();
-    for (let i = 0; i < STOP_HOOK_LIMITS.maxStalledContinuations; i++) expect(p.decide(payload(i)).decision).toBe('continue');
-    expect(p.decide(payload(4))).toEqual({});
-    p.progress(); expect(p.decide(payload(5))).toEqual({});
+    const limit = STOP_HOOK_LIMITS.maxStalledContinuations;
+    for (let i = 0; i < limit; i++) expect(p.decide(payload(i)).decision).toBe('continue');
+    expect(p.decide(payload(limit))).toEqual({});
+    p.progress(); expect(p.decide(payload(limit + 1))).toEqual({});
     expect(p.finish()).toContain('no completed tool progress');
   });
   it('permits chained tasks but keeps the total cap despite progress or continuationActive=false', () => {
     const p = policy();
-    for (let i = 0; i < STOP_HOOK_LIMITS.maxContinuations; i++) { p.progress(); expect(p.decide(payload(i)).decision).toBe('continue'); }
-    p.progress(); expect(p.decide(payload(12))).toEqual({}); expect(p.finish()).toContain('continuation limit');
+    const limit = STOP_HOOK_LIMITS.maxContinuations;
+    for (let i = 0; i < limit; i++) { p.progress(); expect(p.decide(payload(i)).decision).toBe('continue'); }
+    p.progress(); expect(p.decide(payload(limit))).toEqual({}); expect(p.finish()).toContain('continuation limit');
+  });
+  it('applies progressive backoff per stalled continuation, resets on progress, and clamps to remaining time', () => {
+    let now = 1_000;
+    const p = new AgyStopPolicy(STOP_HOOK_LIMITS, () => now);
+    p.begin('session');
+    expect(p.decide(payload(0))).toMatchObject({ decision: 'continue', reason: expect.stringContaining('do not create new schedule timers') });
+    expect(p.plannedDelayMs()).toBe(5_000);
+    expect(p.decide(payload(1)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(10_000);
+    expect(p.decide(payload(2)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(15_000);
+    expect(p.decide(payload(3)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(15_000);
+    p.progress();
+    expect(p.decide(payload(4)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(5_000);
+    now = 1_000 + STOP_HOOK_LIMITS.maxContinuationMs - 3_200;
+    expect(p.decide(payload(5)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(3_200);
   });
   it('bounds elapsed continuation time and rejects duplicated native executions', () => {
     let now = 0; const p = new AgyStopPolicy(STOP_HOOK_LIMITS, () => now); p.begin('session');
@@ -126,5 +149,50 @@ describe.skipIf(process.platform === 'win32')('packaged command hook and private
     const response = new Promise<string>(resolve => socket.once('data', resolve));
     socket.write(JSON.stringify(payload()) + '\n'); expect(JSON.parse(await response)).toEqual({});
     socket.destroy(); h.close(); h.close(); expect(existsSync(h.workspace)).toBe(false);
+  });
+  it('configures default hook timeouts above maxBackoffMs and holds stalled continuations', async () => {
+    const defaults = await AgyStopHook.create();
+    hooks.push(defaults);
+    const defaultConfig = JSON.parse(readFileSync(join(defaults.workspace, '.agents/hooks.json'), 'utf8'));
+    expect(defaultConfig['happy-acp-background'].Stop[0].timeout).toBeGreaterThanOrEqual(20);
+
+    const h = await hook({ initialBackoffMs: 120, maxBackoffMs: 240 });
+    const startedAt = Date.now();
+    const res = await invokeHook(h, payload(0));
+    expect(res.decision).toBe('continue');
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
+  });
+  it('wakes an in-flight backoff immediately on command progress, cancellation, or poisoned sibling socket', async () => {
+    const progressing = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
+    const t1 = Date.now();
+    const pendingProgress = invokeHook(progressing, payload(0));
+    setTimeout(() => progressing.policy.progress(), 40);
+    expect((await pendingProgress).decision).toBe('continue');
+    expect(Date.now() - t1).toBeLessThan(800);
+
+    const cancelling = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
+    const t2 = Date.now();
+    const pendingCancel = invokeHook(cancelling, payload(0));
+    setTimeout(() => cancelling.policy.cancel(), 40);
+    expect(await pendingCancel).toEqual({});
+    expect(Date.now() - t2).toBeLessThan(800);
+
+    const poisoned = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
+    const t3 = Date.now();
+    const pendingPoisoned = invokeHook(poisoned, payload(0));
+    setTimeout(() => { void invokeHook(poisoned, '{bad json'); }, 40);
+    expect(await pendingPoisoned).toEqual({});
+    expect(Date.now() - t3).toBeLessThan(800);
+    expect(poisoned.policy.finish()).toContain('invalid');
+  });
+  it('records unconfirmed issue if the hook client disconnects during backoff wait', async () => {
+    const h = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
+    const socket = createConnection(h.socketPath);
+    await new Promise<void>(resolve => socket.once('connect', resolve));
+    socket.write(JSON.stringify(payload(0)) + '\n');
+    await new Promise(resolve => setTimeout(resolve, 40));
+    socket.destroy();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(h.policy.finish()).toContain('invalid');
   });
 });

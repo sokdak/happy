@@ -4,7 +4,9 @@
 const net = require('node:net');
 let done = false;
 let socket;
-const timer = setTimeout(() => finish({}), 2500);
+const rawTimeoutMs = Number(process.argv[3]);
+const timeoutMs = Number.isSafeInteger(rawTimeoutMs) && rawTimeoutMs >= 1000 && rawTimeoutMs <= 120000 ? rawTimeoutMs : 20000;
+const timer = setTimeout(() => finish({}), timeoutMs);
 function finish(value) {
   if (done) return;
   done = true;
