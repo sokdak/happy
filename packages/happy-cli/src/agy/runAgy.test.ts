@@ -72,6 +72,23 @@ function user(text: string, meta: Record<string, unknown> = {}) {
 }
 
 describe('Antigravity Happy runner integration', () => {
+  it('marks unconfirmed background completion as failed, reports it once, and accepts the next request', async () => {
+    await begin();
+    fixture.backend.sendPrompt.mockImplementationOnce(async () => {
+      const detail = 'Background work may still be running; completion is unconfirmed.';
+      for (const fn of fixture.listeners) fn({ type: 'status', status: 'error', detail });
+      throw new Error(detail);
+    });
+    user('background work');
+    await vi.waitFor(() => expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+    const events = (): SessionEvent[] => fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev);
+    expect(events().filter(e => e.t === 'turn-end')).toEqual([{ t: 'turn-end', status: 'failed' }]);
+    expect(events().filter(e => e.t === 'service')).toHaveLength(1);
+    expect(fixture.session.sendSessionEvent.mock.calls.filter(([e]: [any]) => e.type === 'message')).toHaveLength(0);
+    user('next request');
+    await vi.waitFor(() => expect(events().filter(e => e.t === 'turn-end')).toHaveLength(2));
+    expect(events().at(-1)).toMatchObject({ t: 'turn-end', status: 'completed' });
+  });
   it('reattaches to the existing encrypted Happy session without creating or replaying messages', async () => {
     vi.stubEnv('HAPPY_AGY_RECONNECT_METADATA', JSON.stringify({ flavor: 'agy', agySessionId: 'existing-agy', summary: { text: 'Keep title' } }));
     const values = { SESSION_ID: 'existing-happy', ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), ENCRYPTION_VARIANT: 'dataKey', SEQ: '42', METADATA_VERSION: '3', AGENT_STATE_VERSION: '4' };

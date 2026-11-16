@@ -223,6 +223,7 @@ export class AgyAcpBackend implements AgentBackend {
       if (this.cancelled || response.stopReason === 'cancelled') throw new AgyCancelledError();
       if (response.stopReason !== 'end_turn') throw new Error(`Antigravity stopped: ${response.stopReason}`);
       this.initialPromptDelivered = true;
+      if (this.tools.size) throw new Error('Antigravity ended its response before all tool results arrived. Work may still be running; completion is unconfirmed.');
       this.emit({ type: 'status', status: 'idle' });
     } catch (error) {
       if (this.cancelled || error instanceof AgyCancelledError) throw new AgyCancelledError();
@@ -232,13 +233,16 @@ export class AgyAcpBackend implements AgentBackend {
       this.emit({ type: 'status', status: 'error', detail });
       throw new Error(detail);
     } finally {
-      for (const [callId, toolName] of this.tools) this.emit({ type: 'tool-result', callId, toolName, result: 'Tool interrupted before completion.', isError: true });
+      // ACP ending (or acknowledging cancellation) does not prove that native
+      // background commands were stopped. Close the UI card without inventing
+      // a command outcome; the error flag describes missing confirmation.
+      for (const [callId, toolName] of this.tools) this.emit({ type: 'tool-result', callId, toolName, result: 'Completion was not reported. Background work may still be running.', isError: true });
       this.tools.clear();
     }
   }
 
   private update({ sessionId, update }: SessionNotification): void {
-    if (this.replaying || sessionId !== this.sessionId || !this.active) return;
+    if (this.replaying || this.cancelled || sessionId !== this.sessionId || !this.active) return;
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
       this.emit({ type: 'model-output', textDelta: update.content.text });
     } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {

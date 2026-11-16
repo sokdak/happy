@@ -136,11 +136,15 @@ describe('persistent Antigravity ACP', () => {
       if (status !== 'unfinished') agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'cmd', status, rawOutput: 'secret=not-for-display' });
       agent.respond(rpc.id!, { stopReason: 'end_turn' });
     });
-    await backend.sendPrompt('', 'run');
+    const turn = backend.sendPrompt('', 'run');
+    if (status === 'unfinished') {
+      await expect(turn).rejects.toThrow('completion is unconfirmed');
+      expect(messages.some(m => m.type === 'status' && m.status === 'idle')).toBe(false);
+    } else await turn;
     const results = messages.filter(m => m.type === 'tool-result');
     expect(results).toEqual([{
       type: 'tool-result', callId: 'cmd', toolName: 'Bash', isError: status !== 'completed',
-      result: status === 'completed' ? null : status === 'failed' ? 'Antigravity tool failed.' : 'Tool interrupted before completion.',
+      result: status === 'completed' ? null : status === 'failed' ? 'Antigravity tool failed.' : 'Completion was not reported. Background work may still be running.',
     }]);
     expect(JSON.stringify(messages)).not.toContain('not-for-display');
   });
