@@ -13,6 +13,7 @@ import { Metadata } from '@/sync/storageTypes';
 import { useRouter } from 'expo-router';
 import { PermissionFooter } from './PermissionFooter';
 import { parseToolUseError } from '@/utils/toolErrorParser';
+import { buildSessionFileRoute } from '@/utils/sessionFileLinks';
 import { t } from '@/text';
 import {
     formatMCPTitle,
@@ -50,7 +51,7 @@ export const ToolView = React.memo<ToolViewProps>((props) => {
         if (onPress) {
             onPress();
         } else if (sessionId && filePath) {
-            router.push(`/session/${sessionId}/file?path=${btoa(filePath)}`);
+            router.push(buildSessionFileRoute(sessionId, filePath));
         } else if (sessionId && messageId) {
             router.push(`/session/${sessionId}/message/${messageId}`);
         }

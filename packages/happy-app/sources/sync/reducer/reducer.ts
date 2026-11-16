@@ -224,11 +224,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function mergeToolInputs(existingInput: unknown, nextInput: unknown): unknown {
-    if (isRecord(existingInput) && isRecord(nextInput)) {
-        return { ...nextInput, ...existingInput };
+function mergeToolInputs(primaryInput: unknown, fallbackInput: unknown): unknown {
+    if (isRecord(primaryInput) && isRecord(fallbackInput)) {
+        const merged: Record<string, unknown> = { ...fallbackInput };
+        for (const [key, value] of Object.entries(primaryInput)) {
+            if (value === undefined || value === null) {
+                continue;
+            }
+            if (value === '' && typeof merged[key] === 'string' && (merged[key] as string).length > 0) {
+                continue;
+            }
+            merged[key] = value;
+        }
+        return merged;
     }
-    return nextInput ?? existingInput;
+    return primaryInput ?? fallbackInput;
+}
+
+function shouldUpgradeEditToolName(currentName: string, nextName: string): boolean {
+    return currentName === 'Edit' && (nextName === 'Write' || nextName === 'MultiEdit');
 }
 
 function getSidechainOwner(state: ReducerState, sidechainId: string): ReducerMessage | null {
@@ -596,6 +610,10 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         if (ENABLE_LOGGING) {
                             console.log(`[REDUCER] Updating existing tool ${permId} with permission`);
                         }
+                        if (shouldUpgradeEditToolName(message.tool.name, request.tool)) {
+                            message.tool.name = request.tool;
+                        }
+                        message.tool.input = mergeToolInputs(message.tool.input, request.arguments);
                         message.tool.permission = {
                             id: permId,
                             status: 'pending'
@@ -690,6 +708,15 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         }
 
                         let hasChanged = false;
+
+                        if (shouldUpgradeEditToolName(message.tool.name, completed.tool)) {
+                            message.tool.name = completed.tool;
+                            hasChanged = true;
+                        }
+                        if (completed.arguments !== undefined) {
+                            message.tool.input = mergeToolInputs(message.tool.input, completed.arguments);
+                            hasChanged = true;
+                        }
 
                         // Update permission status
                         if (!message.tool.permission) {
@@ -979,14 +1006,20 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         // Update existing message with tool execution details
                         const message = state.messages.get(existingMessageId);
                         if (message?.tool) {
+                            const isSubsequentToolCall = message.realID !== null;
                             message.realID = msg.id;
                             // A permission placeholder was created without a turn; the
                             // tool-call-start that follows it is the first row with one.
                             if (msg.turn !== undefined) {
                                 message.turn = msg.turn;
                             }
+                            if (isSubsequentToolCall || shouldUpgradeEditToolName(message.tool.name, c.name)) {
+                                message.tool.name = c.name;
+                            }
                             message.tool.callId = c.id;
-                            message.tool.input = mergeToolInputs(message.tool.input, c.input);
+                            message.tool.input = isSubsequentToolCall
+                                ? mergeToolInputs(c.input, message.tool.input)
+                                : mergeToolInputs(message.tool.input, c.input);
                             message.tool.description = c.description;
                             if (c.title !== undefined) {
                                 message.tool.title = c.title;

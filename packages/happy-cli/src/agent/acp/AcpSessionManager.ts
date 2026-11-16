@@ -46,6 +46,14 @@ export class AcpSessionManager {
     return this.lastTime;
   }
 
+  /**
+   * Resolve the stable Happy CUID2 tool-call identifier for an ACP toolCallId so
+   * out-of-band permission requests and in-band tool-call envelopes join onto one card.
+   */
+  resolveSessionCallId(acpCallId: string): string {
+    return this.ensureSessionCallId(acpCallId);
+  }
+
   private ensureSessionCallId(acpCallId: string): string {
     const existing = this.acpCallToSessionCall.get(acpCallId);
     if (existing) {

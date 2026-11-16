@@ -34,4 +34,95 @@ describe('AGY output through wire, normalization and reducer', () => {
             expect(tool.tool.result).toBe('Safe status.');
         }
     });
+
+    it('upgrades Edit -> Write and replaces empty placeholder diffs on late tool-call updates and completedRequests', () => {
+        const state = createReducer();
+        const callId = 'clz000000000000000000001';
+
+        // 1) Initial tool-call-start with empty placeholder diff followed by Write upgrade
+        const start1 = normalizeRawMessage('db-1', null, 1, {
+            role: 'agent',
+            content: {
+                type: 'session',
+                data: createEnvelope('agent', {
+                    t: 'tool-call-start',
+                    call: callId,
+                    name: 'Edit',
+                    title: 'Edit',
+                    description: 'Running Edit',
+                    args: { file_path: '/work/new.ts', old_string: '', new_string: '' },
+                }, { turn: 'turn-1' }),
+            },
+        })!;
+        const start2 = normalizeRawMessage('db-2', null, 2, {
+            role: 'agent',
+            content: {
+                type: 'session',
+                data: createEnvelope('agent', {
+                    t: 'tool-call-start',
+                    call: callId,
+                    name: 'Write',
+                    title: 'Write',
+                    description: 'Running Write',
+                    args: { file_path: '/work/new.ts', content: 'export const ready = true;\n' },
+                }, { turn: 'turn-1' }),
+            },
+        })!;
+
+        reducer(state, [start1]);
+        const updated = reducer(state, [start2]);
+        const writeMsg = updated.messages.find(m => m.kind === 'tool-call');
+        expect(writeMsg?.kind).toBe('tool-call');
+        if (writeMsg?.kind === 'tool-call') {
+            expect(writeMsg.tool.name).toBe('Write');
+            expect(writeMsg.tool.input).toMatchObject({
+                file_path: '/work/new.ts',
+                content: 'export const ready = true;\n',
+            });
+        }
+
+        // 2) Tool-call-start reduced before fast-approved completedRequests merges non-empty diff args
+        const editCallId = 'clz000000000000000000002';
+        const editStart = normalizeRawMessage('db-3', null, 3, {
+            role: 'agent',
+            content: {
+                type: 'session',
+                data: createEnvelope('agent', {
+                    t: 'tool-call-start',
+                    call: editCallId,
+                    name: 'Edit',
+                    title: 'Edit',
+                    description: 'Running Edit',
+                    args: { file_path: '/work/app.ts' },
+                }, { turn: 'turn-1' }),
+            },
+        })!;
+        reducer(state, [editStart]);
+        const withCompletedPerm = reducer(state, [], {
+            requests: {},
+            completedRequests: {
+                [editCallId]: {
+                    tool: 'Edit',
+                    arguments: {
+                        file_path: '/work/app.ts',
+                        old_string: 'const x = 1;',
+                        new_string: 'const x = 2;',
+                    },
+                    createdAt: 3,
+                    completedAt: 4,
+                    status: 'approved',
+                    decision: 'approved',
+                },
+            },
+        });
+        const editMsg = withCompletedPerm.messages.find(m => m.kind === 'tool-call' && m.tool.callId === editCallId);
+        expect(editMsg?.kind).toBe('tool-call');
+        if (editMsg?.kind === 'tool-call') {
+            expect(editMsg.tool.input).toEqual({
+                file_path: '/work/app.ts',
+                old_string: 'const x = 1;',
+                new_string: 'const x = 2;',
+            });
+        }
+    });
 });

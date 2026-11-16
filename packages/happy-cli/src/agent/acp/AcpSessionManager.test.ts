@@ -462,4 +462,14 @@ describe('opt-in tool completion status', () => {
     expect(mapper.mapMessage({ type: 'tool-result', callId: 'c1', toolName: 'Bash', result: 'Private output', isError: true })[0].ev)
       .toEqual({ t: 'tool-call-end', call: expect.any(String) });
   });
+
+  it('resolves the exact CUID2 session call id for out-of-band permission requests', () => {
+    const mapper = new AcpSessionManager({ forwardToolResults: true });
+    mapper.startTurn();
+    const permCallId = mapper.resolveSessionCallId('acp-edit-42');
+    const [start] = mapper.mapMessage({ type: 'tool-call', callId: 'acp-edit-42', toolName: 'Edit', args: { file_path: '/work/a.ts' } });
+    const [end] = mapper.mapMessage({ type: 'tool-result', callId: 'acp-edit-42', toolName: 'Edit', result: null, isError: false });
+    expect((start.ev as any).call).toBe(permCallId);
+    expect((end.ev as any).call).toBe(permCallId);
+  });
 });

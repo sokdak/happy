@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapAgyToolToDisplay } from './toolDisplay';
+import { mapAgyToolToDisplay, sanitizeDiffText } from './toolDisplay';
 
 describe('mapAgyToolToDisplay', () => {
   it('maps both current (read_file/edit_file/write_file) and legacy (view_file/replace_file_content/write_to_file) file tools', () => {
@@ -28,12 +28,16 @@ describe('mapAgyToolToDisplay', () => {
     expect(
       mapAgyToolToDisplay('edit_file', {
         Path: '/work/src/app.ts',
-        Target: 'private old body',
-        Replacement: 'private new body',
+        Target: 'const port = 3000;',
+        Replacement: 'const port = 8080;',
       }),
     ).toEqual({
       toolName: 'Edit',
-      args: { file_path: '/work/src/app.ts' },
+      args: {
+        file_path: '/work/src/app.ts',
+        old_string: 'const port = 3000;',
+        new_string: 'const port = 8080;',
+      },
     });
 
     expect(
@@ -47,23 +51,48 @@ describe('mapAgyToolToDisplay', () => {
     });
 
     expect(
+      mapAgyToolToDisplay('multi_replace_file_content', {
+        TargetFile: '/work/src/multi.ts',
+        ReplacementChunks: [
+          { TargetContent: 'const a = 1;', ReplacementContent: 'const a = 2;' },
+          { TargetContent: 'const b = 3;', ReplacementContent: 'const b = 4;', AllowMultiple: true },
+        ],
+      }),
+    ).toEqual({
+      toolName: 'MultiEdit',
+      args: {
+        file_path: '/work/src/multi.ts',
+        edits: [
+          { old_string: 'const a = 1;', new_string: 'const a = 2;' },
+          { old_string: 'const b = 3;', new_string: 'const b = 4;', replace_all: true },
+        ],
+      },
+    });
+
+    expect(
       mapAgyToolToDisplay('write_file', {
         Path: '/work/src/new.ts',
-        Content: 'private file body',
+        Content: 'export const ok = true;\n',
       }),
     ).toEqual({
       toolName: 'Write',
-      args: { file_path: '/work/src/new.ts' },
+      args: {
+        file_path: '/work/src/new.ts',
+        content: 'export const ok = true;\n',
+      },
     });
 
     expect(
       mapAgyToolToDisplay('write_to_file', {
         TargetFile: '/work/src/legacy.ts',
-        CodeContent: 'private file body',
+        CodeContent: 'export const legacy = 1;\n',
       }),
     ).toEqual({
       toolName: 'Write',
-      args: { file_path: '/work/src/legacy.ts' },
+      args: {
+        file_path: '/work/src/legacy.ts',
+        content: 'export const legacy = 1;\n',
+      },
     });
 
     expect(
@@ -229,5 +258,76 @@ describe('mapAgyToolToDisplay', () => {
     expect(mapAgyToolToDisplay('manage_subagents', {
       Action: 'list',
     })).toEqual({ toolName: 'Bash', args: { command: 'manage_subagents list' } });
+  });
+
+  it('redacts credential-carrying lines in Edit/Write diffs while keeping safe lines and empty replacements', () => {
+    expect(mapAgyToolToDisplay('edit_file', {
+      Path: '/work/config.ts',
+      Target: 'const host = "localhost";\nconst apiKey = "sk-live-secret-123";\nexport default host;',
+      Replacement: '',
+    })).toEqual({
+      toolName: 'Edit',
+      args: {
+        file_path: '/work/config.ts',
+        old_string: 'const host = "localhost";\n[redacted]\nexport default host;',
+        new_string: '',
+      },
+    });
+
+    expect(mapAgyToolToDisplay('write_file', {
+      Path: '/work/.env.example',
+      Content: 'PORT=3000\nAuthorization: Bearer super-secret-token\nDEBUG=false',
+    })).toEqual({
+      toolName: 'Write',
+      args: {
+        file_path: '/work/.env.example',
+        content: 'PORT=3000\n[redacted]\nDEBUG=false',
+      },
+    });
+  });
+
+  it('prevents ReDoS on long single-line diffs, redacts PEM/OPENAI_KEY/bracketed secrets, and marks omitted MultiEdit chunks', () => {
+    const startedAt = performance.now();
+    const longSafeLine = 'token-'.repeat(5000);
+    expect(sanitizeDiffText(longSafeLine)).toBe(longSafeLine);
+    const longUrlLikeLine = 'a'.repeat(50_000) + '://example.com/path @slopus/happy-wire';
+    expect(sanitizeDiffText(longUrlLikeLine)).toBe(longUrlLikeLine);
+    expect(performance.now() - startedAt).toBeLessThan(100);
+
+    expect(sanitizeDiffText([
+      'const header = true;',
+      '-----BEGIN OPENSSH PRIVATE KEY-----',
+      'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW',
+      '-----END OPENSSH PRIVATE KEY-----',
+      'OPENAI_KEY=sk-proj-1234567890abcdef',
+      "process.env['API_KEY'] = 'live-secret';",
+      'const footer = true;',
+    ].join('\n'))).toBe([
+      'const header = true;',
+      '[redacted]',
+      '[redacted]',
+      '[redacted]',
+      'const footer = true;',
+    ].join('\n'));
+
+    // Multi-byte Korean boundary safety
+    const hangul = '가나다라마바사'.repeat(20);
+    const truncatedHangul = sanitizeDiffText(hangul, 32)!;
+    expect(truncatedHangul.endsWith('...')).toBe(true);
+    expect(truncatedHangul).not.toContain('\uFFFD');
+
+    // MultiEdit exceeding 64 KB budget must stay MultiEdit and surface omitted chunk count
+    const hugeChunk = 'x'.repeat(40_000);
+    const multi = mapAgyToolToDisplay('multi_replace_file_content', {
+      TargetFile: '/work/large.ts',
+      ReplacementChunks: [
+        { TargetContent: hugeChunk, ReplacementContent: hugeChunk },
+        { TargetContent: 'const hidden = 1;', ReplacementContent: 'const hidden = 2;' },
+      ],
+    });
+    expect(multi.toolName).toBe('MultiEdit');
+    const edits = multi.args.edits as Array<{ old_string: string; new_string: string }>;
+    expect(edits).toHaveLength(2);
+    expect(edits[1].new_string).toContain('1 more edit chunk(s) omitted');
   });
 });

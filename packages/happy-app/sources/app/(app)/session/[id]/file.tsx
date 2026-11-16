@@ -11,7 +11,8 @@ import { useUnistyles, StyleSheet } from 'react-native-unistyles';
 import { layout } from '@/components/layout';
 import { t } from '@/text';
 import { FileIcon } from '@/components/FileIcon';
-import { resolveSessionFilePath } from '@/utils/sessionFileLinks';
+import { decodeSessionFilePathParam, resolveSessionFilePath } from '@/utils/sessionFileLinks';
+import { buildWorkingTreeGitDiffCommand } from '@/utils/gitDiffCommand';
 import { MobileGlassSurface } from '@/components/MobileGlass';
 
 interface FileContent {
@@ -93,16 +94,11 @@ export default React.memo(function FileScreen() {
     const requestedColumn = columnParam ? Number.parseInt(columnParam, 10) : null;
     const session = storage.getState().sessions[sessionId!];
     const sessionPath = session?.metadata?.path ?? null;
-    let rawPath = '';
-
-    // Decode base64 path with error handling
-    try {
-        rawPath = encodedPath ? atob(encodedPath) : '';
-    } catch (error) {
-        console.error('Failed to decode file path:', error);
-        rawPath = encodedPath || '';
-    }
-    const resolvedPath = resolveSessionFilePath(rawPath, sessionPath);
+    const isExplicitEncodedRoute = typeof encodedPath === 'string' && encodedPath.includes('b64u');
+    const rawPath = decodeSessionFilePathParam(encodedPath || '');
+    const resolvedPath = resolveSessionFilePath(rawPath, sessionPath, {
+        literalPath: isExplicitEncodedRoute || Boolean(lineParam),
+    });
     const filePath = resolvedPath?.absolutePath ?? rawPath;
     const gitDiffPath = resolvedPath?.withinSessionRoot ? resolvedPath.relativePath : null;
 
@@ -216,10 +212,13 @@ export default React.memo(function FileScreen() {
                 let fetchedDiff: string | null = null;
 
                 // Fetch git diff for the file (if in git repo)
-                if (sessionPath && sessionId && gitDiffPath && gitDiffPath !== '.') {
+                const diffCommand = sessionPath && sessionId
+                    ? buildWorkingTreeGitDiffCommand(gitDiffPath, sessionPath)
+                    : null;
+                if (sessionPath && sessionId && diffCommand) {
                     try {
                         const diffResponse = await sessionBash(sessionId, {
-                            command: `git diff --no-ext-diff -- "${gitDiffPath}"`,
+                            command: diffCommand,
                             cwd: sessionPath,
                             timeout: 5000
                         });
