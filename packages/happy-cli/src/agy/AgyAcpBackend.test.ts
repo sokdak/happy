@@ -2,6 +2,9 @@ import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AgentMessage } from '@/agent/core/AgentBackend';
 import { AgyAcpBackend, AgyCancelledError, type AgyAcpOptions } from './AgyAcpBackend';
 
@@ -21,7 +24,7 @@ function fakeAgent() {
   const notify = (update: unknown, sessionId = 'session-1') => stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update } }) + '\n');
   let handler = (rpc: Rpc) => {
     if (rpc.id === undefined) return;
-    if (rpc.method === 'initialize') respond(rpc.id, { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
+    if (rpc.method === 'initialize') respond(rpc.id, { protocolVersion: 1, agentInfo: { name: 'Antigravity ACP Server', version: '1.5.9' }, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
     else if (rpc.method === 'session/new') respond(rpc.id, { sessionId: 'session-1', ...metadata });
     else if (rpc.method === 'session/load') respond(rpc.id, metadata);
     else if (rpc.method === 'session/prompt') respond(rpc.id, { stopReason: 'end_turn' });
@@ -51,7 +54,7 @@ const backends: AgyAcpBackend[] = [];
 function setup(options: Partial<AgyAcpOptions> = {}) {
   const agent = fakeAgent();
   const spawnFn = vi.fn(() => agent.child) as unknown as typeof spawn;
-  const backend = new AgyAcpBackend({ cwd: '/work', permissionMode: 'default', model: 'Gemini 3.8 Flash', effort: 'medium', spawnFn, ...options });
+  const backend = new AgyAcpBackend({ cwd: '/work', stopHook: false, permissionMode: 'default', model: 'Gemini 3.8 Flash', effort: 'medium', spawnFn, ...options });
   backends.push(backend);
   const messages: AgentMessage[] = [];
   backend.onMessage(m => messages.push(m));
@@ -64,7 +67,80 @@ async function promptRequest(agent: ReturnType<typeof fakeAgent>) {
   return [...agent.received].reverse().find(r => r.method === 'session/prompt')!;
 }
 
+async function invokeStop(spawnFn: typeof spawn, executionNum: number, fullyIdle: boolean) {
+  const workspace = vi.mocked(spawnFn).mock.calls.at(-1)![1]!.at(-1)!;
+  const command = JSON.parse(readFileSync(join(workspace, '.agents/hooks.json'), 'utf8'))['happy-acp-background'].Stop[0].command;
+  return new Promise<any>((resolve, reject) => {
+    const p = execFile('/bin/sh', ['-c', command], (error, out) => error ? reject(error) : resolve(JSON.parse(out)));
+    p.stdin!.end(JSON.stringify({ conversationId: 'session-1', hookEventName: 'Stop', terminationReason: 'NO_TOOL_CALL', executionNum, fullyIdle, continuationActive: false }));
+  });
+}
+
 describe('persistent Antigravity ACP', () => {
+  describe.skipIf(process.platform === 'win32')('optional Stop hook', () => {
+    it('keeps the prompt open across Stop continuation, tool completion and a final idle hook', async () => {
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'background');
+      const request = await promptRequest(agent);
+      const workspace = vi.mocked(spawnFn).mock.calls[0][1]!.at(-1)!;
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'bg', title: 'sleep', kind: 'execute', status: 'in_progress' });
+      expect((await invokeStop(spawnFn, 0, false)).decision).toBe('continue');
+      expect(messages.some(m => m.type === 'status' && m.status === 'idle')).toBe(false);
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'bg', status: 'completed' });
+      expect(await invokeStop(spawnFn, 1, true)).toEqual({});
+      agent.respond(request.id!, { stopReason: 'end_turn' }); await pending;
+      expect(messages.at(-1)).toEqual({ type: 'status', status: 'idle' });
+      await backend.dispose(); expect(existsSync(workspace)).toBe(false);
+    });
+    it('fails visibly when the enabled hook is missing, then retires its process', async () => {
+      const { backend, agent } = setup({ stopHook: true });
+      await expect(backend.sendPrompt('', 'no hook')).rejects.toThrow('Stop hook did not report');
+      expect(agent.child.kill).toHaveBeenCalled();
+    });
+    it.each([false, true])('reports rejection appropriately when a final idle hook is present: %s', async (idleHook) => {
+      const { backend, agent, spawnFn } = setup({ stopHook: true, requestPermission: async () => ({ decision: 'denied' }) });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'denied');
+      const result = idleHook ? pending : expect(pending).rejects.toThrow('permission was denied');
+      const request = await promptRequest(agent);
+      agent.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 960, method: 'session/request_permission', params: {
+        sessionId: 'session-1', toolCall: { toolCallId: 'deny', title: 'Command', kind: 'execute' },
+        options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+      } }) + '\n');
+      await vi.waitFor(() => expect(agent.received.find(r => r.id === 960)?.result).toBeDefined());
+      if (idleHook) await invokeStop(spawnFn, 0, true);
+      agent.respond(request.id!, { stopReason: 'end_turn' }); await result;
+      expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
+    });
+    it('rejects an unverified server version before sending a prompt', async () => {
+      const { backend, agent } = setup({ stopHook: true });
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') agent.respond(rpc.id!, { protocolVersion: 1, agentInfo: { name: 'Antigravity', version: '9.0.0' } });
+        else fallback(rpc);
+      });
+      await expect(backend.sendPrompt('', 'version')).rejects.toThrow('verified only');
+      expect(agent.received.some(r => r.method === 'session/prompt')).toBe(false);
+    });
+    it('retires the hook process on cancellation and loads the same session with a new private root', async () => {
+      const second = fakeAgent();
+      const { backend, agent, spawnFn } = setup({ stopHook: true });
+      vi.mocked(spawnFn).mockReturnValueOnce(agent.child).mockReturnValueOnce(second.child);
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'session/cancel') agent.respond(agent.received.find(r => r.method === 'session/prompt')!.id!, { stopReason: 'cancelled' });
+        else if (rpc.method !== 'session/prompt') fallback(rpc);
+      });
+      const pending = backend.sendPrompt('', 'cancel'); const rejected = expect(pending).rejects.toBeInstanceOf(AgyCancelledError);
+      await promptRequest(agent);
+      const oldRoot = vi.mocked(spawnFn).mock.calls[0][1]!.at(-1)!;
+      await backend.cancel(); await rejected;
+      expect(agent.child.kill).toHaveBeenCalled(); expect(existsSync(oldRoot)).toBe(false);
+      await backend.startSession();
+      expect(second.received.find(r => r.method === 'session/load')?.params.sessionId).toBe('session-1');
+      expect(vi.mocked(spawnFn).mock.calls[1][1]!.at(-1)).not.toBe(oldRoot);
+    });
+  });
+
   it.each([undefined, 'saved-session'])('passes Happy MCP on new/load and title instructions only on the first successful turn (%s)', async (resumeSessionId) => {
     const mcpServers = [{ name: 'happy', command: '/node', args: ['/bridge', '--url', 'http://127.0.0.1:1234'], env: [] }];
     const { backend, agent } = setup({ resumeSessionId, mcpServers, initialPrompt: 'Use change_title at start and on topic changes.' });
@@ -136,11 +212,15 @@ describe('persistent Antigravity ACP', () => {
       if (status !== 'unfinished') agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'cmd', status, rawOutput: 'secret=not-for-display' });
       agent.respond(rpc.id!, { stopReason: 'end_turn' });
     });
-    await backend.sendPrompt('', 'run');
+    const turn = backend.sendPrompt('', 'run');
+    if (status === 'unfinished') {
+      await expect(turn).rejects.toThrow('completion is unconfirmed');
+      expect(messages.some(m => m.type === 'status' && m.status === 'idle')).toBe(false);
+    } else await turn;
     const results = messages.filter(m => m.type === 'tool-result');
     expect(results).toEqual([{
       type: 'tool-result', callId: 'cmd', toolName: 'Bash', isError: status !== 'completed',
-      result: status === 'completed' ? null : status === 'failed' ? 'Antigravity tool failed.' : 'Tool interrupted before completion.',
+      result: status === 'completed' ? null : status === 'failed' ? 'Antigravity tool failed.' : 'Completion was not reported. Background work may still be running.',
     }]);
     expect(JSON.stringify(messages)).not.toContain('not-for-display');
   });
@@ -215,6 +295,47 @@ describe('persistent Antigravity ACP', () => {
     await promptRequest(agent);
     await backend.cancel(); await rejected;
     expect(agent.child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('drains cancellation before a queued prompt even when child exit is delayed', async () => {
+    const second = fakeAgent();
+    const { backend, agent, spawnFn } = setup({ cancelGraceMs: 20 });
+    vi.mocked(spawnFn).mockReturnValueOnce(agent.child).mockReturnValueOnce(second.child);
+    const kill = agent.child.kill.getMockImplementation();
+    agent.child.kill.mockImplementation((signal: string) => { setTimeout(() => kill(signal), 200); return true; });
+    agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt' && rpc.method !== 'session/cancel') fallback(rpc); });
+    const initial = backend.sendPrompt('', 'first'); const rejected = expect(initial).rejects.toBeInstanceOf(AgyCancelledError);
+    await promptRequest(agent);
+    const cancelling = backend.cancel();
+    const next = backend.sendPrompt('', 'next');
+    await cancelling; await rejected; await next;
+    expect(agent.child.signalCode).toBeNull();
+    expect(second.received.find(r => r.method === 'session/load')?.params.sessionId).toBe('session-1');
+  });
+
+  it('holds a newly queued prompt until cancellation finishes and rejects late permission approval', async () => {
+    let approve!: (value: { decision: 'approved' }) => void;
+    const { backend, agent } = setup({ requestPermission: () => new Promise(resolve => { approve = resolve; }) });
+    let first: Rpc | undefined;
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method === 'session/prompt' && !first) first = rpc;
+      else if (rpc.method === 'session/cancel') setTimeout(() => agent.respond(first!.id!, { stopReason: 'cancelled' }), 30);
+      else fallback(rpc);
+    });
+    const initial = backend.sendPrompt('', 'first'); const rejected = expect(initial).rejects.toBeInstanceOf(AgyCancelledError);
+    await promptRequest(agent);
+    agent.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 970, method: 'session/request_permission', params: {
+      sessionId: 'session-1', toolCall: { toolCallId: 'late', title: 'Command' },
+      options: [{ optionId: 'yes', name: 'Allow', kind: 'allow_once' }],
+    } }) + '\n');
+    await vi.waitFor(() => expect(approve).toBeTypeOf('function'));
+    const cancelled = backend.cancel();
+    const next = backend.sendPrompt('', 'next');
+    approve({ decision: 'approved' });
+    expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
+    await cancelled; await rejected; await next;
+    expect(agent.received.find(r => r.id === 970)?.result).toEqual({ outcome: { outcome: 'cancelled' } });
+    expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(2);
   });
 
   it('fails a disconnected turn, then reloads the same session without replaying the failed prompt', async () => {
