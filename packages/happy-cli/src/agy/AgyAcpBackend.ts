@@ -10,7 +10,7 @@ import type { PermissionMode } from '@/api/types';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import { resolveAgyBin, resolveAgyModelName } from './constants';
 import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
-import { agyStopHookEnabled, AgyStopHook } from './stopHook';
+import { agyStopHookEnabled, AgyStopHook, type StopHookLimits } from './stopHook';
 
 // AGY 1.5.9 omits rawInput.name on native calls. Only its exact "Run <id>"
 // labels for known native tools may override a broad ACP category such as other.
@@ -49,6 +49,7 @@ export interface AgyAcpOptions {
   cancelGraceMs?: number;
   /** Experimental AGY 1.5.9 workaround. Unset reads HAPPY_AGY_STOP_HOOK (default off). */
   stopHook?: boolean;
+  stopHookLimits?: Partial<StopHookLimits>;
 }
 
 export class AgyAcpBackend implements AgentBackend {
@@ -144,7 +145,7 @@ export class AgyAcpBackend implements AgentBackend {
     this.stopProcess();
     this.permissionAbort = new AbortController();
     if (this.options.stopHook ?? agyStopHookEnabled()) {
-      this.stopHook = await AgyStopHook.create();
+      this.stopHook = await AgyStopHook.create(this.options.stopHookLimits);
       if (this.disposed || this.cancelled) { this.stopProcess(); throw new AgyCancelledError(); }
     }
     let child: ChildProcess;

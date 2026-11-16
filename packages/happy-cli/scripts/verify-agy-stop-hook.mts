@@ -9,10 +9,10 @@ import { AgyAcpBackend, AgyCancelledError } from '../src/agy/AgyAcpBackend';
 import type { AgentMessage } from '../src/agent/core/AgentBackend';
 
 const scenario = process.argv[2] ?? 'single';
-assert(['single', 'chain', 'parallel', 'failure', 'denied', 'cancel', 'cancel-after-hook', 'watcher', 'hooks', 'broken-hook', 'collision'].includes(scenario));
+assert(['single', 'slow', 'chain', 'parallel', 'failure', 'denied', 'cancel', 'cancel-after-hook', 'watcher', 'hooks', 'broken-hook', 'collision'].includes(scenario));
 const cwd = await mkdtemp(join(tmpdir(), 'happy-stop-live-'));
 const commands = {
-  a: 'sleep 15; printf A_DONE', b: 'sleep 15; printf B_DONE', final: 'printf FOLLOWUP_DONE',
+  a: 'sleep 15; printf A_DONE', b: 'sleep 15; printf B_DONE', slow: 'sleep 65; printf SLOW_DONE', final: 'printf FOLLOWUP_DONE',
   fail: 'sleep 15; exit 7', cancel: 'sleep 20; printf CANCEL_TASK_DONE',
   watcher: 'sleep 90; printf WATCHER_DONE',
 };
@@ -86,6 +86,7 @@ try {
   } else {
     const prompt = scenario === 'chain' ? `Run \"${commands.a}\". After A completes, run \"${commands.b}\". After B completes, run \"${commands.final}\". Finally reply ALL_DONE.`
       : scenario === 'parallel' ? `Run \"${commands.a}\" and \"${commands.b}\" as separate background tool calls. Once BOTH complete run \"${commands.final}\" and reply ALL_DONE.`
+      : scenario === 'slow' ? `Run \"${commands.slow}\". Once it completes run \"${commands.final}\" and reply ALL_DONE.`
       : scenario === 'failure' ? `Run \"${commands.fail}\". Once it finishes report its exit code and reply FAILED_AS_EXPECTED. Do not retry.`
       : scenario === 'denied' ? `Run \"${commands.a}\". If permission is denied, do not retry or find another route; reply DENIED_AS_EXPECTED.`
       : scenario === 'watcher' ? `Run \"${commands.watcher}\" exactly once as a simulated intentional background watcher. Do not wait or check status; reply WATCHER_STARTED and finish. The timer eventually exits to avoid a permanent fixture process.`
@@ -115,7 +116,10 @@ try {
     else {
       assert.match(text, /ALL_DONE/);
       const calls = messages.filter(m => m.type === 'tool-call' && m.toolName === 'Bash');
-      for (const command of [commands.a, commands.final, ...(['chain', 'parallel'].includes(scenario) ? [commands.b] : [])]) {
+      const expectedCommands = scenario === 'slow'
+        ? [commands.slow, commands.final]
+        : [commands.a, commands.final, ...(['chain', 'parallel'].includes(scenario) ? [commands.b] : [])];
+      for (const command of expectedCommands) {
         assert.equal(calls.filter(m => m.type === 'tool-call' && m.args.command === command).length, 1, 'missing/duplicated command');
       }
       assert(logs.some(l => /[1-9]\d* continuations/.test(l)), 'fixture did not exercise Stop continuation');
