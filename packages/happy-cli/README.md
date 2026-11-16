@@ -41,14 +41,19 @@ happy acp opencode
 happy acp -- custom-agent --flag
 ```
 
-> **Note on agy permissions:** the agy backend runs `agy --print`, which is
-> one-shot and has no interactive approval surface — tool calls proceed
-> automatically without ever prompting you. The permission mode you pick in
-> Happy only chooses which flag is passed to agy: the default modes use
-> `--sandbox`, and the bypass/yolo-style modes (including `acceptEdits`) use
-> `--dangerously-skip-permissions`. Neither adds a per-tool approval gate
-> inside Happy, so selecting "default" for an agy session does **not** give
-> you an approval prompt the way it does for Claude Code.
+> **Note on agy permissions:** Happy uses persistent `agy acp` sessions by
+> default and forwards ACP permission requests to Happy. `yolo` and
+> `bypassPermissions` approve those requests automatically. Other modes require
+> approval when agy requests it. If agy omits the optional session-mode list
+> (as in 1.4.12), Happy keeps its native default; explicit `plan`, `read-only`
+> and `acceptEdits` selections require advertised mode support and otherwise
+> fail before sending the prompt.
+>
+> `HAPPY_AGY_TRANSPORT=print` explicitly selects the legacy one-shot backend.
+> It has no interactive approval surface: default modes pass `--sandbox`, and
+> bypass/yolo-style modes (including `acceptEdits`) pass
+> `--dangerously-skip-permissions`. Print mode does not support ACP resume or
+> image input.
 
 ## Daemon
 

@@ -182,6 +182,44 @@ describe('persistent Antigravity ACP', () => {
     expect(agent.received.some(r => r.method === 'session/prompt')).toBe(false);
   });
 
+  it.each([undefined, 'saved-session'])('uses the native default when optional session modes are absent (%s)', async (resumeSessionId) => {
+    const { backend, agent } = setup({ resumeSessionId });
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method === 'session/new') agent.respond(rpc.id!, { sessionId: 'session-1', models: metadata.models });
+      else if (rpc.method === 'session/load') agent.respond(rpc.id!, { models: metadata.models });
+      else fallback(rpc);
+    });
+    await backend.sendPrompt('', 'first');
+    await backend.sendPrompt('', 'second');
+    expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(2);
+    expect(agent.received.some(r => r.method === 'session/set_mode')).toBe(false);
+    expect(agent.received.some(r => r.method === 'session/set_model')).toBe(true);
+  });
+
+  it.each(['plan', 'read-only', 'acceptEdits'] as const)('refuses unsupported %s mode before prompting', async (permissionMode) => {
+    const { backend, agent } = setup({ permissionMode });
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method === 'session/new') agent.respond(rpc.id!, { sessionId: 'session-1', models: metadata.models });
+      else fallback(rpc);
+    });
+    await expect(backend.sendPrompt('', 'do work')).rejects.toThrow('mode is unavailable');
+    expect(agent.received.some(r => r.method === 'session/prompt')).toBe(false);
+    expect(agent.received.some(r => r.method === 'session/set_mode')).toBe(false);
+  });
+
+  it('still refuses default when advertised session modes omit it', async () => {
+    const { backend, agent } = setup();
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method === 'session/new') agent.respond(rpc.id!, {
+        sessionId: 'session-1', models: metadata.models,
+        modes: { currentModeId: 'plan', availableModes: [{ id: 'plan', name: 'Plan' }] },
+      });
+      else fallback(rpc);
+    });
+    await expect(backend.sendPrompt('', 'do work')).rejects.toThrow('mode is unavailable: default');
+    expect(agent.received.some(r => r.method === 'session/prompt')).toBe(false);
+  });
+
   it('sends image content through ACP alongside text', async () => {
     const { backend, agent } = setup();
     const image = { type: 'image' as const, mimeType: 'image/png', data: 'iVBORw==' };

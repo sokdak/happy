@@ -193,6 +193,13 @@ export class AgyAcpBackend implements AgentBackend {
     const modeId = this.mode === 'plan' || this.mode === 'read-only' ? 'plan'
       : this.mode === 'acceptEdits' ? 'accept-edits' : 'default';
     if (modeId !== this.appliedMode) {
+      // Session modes are optional in ACP (agy 1.4.12 omits them). Keep the
+      // native default without calling an unsupported method. Explicit mode
+      // requests must still be advertised; never silently drop restrictions.
+      if (!this.metadata.modes && modeId === 'default') {
+        this.appliedMode = modeId;
+        return;
+      }
       if (!this.metadata.modes?.availableModes.some((mode) => mode.id === modeId)) throw new Error(`Antigravity ACP mode is unavailable: ${modeId}`);
       await this.control(Promise.race([connection.setSessionMode({ sessionId, modeId }), this.lifetime]));
       this.appliedMode = modeId;
