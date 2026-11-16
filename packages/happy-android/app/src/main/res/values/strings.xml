@@ -48,6 +48,42 @@
     <string name="common_delete">Delete</string>
     <string name="common_optional">optional</string>
 
+    <string name="workflows_active_title">Active workflows</string>
+    <plurals name="workflows_workflow_count">
+        <item quantity="one">%1$d workflow</item>
+        <item quantity="other">%1$d workflows</item>
+    </plurals>
+    <string name="workflows_workflow_count_n0">0 workflows</string>
+    <string name="workflows_workflow_count_n1">1 workflow</string>
+    <string name="workflows_running_count">%1$d running</string>
+    <plurals name="workflows_badge_accessibility">
+        <item quantity="one">%1$d active workflow. Open workflow monitor</item>
+        <item quantity="other">%1$d active workflows. Open workflow monitor</item>
+    </plurals>
+    <string name="workflows_badge_accessibility_n0">0 active workflows. Open workflow monitor</string>
+    <string name="workflows_badge_accessibility_n1">1 active workflow. Open workflow monitor</string>
+    <string name="workflows_close_monitor">Close workflow monitor</string>
+    <string name="workflows_dismiss_automatically">Completed workflows disappear automatically.</string>
+    <string name="workflows_other_phase">Other</string>
+    <string name="workflows_states_running">Running</string>
+    <string name="workflows_states_completed">Completed</string>
+    <string name="workflows_states_error">Error</string>
+    <string name="workflows_states_active">Active</string>
+    <string name="workflows_phase_accessibility">%1$s, %2$s</string>
+    <string name="workflows_agent_accessibility">%1$s, %2$s</string>
+    <string name="workflows_tokens">%1$s tokens</string>
+    <plurals name="workflows_tool_calls">
+        <item quantity="one">%1$d tool call</item>
+        <item quantity="other">%1$d tool calls</item>
+    </plurals>
+    <string name="workflows_tool_calls_n0">0 tool calls</string>
+    <string name="workflows_tool_calls_n1">1 tool call</string>
+    <string name="workflows_tool_title">Workflow</string>
+    <string name="workflows_row_title">Workflows</string>
+    <string name="workflows_row_subtitle">Track multi-agent workflow progress</string>
+    <string name="workflows_empty_title">No workflow activity</string>
+    <string name="workflows_empty_description">Workflow progress appears here while Claude runs multi-agent workflows.</string>
+
     <string name="profile_user_profile">User Profile</string>
     <string name="profile_details">Details</string>
     <string name="profile_first_name">First Name</string>
@@ -296,6 +332,7 @@
     <string name="session_new_chat">New chat</string>
     <string name="session_status_bar_context">Context</string>
     <string name="session_status_bar_path_title">Working directory</string>
+    <string name="session_header_actions_accessibility">Session actions</string>
     <string name="session_fork_action">Fork session</string>
     <string name="session_fork_subtitle">Continue in a new session with the same context</string>
     <string name="session_duplicate_action">Duplicate from message…</string>
@@ -374,7 +411,7 @@
     <string name="session_info_resume_session_same_machine_only">This session can only be resumed on the same machine it started on.</string>
     <string name="session_info_resume_session_machine_offline">This machine is offline. Resume is only available while it is online.</string>
     <string name="session_info_resume_session_missing_machine">This session is missing its machine metadata, so it cannot be resumed.</string>
-    <string name="session_info_resume_session_missing_backend_id">This session does not have a resumable Claude or Codex identifier.</string>
+    <string name="session_info_resume_session_missing_backend_id">This session does not have a resumable agent conversation identifier.</string>
     <string name="session_info_resume_session_unexpected_directory_prompt">Resume cannot create directories. Start the session manually from its original path.</string>
     <string name="session_info_kill_session_subtitle">Immediately terminate the session</string>
     <string name="session_info_archive_session_subtitle">Archive this session and stop it</string>
@@ -488,6 +525,11 @@
     <string name="machine_launcher_enter_custom_path">Enter custom path</string>
     <string name="machine_launcher_offline_unable_to_spawn">Unable to spawn new session, offline</string>
 
+    <string name="agent_question_waiting_for_answer">Waiting for your answer</string>
+    <string name="agent_question_answered">Answered</string>
+    <string name="agent_question_cancelled">Cancelled</string>
+    <string name="agent_question_expand">Expand questions</string>
+    <string name="agent_question_collapse">Collapse questions</string>
     <string name="agent_question_title">Question</string>
     <string name="agent_question_submit">Send answer</string>
     <string name="agent_question_choose_multiple">Choose as many as apply</string>
