@@ -153,6 +153,17 @@ export function mapAgyToolToDisplay(toolName: string, parameters: unknown): Disp
       const command = ['manage_task', action, taskId].filter(Boolean).join(' ');
       return { toolName: 'Bash', args: { command } };
     }
+    case 'schedule': {
+      const seconds = values.DurationSeconds;
+      const duration = typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 && seconds <= 604_800
+        ? `${seconds}s` : undefined;
+      // Show only the native task identifier, never the scheduled prompt or an
+      // arbitrary condition expression (both may contain private user text).
+      const condition = values.TimerCondition;
+      const task = typeof condition === 'string' && /^[a-zA-Z0-9-]+\/(task-\d{1,12})$/.test(condition)
+        ? condition.split('/').at(-1) : undefined;
+      return { toolName: 'Bash', args: { command: ['schedule', duration, task ? `for ${task}` : undefined].filter(Boolean).join(' ') } };
+    }
     case 'call_mcp_tool': {
       const server = safeString(values.ServerName);
       const tool = safeString(values.ToolName);

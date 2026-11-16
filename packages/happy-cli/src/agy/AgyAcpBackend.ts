@@ -12,6 +12,19 @@ import { resolveAgyBin, resolveAgyModelName } from './constants';
 import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
 import { agyStopHookEnabled, AgyStopHook } from './stopHook';
 
+// AGY 1.5.9 omits rawInput.name on native calls. Only its exact "Run <id>"
+// labels for known native tools may override a broad ACP category such as other.
+// Arbitrary human titles (which can contain commands or private text) stay out.
+const NATIVE_TOOL_LABELS = new Set([
+  'list_dir', 'list_directory', 'read_file', 'view_file', 'sed_file',
+  'edit_file', 'replace_file_content', 'multi_replace_file_content',
+  'write_file', 'write_to_file', 'notebook_edit', 'run_command',
+  'command_status', 'send_command_input', 'manage_task', 'schedule',
+  'call_mcp_tool', 'list_resources', 'read_resource', 'search_web',
+  'grep_search', 'find_by_name', 'open_browser_url', 'read_url_content',
+  'invoke_subagent', 'manage_subagents', 'swarm', 'run_workflow',
+]);
+
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
 }
@@ -333,7 +346,11 @@ export class AgyAcpBackend implements AgentBackend {
     const searchTool = typeof parameters.query === 'string' ? 'search_web'
       : typeof parameters.Pattern === 'string' ? 'find_by_name'
       : typeof parameters.Query === 'string' ? 'grep_search' : 'search';
+    const titleId = /^Run ([a-z][a-z0-9_]*)$/.exec(update.title ?? '')?.[1];
+    const nativeTitle = (!update.kind || update.kind === 'other') && titleId && NATIVE_TOOL_LABELS.has(titleId)
+      ? titleId : undefined;
     const name = isHappyTitle ? 'mcp__happy__change_title' : typeof input.name === 'string' ? input.name
+      : nativeTitle ? nativeTitle
       : update.kind === 'search' ? searchTool
       : update.kind ? kindTool[update.kind] ?? update.kind : 'agy_tool';
     return { nativeName: name, display: mapAgyToolToDisplay(name, parameters) };

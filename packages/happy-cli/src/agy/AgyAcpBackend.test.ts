@@ -78,15 +78,18 @@ async function invokeStop(spawnFn: typeof spawn, executionNum: number, fullyIdle
 
 describe('persistent Antigravity ACP', () => {
   describe.skipIf(process.platform === 'win32')('optional Stop hook', () => {
-    it('does not reset the stalled continuation budget for task/status cards displayed as Bash', async () => {
+    it.each([
+      ['Run manage_task', { name: 'manage_task', arguments: { Action: 'status', TaskId: 'session/task-12' } }],
+      ['Run manage_task', { Action: 'status', TaskId: 'session/task-12' }],
+      ['Run schedule', { DurationSeconds: 1, TimerCondition: 'session/task-12', Prompt: 'private scheduled prompt' }],
+    ])('does not reset the stalled continuation budget for %s cards displayed as Bash (%j)', async (title, rawInput) => {
       const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
       agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
       const pending = backend.sendPrompt('', 'background');
       const rejected = expect(pending).rejects.toThrow('no completed tool progress');
       const request = await promptRequest(agent);
       for (let i = 0; i < 5; i++) {
-        agent.notify({ sessionUpdate: 'tool_call', toolCallId: `status-${i}`, title: 'Run manage_task', kind: 'other',
-          status: 'in_progress', rawInput: { name: 'manage_task', arguments: { Action: 'status', TaskId: 'session/task-12' } } });
+        agent.notify({ sessionUpdate: 'tool_call', toolCallId: `status-${i}`, title, kind: 'other', status: 'in_progress', rawInput });
         agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: `status-${i}`, status: 'completed' });
         await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(i + 1));
         expect(await invokeStop(spawnFn, i, false)).toEqual(i < 4 ? { decision: 'continue', reason: expect.any(String) } : {});
@@ -94,14 +97,15 @@ describe('persistent Antigravity ACP', () => {
       expect(messages.filter(m => m.type === 'tool-call').every(m => m.type === 'tool-call' && m.toolName === 'Bash')).toBe(true);
       agent.respond(request.id!, { stopReason: 'end_turn' }); await rejected;
     });
-    it('resets the stalled allowance after a real command finishes', async () => {
+    it.each(['printf DONE', 'Run read_file', 'Run schedule'])('resets the stalled allowance after a real command finishes despite its title: %s', async (title) => {
       const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
       agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
       const pending = backend.sendPrompt('', 'background');
       const request = await promptRequest(agent);
       for (let i = 0; i < 4; i++) expect((await invokeStop(spawnFn, i, false)).decision).toBe('continue');
-      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'command', title: 'printf DONE', kind: 'execute', status: 'completed', rawInput: { CommandLine: 'printf DONE' } });
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'command', title, kind: 'execute', status: 'completed', rawInput: { CommandLine: 'printf DONE' } });
       await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(1));
+      expect(messages).toContainEqual({ type: 'tool-call', callId: 'command', toolName: 'Bash', args: { command: 'printf DONE' } });
       expect((await invokeStop(spawnFn, 4, false)).decision).toBe('continue');
       await invokeStop(spawnFn, 5, true);
       agent.respond(request.id!, { stopReason: 'end_turn' }); await pending;
@@ -230,6 +234,48 @@ describe('persistent Antigravity ACP', () => {
     });
     await backend.sendPrompt('', 'search');
     expect(messages).toContainEqual({ type: 'tool-call', callId: 'search', toolName, args });
+  });
+
+  it.each([
+    ['Run manage_task', { Action: 'status', TaskId: 'session/task-12' }, 'Bash', { command: 'manage_task status task-12' }],
+    ['Run schedule', { DurationSeconds: 10, TimerCondition: 'session/task-12', Prompt: 'private scheduled prompt' }, 'Bash', { command: 'schedule 10s for task-12' }],
+    ['Run command_status', { CommandId: 'private-id' }, 'Bash', { command: 'command_status' }],
+    ['Run list_dir', { DirectoryPath: '/work' }, 'LS', { path: '/work' }],
+    ['Run made_up_tool', { password: 'private-value' }, 'other', {}],
+    ['Run schedule extra text', { Prompt: 'private-value' }, 'other', {}],
+    ['Human title secret=private-value', {}, 'other', {}],
+    ['Run mcp_happy_change_title', {}, 'other', {}],
+    ['Run manage_task', { name: 'read_file', Path: '/work/file' }, 'Read', { file_path: '/work/file' }],
+  ])('preserves known native labels and safe arguments: %s', async (title, rawInput, toolName, args) => {
+    const { backend, agent, messages } = setup();
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method !== 'session/prompt') return fallback(rpc);
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'native', title, kind: 'other', status: 'in_progress', rawInput });
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'native', status: 'completed' });
+      agent.respond(rpc.id!, { stopReason: 'end_turn' });
+    });
+    await backend.sendPrompt('', 'fixture');
+    expect(messages).toContainEqual({ type: 'tool-call', callId: 'native', toolName, args });
+    expect(JSON.stringify(messages)).not.toContain('private');
+  });
+
+  it.each([
+    ['other', 'Run manage_task', { Action: 'kill', TaskId: 'session/task-12' }, 'manage_task kill task-12'],
+    ['execute', 'Run read_file', { CommandLine: 'printf HI' }, 'printf HI'],
+  ] as const)('passes %s permissions without allowing titles to downgrade execution, and honors denial once', async (kind, title, rawInput, command) => {
+    const requestPermission = vi.fn(async () => ({ decision: 'denied' as const }));
+    const { backend, agent } = setup({ requestPermission });
+    agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+    const turn = backend.sendPrompt('', 'fixture');
+    const request = await promptRequest(agent);
+    agent.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 800, method: 'session/request_permission', params: {
+      sessionId: 'session-1', toolCall: { toolCallId: 'task', title, kind, rawInput },
+      options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+    } }) + '\n');
+    await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1));
+    expect(requestPermission).toHaveBeenCalledWith('task', 'Bash', { command });
+    await vi.waitFor(() => expect(agent.received.find(r => r.id === 800)?.result).toEqual({ outcome: { outcome: 'selected', optionId: 'no' } }));
+    agent.respond(request.id!, { stopReason: 'end_turn' }); await turn;
   });
 
   it.each(['completed', 'failed', 'unfinished'])('preserves tool %s state without forwarding raw output', async (status) => {

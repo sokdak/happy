@@ -157,4 +157,15 @@ describe('mapAgyToolToDisplay', () => {
       args: {},
     });
   });
+
+  it('shows scheduling time and task without forwarding the scheduled prompt or condition body', () => {
+    expect(mapAgyToolToDisplay('schedule', { DurationSeconds: 15, TimerCondition: 'conversation-123/task-42', Prompt: 'private scheduled work' }))
+      .toEqual({ toolName: 'Bash', args: { command: 'schedule 15s for task-42' } });
+    expect(mapAgyToolToDisplay('schedule', { DurationSeconds: 15, TimerCondition: `session/task-${'1'.repeat(4096)}` }))
+      .toEqual({ toolName: 'Bash', args: { command: 'schedule 15s' } });
+    for (const DurationSeconds of [NaN, Infinity, -1, 604801, 'secret=private', {}]) {
+      expect(mapAgyToolToDisplay('schedule', { DurationSeconds, TimerCondition: 'private arbitrary condition', Prompt: 'private prompt' }))
+        .toEqual({ toolName: 'Bash', args: { command: 'schedule' } });
+    }
+  });
 });
