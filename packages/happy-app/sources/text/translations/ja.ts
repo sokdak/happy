@@ -572,6 +572,11 @@ export const ja: TranslationStructure = {
     },
 
     agentQuestion: {
+        waitingForAnswer: "回答を待っています",
+        answered: "回答済み",
+        cancelled: "キャンセル済み",
+        expand: "質問を展開",
+        collapse: "質問を折りたたむ",
         title: "質問",
         submit: "回答を送信",
         chooseMultiple: "当てはまるものをすべて選択",

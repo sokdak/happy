@@ -24,7 +24,34 @@ export const FULL_FILE_CONTEXT = 100_000;
  * a backslash, and an unescaped one would break the command apart.
  */
 export function quoteShellPath(path: string): string {
+    if (/[\0\r\n]/.test(path)) {
+        throw new Error('Invalid control character in git path');
+    }
     return `"${path.replace(/([\\"$`])/g, '\\$1')}"`;
+}
+
+/**
+ * Builds a shell-safe working-tree `git diff` command for `FileScreen` and
+ * prefetchers. Returns `null` when the path is empty, `.`, or contains control
+ * characters (or Windows `cmd.exe` metacharacters when the session root is a
+ * Windows drive path) so untrusted `file://` links can never inject shell code.
+ */
+export function buildWorkingTreeGitDiffCommand(
+    path: string | null | undefined,
+    sessionRoot?: string | null,
+): string | null {
+    if (!path || path === '.' || /[\0\r\n]/.test(path)) {
+        return null;
+    }
+    const isWindowsSession = Boolean(sessionRoot && /^[A-Za-z]:[\\/]/.test(sessionRoot));
+    if (isWindowsSession) {
+        if (/[%"&|<>^!`$]/.test(path)) {
+            return null;
+        }
+        return `git -c core.quotepath=false diff --no-ext-diff -- "${path.replace(/\\/g, '/')}"`;
+    }
+    const posixSingleQuoted = `'${path.replace(/'/g, `'\\''`)}'`;
+    return `git -c core.quotepath=false diff --no-ext-diff -- ${posixSingleQuoted}`;
 }
 
 export function buildGitDiffCommand(path: string, options: GitDiffOptions = {}): string {

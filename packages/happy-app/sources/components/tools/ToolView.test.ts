@@ -170,6 +170,17 @@ describe('tool rendering on mobile and web', () => {
         }
     });
 
+    it.each(['web', 'ios', 'android'])('lets the question card own its toggle instead of navigating to raw details on %s', platform => {
+        settings.platform = platform;
+        const onPress = vi.fn();
+        const row = render(React.createElement(ToolView, {
+            tool: tool('request_user_input'), metadata: null, sessionId: 's1', messageId: 'm1', onPress,
+        }));
+        expect(row.root.findAllByType('TouchableOpacity')).toHaveLength(0);
+        expect(row.root.findAllByType('SpecializedView')).toHaveLength(1);
+        expect(row.root.findAllByType('ActivityIndicator')).toHaveLength(0);
+    });
+
     it('uses the wire title in the detail header', () => {
         const header = render(React.createElement(ToolHeader, { tool: { ...tool('future_tool'), title: 'Check release' } }));
         expect(JSON.stringify(header.toJSON())).toContain('Check release');

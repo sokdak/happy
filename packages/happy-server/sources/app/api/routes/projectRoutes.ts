@@ -76,11 +76,14 @@ type ProjectRecord = {
 };
 
 function resolveBaseUrl(request: { headers: Record<string, string | string[] | undefined> }): string {
-    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL;
+    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, '');
     const forwardedHost = request.headers['x-forwarded-host'];
     const forwardedProto = request.headers['x-forwarded-proto'];
     const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers.host;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? 'http';
+    let proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? 'http';
+    if (proto === 'http' && request.headers['x-forwarded-ssl'] === 'on') {
+        proto = 'https';
+    }
     if (typeof host === 'string' && host.length > 0) return `${proto}://${host}`;
     return `http://localhost:${process.env.PORT || '3005'}`;
 }

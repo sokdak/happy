@@ -109,7 +109,7 @@ export function isTerminalToolName(name: string): boolean {
  * A card header above that would only repeat the same name, so it is dropped.
  */
 // `file` is a user attachment: the picture is the whole message, so no card, header, or frame.
-const SELF_HEADING_TOOL_NAMES = new Set(['CodexPatch', 'GeminiPatch', 'apply_patch', 'file']);
+const SELF_HEADING_TOOL_NAMES = new Set(['CodexPatch', 'GeminiPatch', 'apply_patch', 'file', 'request_user_input']);
 
 export function shouldRenderToolCardHeader(toolName: string, _platformOS: string): boolean {
     return !SELF_HEADING_TOOL_NAMES.has(toolName);

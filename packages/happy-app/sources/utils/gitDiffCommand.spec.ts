@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     buildGitDiffCommand,
     buildGitShowBase64Command,
+    buildWorkingTreeGitDiffCommand,
     FULL_FILE_CONTEXT,
     quoteShellPath,
 } from './gitDiffCommand';
@@ -54,6 +55,27 @@ describe('buildGitShowBase64Command', () => {
     it('reads the HEAD copy through base64', () => {
         expect(buildGitShowBase64Command('assets/logo.png')).toBe(
             'git -c core.quotepath=false show HEAD:"assets/logo.png" | base64',
+        );
+    });
+});
+
+describe('buildWorkingTreeGitDiffCommand', () => {
+    it('POSIX single-quotes untrusted file:// relative paths to prevent $(...) and backtick command injection', () => {
+        expect(buildWorkingTreeGitDiffCommand('$(touch /tmp/pwned).md', '/Users/victim/project')).toBe(
+            "git -c core.quotepath=false diff --no-ext-diff -- '$(touch /tmp/pwned).md'",
+        );
+        expect(buildWorkingTreeGitDiffCommand("a'b`id`\"$HOME\".ts", '/Users/victim/project')).toBe(
+            "git -c core.quotepath=false diff --no-ext-diff -- 'a'\\''b`id`\"$HOME\".ts'",
+        );
+    });
+
+    it('rejects control characters, root dot, and Windows cmd.exe expansion metacharacters', () => {
+        expect(buildWorkingTreeGitDiffCommand('.', '/work')).toBeNull();
+        expect(buildWorkingTreeGitDiffCommand('a\nrm -rf /', '/work')).toBeNull();
+        expect(buildWorkingTreeGitDiffCommand('a\0b.ts', '/work')).toBeNull();
+        expect(buildWorkingTreeGitDiffCommand('%USERPROFILE%/secret.ts', 'C:\\Users\\alice\\project')).toBeNull();
+        expect(buildWorkingTreeGitDiffCommand('src\\index.ts', 'C:\\Users\\alice\\project')).toBe(
+            'git -c core.quotepath=false diff --no-ext-diff -- "src/index.ts"',
         );
     });
 });

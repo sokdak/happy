@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/StyledText';
@@ -48,6 +48,7 @@ const unsupportedCommunication: PendingUnsupportedCommunication = {
 };
 
 export default function AgentQuestionDemoScreen() {
+    const router = useRouter();
     const styles = stylesheet;
     // ?open=1 opens the sheet straight away, so it can be linked to and captured directly.
     const params = useLocalSearchParams<{ open?: string }>();
@@ -57,6 +58,11 @@ export default function AgentQuestionDemoScreen() {
         <>
             <Stack.Screen options={{ headerTitle: 'Agent Questions' }} />
             <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+                <ItemGroup title="Codex inline questions">
+                    <Pressable accessibilityRole="button" style={styles.button} onPress={() => router.push('/dev/codex-questions')}>
+                        <Text style={styles.buttonText}>Preview collapsible questions</Text>
+                    </Pressable>
+                </ItemGroup>
                 <Text style={styles.description}>
                     Agent-to-user communications. A form opens the full-screen answer sheet; a kind
                     this build does not implement says so and offers to dismiss it.

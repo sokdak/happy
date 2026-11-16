@@ -1,5 +1,13 @@
 import { parseMarkdownBlock } from "./parseMarkdownBlock"
 
+export type MarkdownAlertKind = 'NOTE' | 'TIP' | 'IMPORTANT' | 'WARNING' | 'CAUTION';
+
+export type MarkdownListItem = {
+    depth: number;
+    spans: MarkdownSpan[];
+    number?: number;
+};
+
 export type MarkdownBlock = {
     type: 'text'
     content: MarkdownSpan[]
@@ -9,10 +17,14 @@ export type MarkdownBlock = {
     content: MarkdownSpan[]
 } | {
     type: 'list',
-    items: { depth: number, spans: MarkdownSpan[] }[]
+    items: MarkdownListItem[]
 } | {
     type: 'numbered-list',
-    items: { number: number, depth: number, spans: MarkdownSpan[] }[]
+    items: MarkdownListItem[]
+} | {
+    type: 'blockquote',
+    alert: MarkdownAlertKind | null,
+    blocks: MarkdownBlock[]
 } | {
     type: 'code-block',
     language: string | null,

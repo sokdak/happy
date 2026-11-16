@@ -4,12 +4,38 @@ import { Readable, Writable } from 'node:stream';
 import {
   ClientSideConnection, ndJsonStream,
   type McpServer, type ContentBlock, type NewSessionResponse, type SessionNotification,
-  type RequestPermissionRequest, type RequestPermissionResponse,
+  type RequestPermissionRequest, type RequestPermissionResponse, type ToolCallContent,
 } from '@agentclientprotocol/sdk';
 import type { PermissionMode } from '@/api/types';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import { resolveAgyBin, resolveAgyModelName } from './constants';
 import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
+import { agyStopHookEnabled, AgyStopHook, type StopHookLimits } from './stopHook';
+
+// AGY 1.5.9 omits rawInput.name on native calls. Only its exact "Run <id>"
+// labels for known native tools may override a broad ACP category such as other.
+// Arbitrary human titles (which can contain commands or private text) stay out.
+const NATIVE_TOOL_LABELS = new Set([
+  'list_dir', 'list_directory', 'read_file', 'view_file', 'sed_file',
+  'edit_file', 'replace_file_content', 'multi_replace_file_content',
+  'write_file', 'write_to_file', 'notebook_edit', 'run_command',
+  'command_status', 'send_command_input', 'manage_task', 'schedule',
+  'call_mcp_tool', 'list_resources', 'read_resource', 'search_web',
+  'grep_search', 'find_by_name', 'open_browser_url', 'read_url_content',
+  'invoke_subagent', 'manage_subagents', 'swarm', 'run_workflow',
+  'ask_question', 'send_message', 'define_subagent',
+]);
+
+// Action/mutation/delegation tools that advance work between background waits.
+// Status/wait/inspection tools (manage_task, command_status, manage_subagents,
+// schedule, read_file, etc.) must not reset the stalled continuation budget.
+const PROGRESS_NATIVE_TOOLS = new Set([
+  'run_command', 'send_command_input',
+  'edit_file', 'replace_file_content', 'multi_replace_file_content',
+  'write_file', 'write_to_file', 'notebook_edit',
+  'invoke_subagent', 'send_message', 'define_subagent',
+  'swarm', 'run_workflow',
+]);
 
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
@@ -32,6 +58,33 @@ export interface AgyAcpOptions {
   spawnFn?: typeof spawn;
   requestTimeoutMs?: number;
   cancelGraceMs?: number;
+  /** Experimental AGY 1.5.9 workaround. Unset reads HAPPY_AGY_STOP_HOOK (default off). */
+  stopHook?: boolean;
+  stopHookLimits?: Partial<StopHookLimits>;
+}
+
+function mergeDefinedArgs(
+  older: Record<string, unknown>,
+  newer: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...older };
+  for (const [key, nextVal] of Object.entries(newer)) {
+    if (nextVal === undefined || nextVal === null) continue;
+    const prevVal = merged[key];
+    if (nextVal === '' && typeof prevVal === 'string' && prevVal.length > 0) continue;
+    merged[key] = nextVal;
+  }
+  return merged;
+}
+
+function argsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (!(key in b) || JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+  }
+  return true;
 }
 
 export class AgyAcpBackend implements AgentBackend {
@@ -43,11 +96,18 @@ export class AgyAcpBackend implements AgentBackend {
   private capabilities: { loadSession?: boolean; promptCapabilities?: { image?: boolean } } = {};
   private starting: Promise<void> | null = null;
   private active: Promise<void> | null = null;
+  private cancelling: Promise<void> | null = null;
   private lifetime: Promise<never> = new Promise(() => {});
+  private rejectLifetime?: (error: Error) => void;
   private cancelled = false;
   private disposed = false;
   private replaying = false;
-  private tools = new Map<string, string>();
+  private tools = new Map<string, {
+    toolName: string;
+    nativeName: string;
+    args: Record<string, unknown>;
+    commandExecution: boolean;
+  }>();
   private completedTools = new Set<string>();
   private terminating = new Set<Promise<void>>();
   private permissionAbort = new AbortController();
@@ -57,6 +117,8 @@ export class AgyAcpBackend implements AgentBackend {
   private appliedModel: string | null = null;
   private appliedMode: string | null = null;
   private initialPromptDelivered = false;
+  private stopHook: AgyStopHook | null = null;
+  private permissionDenied = false;
 
   constructor(private readonly options: AgyAcpOptions) {
     this.sessionId = options.resumeSessionId ?? null;
@@ -89,6 +151,10 @@ export class AgyAcpBackend implements AgentBackend {
   }
 
   private stopProcess(): void {
+    this.rejectLifetime?.(new Error('Antigravity ACP process stopped'));
+    this.rejectLifetime = undefined;
+    this.stopHook?.close();
+    this.stopHook = null;
     const child = this.child;
     this.child = null;
     this.connection = null;
@@ -118,9 +184,17 @@ export class AgyAcpBackend implements AgentBackend {
   private async open(): Promise<void> {
     this.stopProcess();
     this.permissionAbort = new AbortController();
-    const child = (this.options.spawnFn ?? spawn)(resolveAgyBin(), ['acp', '--add-dir', this.options.cwd], {
-      cwd: this.options.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    });
+    if (this.options.stopHook ?? agyStopHookEnabled()) {
+      this.stopHook = await AgyStopHook.create(this.options.stopHookLimits);
+      if (this.disposed || this.cancelled) { this.stopProcess(); throw new AgyCancelledError(); }
+    }
+    let child: ChildProcess;
+    try {
+      child = (this.options.spawnFn ?? spawn)(resolveAgyBin(), ['acp', '--add-dir', this.options.cwd,
+        ...(this.stopHook ? ['--add-dir', this.stopHook.workspace] : [])], {
+        cwd: this.options.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      });
+    } catch { this.stopProcess(); throw new Error('Could not start Antigravity ACP; check HAPPY_AGY_PATH'); }
     this.child = child;
     if (!child.stdin || !child.stdout || !child.stderr) throw new Error('Antigravity ACP stdio unavailable');
     // Never log raw stderr/protocol payloads: they may contain user files or credentials.
@@ -130,6 +204,7 @@ export class AgyAcpBackend implements AgentBackend {
       child.once('exit', () => {
         reject(new Error('Antigravity ACP process exited'));
         if (this.child === child) {
+          this.stopHook?.close(); this.stopHook = null;
           this.connection = null;
           this.permissionAbort.abort();
           this.options.resetPermissions?.();
@@ -138,8 +213,9 @@ export class AgyAcpBackend implements AgentBackend {
     });
     void failed.catch(() => {});
     const connection = new ClientSideConnection(() => ({
-      sessionUpdate: async (notification) => this.update(notification),
-      requestPermission: (request) => this.permission(request),
+      sessionUpdate: async (notification) => { if (this.child === child) this.update(notification); },
+      requestPermission: (request) => this.child === child ? this.permission(request)
+        : Promise.resolve({ outcome: { outcome: 'cancelled' as const } }),
     }), ndJsonStream(
       Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
       Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
@@ -147,13 +223,17 @@ export class AgyAcpBackend implements AgentBackend {
     this.connection = connection;
     const closed = connection.closed.then(() => { throw new Error('Antigravity ACP connection closed'); });
     void closed.catch(() => {});
-    this.lifetime = Promise.race([failed, closed]);
+    const stopped = new Promise<never>((_, reject) => { this.rejectLifetime = reject; });
+    this.lifetime = Promise.race([failed, closed, stopped]);
     void this.lifetime.catch(() => {});
     try {
       const initialized = await this.control(Promise.race([connection.initialize({
         protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'happy', version: '1' },
       }), this.lifetime]));
       this.capabilities = initialized.agentCapabilities ?? {};
+      if (this.stopHook && initialized.agentInfo?.version !== '1.5.9') {
+        throw new Error('The experimental Stop hook is verified only with AGY 1.5.9. Set HAPPY_AGY_STOP_HOOK=0 for this version.');
+      }
       if (this.sessionId) {
         if (!this.capabilities.loadSession) throw new Error('Antigravity does not support loading the requested ACP session');
         this.replaying = true;
@@ -174,6 +254,8 @@ export class AgyAcpBackend implements AgentBackend {
   }
 
   async startSession(): Promise<{ sessionId: string }> {
+    if (this.cancelling) await this.cancelling;
+    if (!this.active) this.cancelled = false;
     await this.connect();
     return { sessionId: this.sessionId! };
   }
@@ -201,12 +283,18 @@ export class AgyAcpBackend implements AgentBackend {
   }
 
   async sendPrompt(_sessionId: SessionId, prompt: string, images: ContentBlock[] = []): Promise<void> {
+    if (this.cancelling) await this.cancelling;
     if (this.active) throw new Error('An Antigravity turn is already running');
     this.cancelled = false;
+    this.permissionDenied = false;
     this.tools.clear();
     this.completedTools.clear();
-    this.active = this.runPrompt(prompt, images);
-    try { await this.active; } finally { this.active = null; this.options.resetPermissions?.(); }
+    const active = this.runPrompt(prompt, images).finally(() => {
+      if (this.active === active) this.active = null;
+      this.options.resetPermissions?.();
+    });
+    this.active = active;
+    await active;
   }
 
   private async runPrompt(prompt: string, images: ContentBlock[]): Promise<void> {
@@ -216,6 +304,8 @@ export class AgyAcpBackend implements AgentBackend {
       if (images.length && !this.capabilities.promptCapabilities?.image) throw new Error('Antigravity ACP does not support image input');
       await this.configure();
       if (this.cancelled) throw new AgyCancelledError();
+      const hook = this.stopHook;
+      hook?.policy.begin(this.sessionId!);
       const response = await Promise.race([this.connection!.prompt({
         sessionId: this.sessionId!, prompt: [{ type: 'text', text: this.options.initialPrompt && !this.initialPromptDelivered
           ? `${this.options.initialPrompt}\n\n${prompt}` : prompt }, ...images],
@@ -223,8 +313,22 @@ export class AgyAcpBackend implements AgentBackend {
       if (this.cancelled || response.stopReason === 'cancelled') throw new AgyCancelledError();
       if (response.stopReason !== 'end_turn') throw new Error(`Antigravity stopped: ${response.stopReason}`);
       this.initialPromptDelivered = true;
+      const hookIssue = hook?.policy.finish();
+      const state = hook?.policy.snapshot();
+      if (hook) {
+        this.options.log?.(`Antigravity Stop hook: ${state?.count ?? 0} continuations, idle=${state?.fullyIdle ?? 'unknown'}`);
+      }
+      // Rejection sometimes skips Stop entirely. A valid final idle observation
+      // still permits a graceful agent response explaining the denied action.
+      if (hook && this.permissionDenied && !state?.seen) {
+        throw new Error('Antigravity stopped after a tool permission was denied. The denied action was not approved.'
+          + (this.tools.size ? ' Other background work may still be running; completion is unconfirmed.' : ''));
+      }
+      if (hookIssue) throw new Error(`${hookIssue}. Completion is unconfirmed; background work may still be running.`);
+      if (this.tools.size) throw new Error('Antigravity ended its response before all tool results arrived. Work may still be running; completion is unconfirmed.');
       this.emit({ type: 'status', status: 'idle' });
     } catch (error) {
+      if (this.stopHook) this.stopProcess();
       if (this.cancelled || error instanceof AgyCancelledError) throw new AgyCancelledError();
       const message = error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
         ? error.message : 'Antigravity ACP failed';
@@ -232,13 +336,17 @@ export class AgyAcpBackend implements AgentBackend {
       this.emit({ type: 'status', status: 'error', detail });
       throw new Error(detail);
     } finally {
-      for (const [callId, toolName] of this.tools) this.emit({ type: 'tool-result', callId, toolName, result: 'Tool interrupted before completion.', isError: true });
+      this.stopHook?.policy.cancel();
+      // ACP ending (or acknowledging cancellation) does not prove that native
+      // background commands were stopped. Close the UI card without inventing
+      // a command outcome; the error flag describes missing confirmation.
+      for (const [callId, tool] of this.tools) this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: 'Completion was not reported. Background work may still be running.', isError: true });
       this.tools.clear();
     }
   }
 
   private update({ sessionId, update }: SessionNotification): void {
-    if (this.replaying || sessionId !== this.sessionId || !this.active) return;
+    if (this.replaying || this.cancelled || sessionId !== this.sessionId || !this.active) return;
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
       this.emit({ type: 'model-output', textDelta: update.content.text });
     } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {
@@ -247,21 +355,59 @@ export class AgyAcpBackend implements AgentBackend {
       const callId = update.toolCallId;
       if (this.completedTools.has(callId)) return;
       if (!this.tools.has(callId)) {
-        const mapped = this.displayTool(update);
-        this.tools.set(callId, mapped.toolName);
-        this.emit({ type: 'tool-call', callId, ...mapped });
+        const { nativeName, display } = this.describeTool(update);
+        this.tools.set(callId, {
+          toolName: display.toolName,
+          nativeName,
+          args: { ...display.args },
+          commandExecution: PROGRESS_NATIVE_TOOLS.has(nativeName.toLowerCase()),
+        });
+        this.emit({ type: 'tool-call', callId, ...display });
+      } else {
+        const existing = this.tools.get(callId)!;
+        if (
+          (existing.toolName === 'Edit' || existing.toolName === 'MultiEdit' || existing.toolName === 'Write')
+          && (Array.isArray(update.content) || isPlainRecord(update.rawInput))
+        ) {
+          const fallbackRawInput = isPlainRecord(update.rawInput)
+            ? { name: existing.nativeName, ...update.rawInput }
+            : { name: existing.nativeName };
+          const { nativeName, display } = this.describeTool({
+            ...update,
+            kind: update.kind ?? 'edit',
+            rawInput: fallbackRawInput,
+          });
+          const mergedArgs = mergeDefinedArgs(existing.args, display.args);
+          if (display.toolName !== existing.toolName || !argsEqual(existing.args, mergedArgs)) {
+            existing.toolName = display.toolName;
+            existing.nativeName = nativeName;
+            existing.args = mergedArgs;
+            this.emit({ type: 'tool-call', callId, toolName: existing.toolName, args: existing.args });
+          }
+        }
       }
       if (update.status === 'completed' || update.status === 'failed') {
         // Raw outputs may contain entire files/secrets. Happy currently renders lifecycle only.
-        this.emit({ type: 'tool-result', callId, toolName: this.tools.get(callId)!, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
+        const tool = this.tools.get(callId)!;
+        this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
+        // Status/wait tools completing do not prove the background command made
+        // progress. They must not indefinitely reset the no-progress allowance.
+        if (tool.commandExecution) this.stopHook?.policy.progress();
         this.tools.delete(callId);
         this.completedTools.add(callId);
       }
     }
   }
 
-  private displayTool(update: RequestPermissionRequest['toolCall']) {
+  private describeTool(update: RequestPermissionRequest['toolCall']) {
     const input = update.rawInput && typeof update.rawInput === 'object' ? update.rawInput as Record<string, unknown> : {};
+    const diffBlock = Array.isArray(update.content)
+      ? update.content.find((item): item is Extract<ToolCallContent, { type: 'diff' }> =>
+          isPlainRecord(item)
+          && item.type === 'diff'
+          && typeof item.path === 'string'
+          && typeof item.newText === 'string')
+      : undefined;
     // ACP titles are human labels ('File README.md', 'sleep 2'), not tool IDs.
     const kindTool: Record<string, string> = { read: 'read_file', edit: 'edit_file', execute: 'run_command', fetch: 'read_url_content' };
     // Antigravity 1.5.9 labels MCP calls as kind=other and omits their name in rawInput.
@@ -276,10 +422,46 @@ export class AgyAcpBackend implements AgentBackend {
     const searchTool = typeof parameters.query === 'string' ? 'search_web'
       : typeof parameters.Pattern === 'string' ? 'find_by_name'
       : typeof parameters.Query === 'string' ? 'grep_search' : 'search';
-    const name = isHappyTitle ? 'mcp__happy__change_title' : typeof input.name === 'string' ? input.name
+    const hasExplicitWriteBody = typeof parameters.Content === 'string'
+      || typeof parameters.CodeContent === 'string'
+      || typeof parameters.content === 'string';
+    const hasExplicitEditBody = typeof parameters.Target === 'string'
+      || typeof parameters.TargetContent === 'string'
+      || typeof parameters.old_string === 'string'
+      || Array.isArray(parameters.ReplacementChunks);
+    const editTool = hasExplicitWriteBody && !hasExplicitEditBody
+      ? 'write_file'
+      : diffBlock && (diffBlock.oldText === null || diffBlock.oldText === undefined) && !hasExplicitEditBody
+        ? 'write_file'
+        : 'edit_file';
+    const titleId = /^Run ([a-z][a-z0-9_]*)$/.exec(update.title ?? '')?.[1];
+    const nativeTitle = (!update.kind || update.kind === 'other') && titleId && NATIVE_TOOL_LABELS.has(titleId)
+      ? titleId : undefined;
+    const explicitInputName = typeof input.name === 'string' ? input.name : undefined;
+    // When updating a generic kind=edit tool that originally had no explicit native name,
+    // allow diffBlock with oldText=null to refine edit_file -> write_file.
+    const resolvedInputName = explicitInputName === 'edit_file' && editTool === 'write_file'
+      ? 'write_file'
+      : explicitInputName;
+    const name = isHappyTitle ? 'mcp__happy__change_title' : resolvedInputName
+      ? resolvedInputName
+      : nativeTitle ? nativeTitle
       : update.kind === 'search' ? searchTool
+      : update.kind === 'edit' ? editTool
       : update.kind ? kindTool[update.kind] ?? update.kind : 'agy_tool';
-    return mapAgyToolToDisplay(name, parameters);
+    const diffFallback: Record<string, unknown> = diffBlock
+      ? {
+          Path: diffBlock.path,
+          ...(typeof diffBlock.oldText === 'string' ? { Target: diffBlock.oldText } : {}),
+          Replacement: diffBlock.newText,
+          Content: diffBlock.newText,
+        }
+      : {};
+    const definedParameters = Object.fromEntries(
+      Object.entries(parameters).filter(([, value]) => value !== undefined && value !== null),
+    );
+    const mergedParameters = diffBlock ? { ...diffFallback, ...definedParameters } : parameters;
+    return { nativeName: name, display: mapAgyToolToDisplay(name, mergedParameters) };
   }
 
   private async permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
@@ -294,12 +476,13 @@ export class AgyAcpBackend implements AgentBackend {
     });
     try {
       const bypass = this.mode === 'yolo' || this.mode === 'bypassPermissions';
-      const display = this.displayTool(request.toolCall);
+      const { display } = this.describeTool(request.toolCall);
       const result = bypass ? { decision: 'approved' as const } : this.options.requestPermission
         ? await Promise.race([this.options.requestPermission(request.toolCall.toolCallId, display.toolName, display.args), aborted])
         : { decision: 'denied' as const };
       if (!result || this.cancelled || signal.aborted || result.decision === 'abort') return cancelled;
       const approved = result.decision === 'approved' || result.decision === 'approved_for_session';
+      if (!approved) this.permissionDenied = true;
       const option = request.options.find((option) => option.kind === (approved ? 'allow_once' : 'reject_once'));
       return option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : cancelled;
     } catch { return cancelled; }
@@ -307,8 +490,16 @@ export class AgyAcpBackend implements AgentBackend {
   }
 
   async cancel(): Promise<void> {
+    if (this.cancelling) return this.cancelling;
+    if (!this.active) return;
+    this.cancelling = this.cancelActive();
+    try { await this.cancelling; } finally { this.cancelling = null; }
+  }
+
+  private async cancelActive(): Promise<void> {
     if (!this.active) return;
     this.cancelled = true;
+    this.stopHook?.policy.cancel();
     this.permissionAbort.abort();
     this.options.resetPermissions?.();
     const active = this.active;
@@ -319,8 +510,17 @@ export class AgyAcpBackend implements AgentBackend {
         await Promise.race([active.catch(() => {}), new Promise<void>((resolve) => {
           timer = setTimeout(() => { this.stopProcess(); resolve(); }, this.options.cancelGraceMs ?? 5_000);
         })]);
+        // stopProcess rejects the logical connection immediately, independently
+        // of a slow child exit. Drain the turn's finally before accepting a new one.
+        await active.catch(() => {});
       } finally { clearTimeout(timer); }
-    } finally { this.permissionAbort = new AbortController(); }
+    } finally {
+      // Cancelled hook invocations must not see a subsequent turn's state.
+      // Reconnect/load the exact session with a fresh socket on the next request.
+      // This stops the ACP process, not independently running native commands.
+      if (this.stopHook) this.stopProcess();
+      this.permissionAbort = new AbortController();
+    }
   }
 
   async dispose(): Promise<void> {

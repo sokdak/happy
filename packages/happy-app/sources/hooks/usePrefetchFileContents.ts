@@ -13,6 +13,7 @@ import * as React from 'react';
 import { sessionReadFile, sessionBash } from '@/sync/ops';
 import { storage } from '@/sync/storage';
 import { resolveSessionFilePath } from '@/utils/sessionFileLinks';
+import { buildWorkingTreeGitDiffCommand } from '@/utils/gitDiffCommand';
 import type { GitFileStatus, GitStatusFiles } from '@/sync/gitStatusFiles';
 
 const BINARY_EXTENSIONS = new Set([
@@ -52,10 +53,11 @@ async function prefetchFile(sessionId: string, sessionPath: string, file: GitFil
     let diff: string | null = null;
 
     // Fetch git diff
-    if (gitDiffPath && gitDiffPath !== '.') {
+    const diffCommand = buildWorkingTreeGitDiffCommand(gitDiffPath, sessionPath);
+    if (diffCommand) {
         try {
             const diffResponse = await sessionBash(sessionId, {
-                command: `git diff --no-ext-diff -- "${gitDiffPath}"`,
+                command: diffCommand,
                 cwd: sessionPath,
                 timeout: 5000,
             });

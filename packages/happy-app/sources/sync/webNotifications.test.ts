@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     getWebNotificationPermission,
+    registerWebServiceWorker,
     requestWebNotificationPermission,
     showWebSessionNotification,
     subscribeWebNotificationClicks,
@@ -148,5 +149,79 @@ describe('live session alerts', () => {
         vi.stubGlobal('window', { isSecureContext: true, Notification: BlockedNotification });
         expect(() => showWebSessionNotification(event)).not.toThrow();
         expect(warn).toHaveBeenCalledOnce();
+    });
+
+    it('falls back to ServiceWorkerRegistration.showNotification on Android PWA and routes clicks', async () => {
+        class AndroidNotification extends BrowserNotification {
+            constructor(title: string, options: NotificationOptions) {
+                super(title, options);
+                throw new TypeError("Failed to construct 'Notification': Illegal constructor.");
+            }
+        }
+        AndroidNotification.permission = 'granted';
+
+        const showNotification = vi.fn(async () => {});
+        const messageHandlers: Array<(e: MessageEvent) => void> = [];
+        const serviceWorker = {
+            register: vi.fn(async () => ({})),
+            getRegistration: vi.fn(async () => ({ showNotification })),
+            addEventListener: vi.fn((type: string, cb: (e: MessageEvent) => void) => {
+                if (type === 'message') messageHandlers.push(cb);
+            }),
+            removeEventListener: vi.fn((type: string, cb: (e: MessageEvent) => void) => {
+                if (type === 'message') {
+                    const idx = messageHandlers.indexOf(cb);
+                    if (idx !== -1) messageHandlers.splice(idx, 1);
+                }
+            }),
+        };
+
+        vi.stubGlobal('navigator', { serviceWorker });
+        vi.stubGlobal('window', {
+            isSecureContext: true,
+            Notification: AndroidNotification,
+            focus: vi.fn(),
+        });
+
+        registerWebServiceWorker();
+        expect(serviceWorker.register).toHaveBeenCalledWith('/sw.js');
+
+        const navigate = vi.fn();
+        const unsubscribe = subscribeWebNotificationClicks(navigate);
+        try {
+            showWebSessionNotification(event);
+            await vi.waitFor(() => {
+                expect(showNotification).toHaveBeenCalledWith(event.title, {
+                    body: event.body,
+                    tag: `happy-session:${event.sessionId}`,
+                    icon: '/pwa-192x192.png',
+                    data: { sessionId: event.sessionId },
+                });
+            });
+
+            expect(messageHandlers).toHaveLength(1);
+            messageHandlers[0]({
+                data: { type: 'happy-session-notification-click', sessionId: event.sessionId },
+            } as MessageEvent);
+            expect(window.focus).toHaveBeenCalledOnce();
+            expect(navigate).toHaveBeenCalledExactlyOnceWith(event.sessionId);
+        } finally {
+            unsubscribe();
+        }
+        expect(messageHandlers).toHaveLength(0);
+        expect(serviceWorker.removeEventListener).toHaveBeenCalledOnce();
+    });
+
+    it('skips service worker registration inside Tauri or insecure contexts', () => {
+        const register = vi.fn(async () => ({}));
+        vi.stubGlobal('navigator', { serviceWorker: { register } });
+
+        vi.stubGlobal('window', { isSecureContext: true, __TAURI_INTERNALS__: {} });
+        registerWebServiceWorker();
+        expect(register).not.toHaveBeenCalled();
+
+        vi.stubGlobal('window', { isSecureContext: false });
+        registerWebServiceWorker();
+        expect(register).not.toHaveBeenCalled();
     });
 });
