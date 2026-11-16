@@ -537,7 +537,14 @@ export class ApiSessionClient extends EventEmitter {
             throw new Error('request-download returned no downloadUrl');
         }
 
-        const isServerUrl = downloadUrl.startsWith(configuration.serverUrl);
+        const isServerUrl = downloadUrl.startsWith(configuration.serverUrl)
+            || (() => {
+                try {
+                    return new URL(downloadUrl).origin === new URL(configuration.serverUrl).origin;
+                } catch {
+                    return false;
+                }
+            })();
         const headers: Record<string, string> = {};
         if (isServerUrl) {
             headers['Authorization'] = `Bearer ${this.token}`;

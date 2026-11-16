@@ -36,11 +36,14 @@ const uploadRateState = new Map<string, { count: number; windowStart: number }>(
  * generic Network request failed when it tries to follow the URL.
  */
 function resolveBaseUrl(request: { headers: Record<string, string | string[] | undefined> }): string {
-    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL;
+    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, '');
     const xfHost = request.headers['x-forwarded-host'];
     const xfProto = request.headers['x-forwarded-proto'];
     const host = (Array.isArray(xfHost) ? xfHost[0] : xfHost) ?? request.headers.host;
-    const proto = (Array.isArray(xfProto) ? xfProto[0] : xfProto) ?? 'http';
+    let proto = (Array.isArray(xfProto) ? xfProto[0] : xfProto) ?? 'http';
+    if (proto === 'http' && request.headers['x-forwarded-ssl'] === 'on') {
+        proto = 'https';
+    }
     if (typeof host === 'string' && host.length > 0) {
         return `${proto}://${host}`;
     }

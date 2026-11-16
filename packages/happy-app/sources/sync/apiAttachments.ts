@@ -166,7 +166,14 @@ export async function uploadEncryptedBlob(
     }
 
     // PUT (local-storage mode): direct upload to our server.
-    const isServerUrl = upload.uploadUrl.startsWith(serverUrl);
+    const isServerUrl = upload.uploadUrl.startsWith(serverUrl)
+        || (() => {
+            try {
+                return new URL(upload.uploadUrl).origin === new URL(serverUrl).origin;
+            } catch {
+                return false;
+            }
+        })();
     const headers: Record<string, string> = {
         'Content-Type': 'application/octet-stream',
     };
@@ -278,7 +285,14 @@ export async function downloadEncryptedAttachment(
     }
     const downloadUrl = rewriteLoopbackHost(rawDownloadUrl);
 
-    const isServerUrl = downloadUrl.startsWith(API_ENDPOINT);
+    const isServerUrl = downloadUrl.startsWith(API_ENDPOINT)
+        || (() => {
+            try {
+                return new URL(downloadUrl).origin === new URL(API_ENDPOINT).origin;
+            } catch {
+                return false;
+            }
+        })();
     const headers: Record<string, string> = {};
     if (isServerUrl) {
         headers['Authorization'] = `Bearer ${credentials.token}`;

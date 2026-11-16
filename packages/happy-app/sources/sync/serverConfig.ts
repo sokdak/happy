@@ -11,7 +11,7 @@ const DEFAULT_SERVER_URL = 'https://api.cluster-fluster.com';
 export function getServerUrl(): string {
     // A selected private run must not silently reuse a previously persisted
     // server (including another loopback run). Production ignores this path.
-    if (__DEV__ && process.env.EXPO_PUBLIC_HARNESS_MODE === '1') {
+    if (typeof __DEV__ !== 'undefined' && __DEV__ && process.env.EXPO_PUBLIC_HARNESS_MODE === '1') {
         const configured = process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
         if (!configured) throw new Error('Harness startup requires its explicit server URL.');
         const parsed = new URL(configured);
@@ -30,13 +30,18 @@ export function getServerUrl(): string {
 export function rewriteLoopbackHost(url: string): string {
     try {
         const target = new URL(url);
-        if (target.hostname !== 'localhost' && target.hostname !== '127.0.0.1' && target.hostname !== '::1') {
-            return url;
-        }
         const reachable = new URL(getServerUrl());
-        target.protocol = reachable.protocol;
-        target.host = reachable.host;
-        return target.toString();
+        if (target.hostname === 'localhost' || target.hostname === '127.0.0.1' || target.hostname === '::1') {
+            target.protocol = reachable.protocol;
+            target.hostname = reachable.hostname;
+            target.port = reachable.port;
+            return target.toString();
+        }
+        if (target.hostname === reachable.hostname && target.protocol !== reachable.protocol) {
+            target.protocol = reachable.protocol;
+            return target.toString();
+        }
+        return url;
     } catch {
         return url;
     }

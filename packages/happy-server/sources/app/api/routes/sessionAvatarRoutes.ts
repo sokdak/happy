@@ -36,12 +36,15 @@ function validRef(id: string, ref: string): boolean {
 }
 
 function baseUrl(request: { headers: Record<string, string | string[] | undefined> }): string {
-  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL;
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, '');
   const host = request.headers["x-forwarded-host"] ?? request.headers.host;
-  const proto = request.headers["x-forwarded-proto"] ?? "http";
+  let proto = (Array.isArray(request.headers["x-forwarded-proto"]) ? request.headers["x-forwarded-proto"][0] : request.headers["x-forwarded-proto"]) ?? "http";
+  if (proto === 'http' && request.headers['x-forwarded-ssl'] === 'on') {
+    proto = 'https';
+  }
   const hostname = Array.isArray(host) ? host[0] : host;
   if (typeof hostname === "string" && hostname.length > 0)
-    return `${Array.isArray(proto) ? proto[0] : proto}://${hostname}`;
+    return `${proto}://${hostname}`;
   return `http://localhost:${process.env.PORT || "3005"}`;
 }
 
