@@ -6,11 +6,11 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { projectPath } from '@/projectPath';
 
 export const STOP_HOOK_LIMITS = {
-  maxContinuations: 20,
-  maxStalledContinuations: 8,
-  maxContinuationMs: 300_000,
+  maxContinuations: 60,
+  maxStalledContinuations: 24,
+  maxContinuationMs: 900_000,
   initialBackoffMs: 5_000,
-  maxBackoffMs: 15_000,
+  maxBackoffMs: 30_000,
 } as const;
 export type StopHookLimits = { [K in keyof typeof STOP_HOOK_LIMITS]: number };
 type Decision = { decision?: 'continue'; reason?: string };
@@ -90,10 +90,13 @@ export class AgyStopPolicy {
     t.lastExecution = d.executionNum as number;
     if (t.count >= this.limits.maxContinuations) return fail('continuation limit reached');
     const now = this.now();
+    if (t.progress !== t.lastProgress) {
+      t.stalled = 0;
+      t.firstContinuationAt = now;
+    }
     if (t.firstContinuationAt !== undefined && now - t.firstContinuationAt >= this.limits.maxContinuationMs) {
       return fail('continuation time limit reached');
     }
-    if (t.progress !== t.lastProgress) t.stalled = 0;
     if (t.stalled >= this.limits.maxStalledContinuations) return fail('no completed tool progress');
     t.firstContinuationAt ??= now;
     const remainingMs = Math.max(0, this.limits.maxContinuationMs - (now - t.firstContinuationAt));

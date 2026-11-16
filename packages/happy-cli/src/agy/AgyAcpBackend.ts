@@ -26,6 +26,17 @@ const NATIVE_TOOL_LABELS = new Set([
   'ask_question', 'send_message', 'define_subagent',
 ]);
 
+// Action/mutation/delegation tools that advance work between background waits.
+// Status/wait/inspection tools (manage_task, command_status, manage_subagents,
+// schedule, read_file, etc.) must not reset the stalled continuation budget.
+const PROGRESS_NATIVE_TOOLS = new Set([
+  'run_command', 'send_command_input',
+  'edit_file', 'replace_file_content', 'multi_replace_file_content',
+  'write_file', 'write_to_file', 'notebook_edit',
+  'invoke_subagent', 'send_message', 'define_subagent',
+  'swarm', 'run_workflow',
+]);
+
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
 }
@@ -349,7 +360,7 @@ export class AgyAcpBackend implements AgentBackend {
           toolName: display.toolName,
           nativeName,
           args: { ...display.args },
-          commandExecution: nativeName.toLowerCase() === 'run_command',
+          commandExecution: PROGRESS_NATIVE_TOOLS.has(nativeName.toLowerCase()),
         });
         this.emit({ type: 'tool-call', callId, ...display });
       } else {

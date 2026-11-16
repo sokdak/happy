@@ -59,7 +59,7 @@ describe('AGY Stop policy', () => {
     for (let i = 0; i < limit; i++) { p.progress(); expect(p.decide(payload(i)).decision).toBe('continue'); }
     p.progress(); expect(p.decide(payload(limit))).toEqual({}); expect(p.finish()).toContain('continuation limit');
   });
-  it('applies progressive backoff per stalled continuation, resets on progress, and clamps to remaining time', () => {
+  it('applies progressive backoff per stalled continuation, resets backoff and timer on progress, and clamps to remaining time', () => {
     let now = 1_000;
     const p = new AgyStopPolicy(STOP_HOOK_LIMITS, () => now);
     p.begin('session');
@@ -70,12 +70,19 @@ describe('AGY Stop policy', () => {
     expect(p.decide(payload(2)).decision).toBe('continue');
     expect(p.plannedDelayMs()).toBe(15_000);
     expect(p.decide(payload(3)).decision).toBe('continue');
-    expect(p.plannedDelayMs()).toBe(15_000);
-    p.progress();
+    expect(p.plannedDelayMs()).toBe(20_000);
     expect(p.decide(payload(4)).decision).toBe('continue');
-    expect(p.plannedDelayMs()).toBe(5_000);
-    now = 1_000 + STOP_HOOK_LIMITS.maxContinuationMs - 3_200;
+    expect(p.plannedDelayMs()).toBe(25_000);
     expect(p.decide(payload(5)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(30_000);
+    expect(p.decide(payload(6)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(30_000);
+    now = 1_000 + STOP_HOOK_LIMITS.maxContinuationMs + 50_000;
+    p.progress();
+    expect(p.decide(payload(7)).decision).toBe('continue');
+    expect(p.plannedDelayMs()).toBe(5_000);
+    now = now + STOP_HOOK_LIMITS.maxContinuationMs - 3_200;
+    expect(p.decide(payload(8)).decision).toBe('continue');
     expect(p.plannedDelayMs()).toBe(3_200);
   });
   it('bounds elapsed continuation time and rejects duplicated native executions', () => {
