@@ -239,6 +239,9 @@ describe('persistent Antigravity ACP', () => {
   it.each([
     ['Run manage_task', { Action: 'status', TaskId: 'session/task-12' }, 'Bash', { command: 'manage_task status task-12' }],
     ['Run schedule', { DurationSeconds: 10, TimerCondition: 'session/task-12', Prompt: 'private scheduled prompt' }, 'Bash', { command: 'schedule 10s for task-12' }],
+    ['Run ask_question', { questions: [{ question: 'Which branch to merge?', options: ['main', 'develop'] }] }, 'Bash', { command: 'ask_question "Which branch to merge?" (main, develop)' }],
+    ['Run send_message', { Recipient: 'session/worker-1', Message: 'private-secret' }, 'Bash', { command: 'send_message to worker-1' }],
+    ['Run define_subagent', { Name: 'helper', Description: 'private-desc', SystemPrompt: 'private-prompt' }, 'Bash', { command: 'define_subagent helper' }],
     ['Run command_status', { CommandId: 'private-id' }, 'Bash', { command: 'command_status' }],
     ['Run list_dir', { DirectoryPath: '/work' }, 'LS', { path: '/work' }],
     ['Run made_up_tool', { password: 'private-value' }, 'other', {}],

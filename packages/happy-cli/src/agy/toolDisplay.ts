@@ -225,11 +225,51 @@ export function mapAgyToolToDisplay(toolName: string, parameters: unknown): Disp
         },
       };
     }
-    case 'manage_subagents':
+    case 'define_subagent': {
+      const name = safeString(values.Name ?? values.name);
+      const command = ['define_subagent', name && name !== '[redacted]' ? name : undefined].filter(Boolean).join(' ');
+      return { toolName: 'Bash', args: { command } };
+    }
+    case 'send_message': {
+      const rawRecipient = safeString(values.Recipient ?? values.recipient);
+      const recipient = rawRecipient && rawRecipient !== '[redacted]'
+        ? rawRecipient.split('/').filter(Boolean).at(-1)
+        : undefined;
+      const command = ['send_message', recipient ? `to ${recipient}` : undefined].filter(Boolean).join(' ');
+      return { toolName: 'Bash', args: { command } };
+    }
+    case 'manage_subagents': {
+      const rawAction = safeString(values.Action ?? values.action);
+      const action = rawAction && /^[a-z_]+$/i.test(rawAction) ? rawAction : undefined;
+      const rawId = Array.isArray(values.ConversationIds) ? safeString(values.ConversationIds[0]) : safeString(values.ConversationId);
+      const targetId = rawId && rawId !== '[redacted]' ? rawId.split('/').filter(Boolean).at(-1) : undefined;
+      const command = ['manage_subagents', action, targetId].filter(Boolean).join(' ');
+      return { toolName: 'Bash', args: { command } };
+    }
     case 'swarm': {
       const rawAction = safeString(values.Action ?? values.action);
       const action = rawAction && /^[a-z_]+$/i.test(rawAction) ? rawAction : undefined;
-      const command = [toolName.toLowerCase(), action].filter(Boolean).join(' ');
+      const command = ['swarm', action].filter(Boolean).join(' ');
+      return { toolName: 'Bash', args: { command } };
+    }
+    case 'ask_question': {
+      const rawQuestions = Array.isArray(values.questions)
+        ? values.questions
+        : (isPlainRecord(values.question) || typeof values.question === 'string' ? [values] : []);
+      const firstQ = isPlainRecord(rawQuestions[0]) ? rawQuestions[0] : null;
+      const questionText = safeString(firstQ?.question);
+      const rawOptions = Array.isArray(firstQ?.options) ? firstQ.options : [];
+      const options = rawOptions
+        .map((opt) => safeString(opt))
+        .filter((opt): opt is string => Boolean(opt) && opt !== '[redacted]');
+      const optionsSnippet = options.length > 0
+        ? ` (${options.slice(0, 3).join(', ')}${options.length > 3 ? '...' : ''})`
+        : '';
+      const moreSnippet = rawQuestions.length > 1 ? ` [+${rawQuestions.length - 1} more]` : '';
+      const questionSnippet = questionText && questionText !== '[redacted]'
+        ? ` "${questionText.replace(/[\r\n]+/g, ' ').replace(/"/g, '\\"').slice(0, 80)}"`
+        : questionText === '[redacted]' ? ' [redacted]' : '';
+      const command = `ask_question${questionSnippet}${optionsSnippet}${moreSnippet}`;
       return { toolName: 'Bash', args: { command } };
     }
     case 'run_workflow': {
