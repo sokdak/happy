@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 let capturedOnReconnected: (() => Promise<unknown>) | null = null;
 
+vi.mock('@/lib', () => ({ logger: { debug: vi.fn() } }));
+
 vi.mock('@/configuration', () => ({
     configuration: { serverUrl: 'http://server.test' },
 }));
@@ -14,11 +16,13 @@ vi.mock('@/utils/serverConnectionErrors', () => ({
 }));
 
 import { setupOfflineReconnection } from './setupOfflineReconnection';
+import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 
 function makeRealSession() {
     return {
         sessionId: 'real-session',
         onUserMessage: vi.fn(),
+        armIdleWatchdog: vi.fn(),
         rpcHandlerManager: { registerHandler: vi.fn() },
     };
 }
@@ -93,5 +97,18 @@ describe('setupOfflineReconnection', () => {
 
         expect(realSession.onUserMessage).toHaveBeenCalledTimes(1);
         expect(realSession.onUserMessage).toHaveBeenCalledWith(second);
+    });
+
+    it('accepts the real kill/idle registration offline and arms the watchdog after reconnecting', async () => {
+        const realSession = makeRealSession();
+        const { result } = setupOffline(realSession);
+        const shutdown = vi.fn().mockResolvedValue(undefined);
+        expect(() => registerKillSessionHandler(result.session, shutdown)).not.toThrow();
+        expect(realSession.armIdleWatchdog).not.toHaveBeenCalled();
+        await capturedOnReconnected!();
+        expect(realSession.armIdleWatchdog).toHaveBeenCalledTimes(1);
+        realSession.armIdleWatchdog.mock.calls[0][0]();
+        expect(shutdown).toHaveBeenCalledTimes(1);
+        expect(realSession.rpcHandlerManager.registerHandler).toHaveBeenCalledWith('killSession', expect.any(Function));
     });
 });

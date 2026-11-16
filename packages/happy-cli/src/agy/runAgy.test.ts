@@ -164,4 +164,19 @@ describe('Antigravity Happy runner integration', () => {
     expect(fixture.calls[0].text).toBe('received during reconnect');
   });
 
+  it.each([true, false])('preserves the native session ID when ACP becomes ready before reconnection: %s', async (readyBeforeReconnect) => {
+    fixture.initialSession = createOfflineSessionStub('fixture');
+    await begin();
+    const nativeReady = () => {
+      for (const fn of fixture.listeners) fn({ type: 'event', name: 'agy_session_id', payload: 'native-offline' });
+    };
+    if (readyBeforeReconnect) nativeReady();
+    fixture.swap(fixture.session);
+    if (!readyBeforeReconnect) nativeReady();
+    const updates = fixture.session.updateMetadata.mock.calls.map(([update]: [any]) => update({ summary: { text: 'Keep title' } }));
+    expect(updates).toContainEqual({ agySessionId: 'native-offline', summary: { text: 'Keep title' } });
+    user('continue after reconnection');
+    await vi.waitFor(() => expect(fixture.calls).toHaveLength(1));
+  });
+
 });

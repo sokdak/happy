@@ -84,6 +84,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     startedBy: opts.startedBy,
   });
   let metadata = initialMetadata;
+  let nativeSessionId = opts.resumeSessionId;
   if (opts.resumeSessionId) metadata.agySessionId = opts.resumeSessionId;
   const reconnect = agyReconnectSession(metadata, state, opts.resumeSessionId);
   if (reconnect) metadata = reconnect.metadata;
@@ -104,6 +105,12 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     onSessionSwap: (newSession) => {
       session = newSession;
       permissionHandler?.updateSession(newSession);
+      // The offline stub discards metadata writes. Re-publish an ACP ID that
+      // arrived before the real Happy session existed so this chat can resume.
+      if (nativeSessionId) {
+        const agySessionId = nativeSessionId;
+        newSession.updateMetadata(current => ({ ...current, agySessionId }));
+      }
       if (inputReady) bindInput(newSession);
     },
   });
@@ -184,6 +191,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
 
     if (msg.type === 'event' && msg.name === 'agy_session_id' && typeof msg.payload === 'string') {
       const agySessionId = msg.payload;
+      nativeSessionId = agySessionId;
       session.updateMetadata(current => ({ ...current, agySessionId }));
     }
 
