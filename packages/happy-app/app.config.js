@@ -1,6 +1,6 @@
 const { execFileSync } = require('node:child_process');
 
-const variant = process.env.APP_ENV || 'development';
+const variant = process.env.APP_ENV || (process.env.NODE_ENV === 'production' ? 'production' : 'development');
 const name = {
     development: "Happy (dev)",
     preview: "Happy (preview)",
@@ -129,6 +129,8 @@ export default {
             ] : []
         },
         web: {
+            name: "Happy",
+            shortName: "Happy",
             bundler: "metro",
             output: "single",
             favicon: "./sources/assets/images/favicon.png"

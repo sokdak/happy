@@ -6,6 +6,9 @@ import com.slopus.happy.R
 
 /** Plurals whose catalogs spell out some numbers: plural id to (number to string id). */
 internal val pluralExactNumbers: Map<Int, Map<Int, Int>> = mapOf(
+    R.plurals.workflows_workflow_count to mapOf(0 to R.string.workflows_workflow_count_n0, 1 to R.string.workflows_workflow_count_n1),
+    R.plurals.workflows_badge_accessibility to mapOf(0 to R.string.workflows_badge_accessibility_n0, 1 to R.string.workflows_badge_accessibility_n1),
+    R.plurals.workflows_tool_calls to mapOf(0 to R.string.workflows_tool_calls_n0, 1 to R.string.workflows_tool_calls_n1),
     R.plurals.time_minutes_ago to mapOf(0 to R.string.time_minutes_ago_n0),
     R.plurals.time_hours_ago to mapOf(0 to R.string.time_hours_ago_n0),
     R.plurals.time_days_ago to mapOf(0 to R.string.time_days_ago_n0),
