@@ -78,6 +78,34 @@ async function invokeStop(spawnFn: typeof spawn, executionNum: number, fullyIdle
 
 describe('persistent Antigravity ACP', () => {
   describe.skipIf(process.platform === 'win32')('optional Stop hook', () => {
+    it('does not reset the stalled continuation budget for task/status cards displayed as Bash', async () => {
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'background');
+      const rejected = expect(pending).rejects.toThrow('no completed tool progress');
+      const request = await promptRequest(agent);
+      for (let i = 0; i < 5; i++) {
+        agent.notify({ sessionUpdate: 'tool_call', toolCallId: `status-${i}`, title: 'Run manage_task', kind: 'other',
+          status: 'in_progress', rawInput: { name: 'manage_task', arguments: { Action: 'status', TaskId: 'session/task-12' } } });
+        agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: `status-${i}`, status: 'completed' });
+        await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(i + 1));
+        expect(await invokeStop(spawnFn, i, false)).toEqual(i < 4 ? { decision: 'continue', reason: expect.any(String) } : {});
+      }
+      expect(messages.filter(m => m.type === 'tool-call').every(m => m.type === 'tool-call' && m.toolName === 'Bash')).toBe(true);
+      agent.respond(request.id!, { stopReason: 'end_turn' }); await rejected;
+    });
+    it('resets the stalled allowance after a real command finishes', async () => {
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'background');
+      const request = await promptRequest(agent);
+      for (let i = 0; i < 4; i++) expect((await invokeStop(spawnFn, i, false)).decision).toBe('continue');
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'command', title: 'printf DONE', kind: 'execute', status: 'completed', rawInput: { CommandLine: 'printf DONE' } });
+      await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(1));
+      expect((await invokeStop(spawnFn, 4, false)).decision).toBe('continue');
+      await invokeStop(spawnFn, 5, true);
+      agent.respond(request.id!, { stopReason: 'end_turn' }); await pending;
+    });
     it('keeps the prompt open across Stop continuation, tool completion and a final idle hook', async () => {
       const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
       agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });

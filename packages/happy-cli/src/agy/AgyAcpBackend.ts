@@ -52,7 +52,7 @@ export class AgyAcpBackend implements AgentBackend {
   private cancelled = false;
   private disposed = false;
   private replaying = false;
-  private tools = new Map<string, string>();
+  private tools = new Map<string, { toolName: string; commandExecution: boolean }>();
   private completedTools = new Set<string>();
   private terminating = new Set<Promise<void>>();
   private permissionAbort = new AbortController();
@@ -285,7 +285,7 @@ export class AgyAcpBackend implements AgentBackend {
       // ACP ending (or acknowledging cancellation) does not prove that native
       // background commands were stopped. Close the UI card without inventing
       // a command outcome; the error flag describes missing confirmation.
-      for (const [callId, toolName] of this.tools) this.emit({ type: 'tool-result', callId, toolName, result: 'Completion was not reported. Background work may still be running.', isError: true });
+      for (const [callId, tool] of this.tools) this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: 'Completion was not reported. Background work may still be running.', isError: true });
       this.tools.clear();
     }
   }
@@ -300,23 +300,24 @@ export class AgyAcpBackend implements AgentBackend {
       const callId = update.toolCallId;
       if (this.completedTools.has(callId)) return;
       if (!this.tools.has(callId)) {
-        const mapped = this.displayTool(update);
-        this.tools.set(callId, mapped.toolName);
-        this.emit({ type: 'tool-call', callId, ...mapped });
+        const { nativeName, display } = this.describeTool(update);
+        this.tools.set(callId, { toolName: display.toolName, commandExecution: nativeName.toLowerCase() === 'run_command' });
+        this.emit({ type: 'tool-call', callId, ...display });
       }
       if (update.status === 'completed' || update.status === 'failed') {
         // Raw outputs may contain entire files/secrets. Happy currently renders lifecycle only.
-        this.emit({ type: 'tool-result', callId, toolName: this.tools.get(callId)!, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
+        const tool = this.tools.get(callId)!;
+        this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
         // Status/wait tools completing do not prove the background command made
         // progress. They must not indefinitely reset the no-progress allowance.
-        if (this.tools.get(callId) === 'Bash') this.stopHook?.policy.progress();
+        if (tool.commandExecution) this.stopHook?.policy.progress();
         this.tools.delete(callId);
         this.completedTools.add(callId);
       }
     }
   }
 
-  private displayTool(update: RequestPermissionRequest['toolCall']) {
+  private describeTool(update: RequestPermissionRequest['toolCall']) {
     const input = update.rawInput && typeof update.rawInput === 'object' ? update.rawInput as Record<string, unknown> : {};
     // ACP titles are human labels ('File README.md', 'sleep 2'), not tool IDs.
     const kindTool: Record<string, string> = { read: 'read_file', edit: 'edit_file', execute: 'run_command', fetch: 'read_url_content' };
@@ -335,7 +336,7 @@ export class AgyAcpBackend implements AgentBackend {
     const name = isHappyTitle ? 'mcp__happy__change_title' : typeof input.name === 'string' ? input.name
       : update.kind === 'search' ? searchTool
       : update.kind ? kindTool[update.kind] ?? update.kind : 'agy_tool';
-    return mapAgyToolToDisplay(name, parameters);
+    return { nativeName: name, display: mapAgyToolToDisplay(name, parameters) };
   }
 
   private async permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
@@ -350,7 +351,7 @@ export class AgyAcpBackend implements AgentBackend {
     });
     try {
       const bypass = this.mode === 'yolo' || this.mode === 'bypassPermissions';
-      const display = this.displayTool(request.toolCall);
+      const { display } = this.describeTool(request.toolCall);
       const result = bypass ? { decision: 'approved' as const } : this.options.requestPermission
         ? await Promise.race([this.options.requestPermission(request.toolCall.toolCallId, display.toolName, display.args), aborted])
         : { decision: 'denied' as const };
