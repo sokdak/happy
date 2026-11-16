@@ -1,3 +1,5 @@
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
+
 export type SessionFileLink = {
     path: string;
     absolutePath: string;
@@ -16,6 +18,7 @@ const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/;
 const POSIX_ABSOLUTE_PATH = /^\//;
 const URL_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const FILE_URL_PREFIX = /^file:\/\//i;
+const LINE_FRAGMENT = /^L(\d+)(?:C(\d+))?(?:-L?\d+(?:C\d+)?)?$/i;
 const RELATIVE_PREFIX = /^(?:\.{1,2}[\\/]|~[\\/])/;
 const HAS_PATH_SEPARATOR = /[\\/]/;
 const BARE_FILE_NAME = /^[^\\/\s]+\.[^\\/\s]+$/;
@@ -83,17 +86,155 @@ function stripToken(value: string): { leading: string; core: string; trailing: s
     return { leading, core, trailing };
 }
 
+function parseFileUrlTarget(value: string): { path: string; line: number | null; column: number | null } | null {
+    const trimmed = value.trim();
+    if (!FILE_URL_PREFIX.test(trimmed)) {
+        return null;
+    }
+
+    const remainder = trimmed.replace(FILE_URL_PREFIX, '');
+    const hashIndex = remainder.indexOf('#');
+    const withoutHash = hashIndex >= 0 ? remainder.slice(0, hashIndex) : remainder;
+    const fragment = hashIndex >= 0 ? remainder.slice(hashIndex + 1).trim() : '';
+    const queryIndex = withoutHash.indexOf('?');
+    const rawLocation = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+
+    // Reject 4-slash UNC network paths (file:////server/share/file) and empty locations.
+    if (!rawLocation || rawLocation.startsWith('//')) {
+        return null;
+    }
+
+    let authorityless: string;
+    if (rawLocation.startsWith('/')) {
+        authorityless = rawLocation;
+    } else if (/^localhost\//i.test(rawLocation)) {
+        const afterHost = rawLocation.slice('localhost'.length);
+        if (afterHost.startsWith('//')) {
+            return null;
+        }
+        authorityless = afterHost;
+    } else if (/^~[\\/]/.test(rawLocation)) {
+        authorityless = rawLocation;
+    } else {
+        // Check after percent-decoding only for Windows drive authorities (file://c%3A/... or file://C:/...),
+        // rejecting non-local host authorities such as file://remote-host/share/file.
+        let decodedCandidate = rawLocation;
+        try {
+            decodedCandidate = decodeURIComponent(rawLocation);
+        } catch {
+            decodedCandidate = rawLocation;
+        }
+        if (!WINDOWS_ABSOLUTE_PATH.test(decodedCandidate)) {
+            return null;
+        }
+        authorityless = decodedCandidate;
+    }
+
+    let decodedPath = authorityless;
+    try {
+        decodedPath = decodeURIComponent(authorityless);
+    } catch {
+        decodedPath = authorityless;
+    }
+
+    // Strip leading slash before Windows drive letters (including decoded file:///c%3A/Users/...)
+    // and before home-relative paths (file:///~/...).
+    if (/^\/[A-Za-z]:[\\/]/.test(decodedPath) || /^\/~[\\/]/.test(decodedPath)) {
+        decodedPath = decodedPath.slice(1);
+    }
+
+    if (!decodedPath || /[\0\r\n]/.test(decodedPath)) {
+        return null;
+    }
+
+    let fragmentLine: number | null = null;
+    let fragmentColumn: number | null = null;
+    if (fragment) {
+        const match = fragment.match(LINE_FRAGMENT);
+        if (match) {
+            fragmentLine = Number.parseInt(match[1], 10);
+            fragmentColumn = match[2] ? Number.parseInt(match[2], 10) : null;
+        }
+    }
+
+    const parsedPath = fragmentLine !== null
+        ? { path: decodedPath.trim(), line: null, column: null }
+        : parseLineAndColumn(decodedPath);
+    return {
+        path: parsedPath.path,
+        line: fragmentLine ?? parsedPath.line,
+        column: fragmentColumn ?? parsedPath.column,
+    };
+}
+
 function decodeFileUrl(value: string): string {
     if (!FILE_URL_PREFIX.test(value)) {
         return value;
     }
-    const stripped = value.replace(FILE_URL_PREFIX, '');
-    const normalized = stripped.startsWith('/') ? stripped : `/${stripped}`;
+    return parseFileUrlTarget(value)?.path ?? '';
+}
+
+const ENCODED_PATH_PREFIX = 'b64u:';
+
+export function encodeSessionFilePathParam(path: string): string {
+    return `${ENCODED_PATH_PREFIX}${encodeBase64(new TextEncoder().encode(path), 'base64url')}`;
+}
+
+export function decodeSessionFilePathParam(encodedPath: string): string {
+    if (!encodedPath) {
+        return '';
+    }
+    let normalized = encodedPath;
     try {
-        return decodeURIComponent(normalized);
+        normalized = decodeURIComponent(encodedPath);
     } catch {
+        normalized = encodedPath;
+    }
+    if (normalized.startsWith(ENCODED_PATH_PREFIX)) {
+        const payload = normalized.slice(ENCODED_PATH_PREFIX.length);
+        try {
+            const bytes = decodeBase64(payload, 'base64url');
+            return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch {
+            return normalized;
+        }
+    }
+    // Preserve raw unencoded paths directly.
+    if (normalized.startsWith('/') || WINDOWS_ABSOLUTE_PATH.test(normalized) || RELATIVE_PREFIX.test(normalized)) {
         return normalized;
     }
+    // Legacy ASCII btoa() callers produce padded standard base64 of length % 4 === 0.
+    // Validate strict UTF-8, absence of control chars, and a path separator so plain
+    // filenames like "Makefile" or "src/main" are never misdecoded into binary garbage.
+    if (normalized.length >= 4 && normalized.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) {
+        try {
+            const bytes = decodeBase64(normalized, 'base64');
+            const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            if (decoded && !/[\x00-\x1f\x7f]/.test(decoded) && HAS_PATH_SEPARATOR.test(decoded)) {
+                return decoded;
+            }
+        } catch {
+            return normalized;
+        }
+    }
+    return normalized;
+}
+
+export function buildSessionFileRoute(
+    sessionId: string,
+    target: string | Pick<SessionFileLink, 'absolutePath' | 'line' | 'column'>,
+): string {
+    const absolutePath = typeof target === 'string' ? target : target.absolutePath;
+    const line = typeof target === 'string' ? null : target.line;
+    const column = typeof target === 'string' ? null : target.column;
+    const params = [`path=${encodeURIComponent(encodeSessionFilePathParam(absolutePath))}`];
+    if (line !== null && Number.isFinite(line) && line > 0) {
+        params.push(`line=${line}`);
+    }
+    if (column !== null && Number.isFinite(column) && column > 0) {
+        params.push(`column=${column}`);
+    }
+    return `/session/${encodeURIComponent(sessionId)}/file?${params.join('&')}`;
 }
 
 function inferHomeDirectory(sessionRoot: string | null | undefined): string | null {
@@ -120,7 +261,7 @@ function normalizePath(value: string): string {
     const withForwardSlashes = value.replace(/\\/g, '/');
     const isWindowsAbsolute = /^[A-Za-z]:\//.test(withForwardSlashes);
     const isPosixAbsolute = withForwardSlashes.startsWith('/');
-    const prefix = isWindowsAbsolute ? `${withForwardSlashes.slice(0, 2)}/` : isPosixAbsolute ? '/' : '';
+    const prefix = isWindowsAbsolute ? `${withForwardSlashes[0].toUpperCase()}:/` : isPosixAbsolute ? '/' : '';
     const rawRemainder = isWindowsAbsolute ? withForwardSlashes.slice(3) : isPosixAbsolute ? withForwardSlashes.replace(/^\/+/, '') : withForwardSlashes;
 
     const parts = rawRemainder.split('/');
@@ -220,7 +361,7 @@ function isAppRoute(value: string): boolean {
     return APP_ROUTE_PREFIXES.some((prefix) => value.startsWith(prefix));
 }
 
-function looksLikePath(value: string): boolean {
+function looksLikePath(value: string, options?: { explicitFileUrl?: boolean }): boolean {
     const trimmed = value.trim();
     if (!trimmed) {
         return false;
@@ -229,7 +370,7 @@ function looksLikePath(value: string): boolean {
         return true;
     }
     if (POSIX_ABSOLUTE_PATH.test(trimmed)) {
-        return !isAppRoute(trimmed);
+        return options?.explicitFileUrl ? trimmed.length > 1 : !isAppRoute(trimmed);
     }
     if (RELATIVE_PREFIX.test(trimmed)) {
         return true;
@@ -255,7 +396,21 @@ function buildLink(path: string, line: number | null, column: number | null, ses
     };
 }
 
-export function resolveSessionFilePath(path: string, sessionRoot?: string | null): SessionFileLink | null {
+export function resolveSessionFilePath(
+    path: string,
+    sessionRoot?: string | null,
+    options?: { literalPath?: boolean },
+): SessionFileLink | null {
+    if (FILE_URL_PREFIX.test(path.trim())) {
+        const parsedFileUrl = parseFileUrlTarget(path);
+        if (!parsedFileUrl) {
+            return null;
+        }
+        return buildLink(parsedFileUrl.path, parsedFileUrl.line, parsedFileUrl.column, sessionRoot);
+    }
+    if (options?.literalPath) {
+        return buildLink(path.trim(), null, null, sessionRoot);
+    }
     const parsed = parseLineAndColumn(path);
     return buildLink(parsed.path, parsed.line, parsed.column, sessionRoot);
 }
@@ -266,6 +421,37 @@ export function parseSessionFileLink(
 ): SessionFileLink | null {
     const trimmedUrl = url.trim();
     if (!trimmedUrl) {
+        return null;
+    }
+
+    if (FILE_URL_PREFIX.test(trimmedUrl)) {
+        const parsedFileUrl = parseFileUrlTarget(trimmedUrl);
+        if (!parsedFileUrl || !looksLikePath(parsedFileUrl.path, { explicitFileUrl: true })) {
+            return null;
+        }
+        const parsedLabel = options?.label ? parseLineAndColumn(options.label) : null;
+        const effectiveRoot = options?.sessionRoot ?? (parsedFileUrl.path.startsWith('~/') ? '/home/user' : undefined);
+        const built = buildLink(
+            parsedFileUrl.path,
+            parsedFileUrl.line ?? parsedLabel?.line ?? null,
+            parsedFileUrl.column ?? parsedLabel?.column ?? null,
+            options?.sessionRoot,
+        );
+        if (built) {
+            return built;
+        }
+        // When rendering spans without sessionRoot, keep ~/... file:// links recognizable
+        // while preserving the unexpanded ~/... path for resolution at navigation time.
+        if (!options?.sessionRoot && parsedFileUrl.path.startsWith('~/') && effectiveRoot) {
+            return {
+                path: normalizePath(parsedFileUrl.path),
+                absolutePath: normalizePath(parsedFileUrl.path),
+                relativePath: null,
+                withinSessionRoot: false,
+                line: parsedFileUrl.line ?? parsedLabel?.line ?? null,
+                column: parsedFileUrl.column ?? parsedLabel?.column ?? null,
+            };
+        }
         return null;
     }
 

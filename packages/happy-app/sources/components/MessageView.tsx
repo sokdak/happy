@@ -274,21 +274,38 @@ function AgentTextBlock(props: {
     if (!props.showThinking) return null;
     const text = props.message.text;
     // The reducer wraps thinking in Markdown emphasis for legacy renderers.
-    const summary = thinkingSummary(text);
-    if (!summary.trim()) return null;
+    const summary = thinkingSummary(text).trim();
+    if (!summary) return null;
+    const hasRichMarkdown = /[\r\n]|`|\*\*|\*[^\s*\r\n](?:[^*\r\n]*[^\s*\r\n])?\*|^#{1,6}\s|^\s*(?:[-*+]|\d+\.)\s|\]\(/m.test(summary);
     return (
-      <View style={styles.agentMessageContainer}>
+      <View style={styles.thinkingContainer}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t('sessionInfo.thinking')}
           accessibilityState={{ expanded: thinkingExpanded }}
+          hitSlop={THINKING_HIT_SLOP}
           onPress={() => setThinkingExpanded(value => !value)}
-          style={styles.thinkingToggle}
+          style={({ pressed }) => [
+            styles.thinkingToggle,
+            pressed && styles.thinkingTogglePressed,
+          ]}
         >
-          <Text style={styles.thinkingText}>{t('sessionInfo.thinking')}</Text>
-          <Ionicons name={thinkingExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={theme.colors.agentEventText} />
+          <Ionicons
+            name={thinkingExpanded ? 'chevron-down' : 'chevron-forward'}
+            size={14}
+            color={theme.colors.agentEventText}
+          />
+          <Text style={styles.thinkingLabel}>{t('sessionInfo.thinking')}</Text>
         </Pressable>
-        {thinkingExpanded ? <Text selectable style={styles.thinkingText}>{summary}</Text> : null}
+        {thinkingExpanded ? (
+          <View style={styles.thinkingBody}>
+            {hasRichMarkdown ? (
+              <MarkdownView markdown={summary} onOptionPress={handleOptionPress} sessionId={props.sessionId} />
+            ) : (
+              <Text selectable style={styles.thinkingText}>{summary}</Text>
+            )}
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -303,6 +320,7 @@ function AgentTextBlock(props: {
 
 // The glyph is deliberately small, so widen the touch target well past it.
 const COPY_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 20 };
+const THINKING_HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 12 };
 
 function MessageCopyButton(props: { text: string }) {
   const { theme } = useUnistyles();
@@ -488,16 +506,42 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 16,
     maxWidth: '100%',
   },
+  thinkingContainer: {
+    marginHorizontal: 16,
+    marginVertical: 2,
+    maxWidth: '100%',
+  },
   thinkingToggle: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     gap: 6,
-    minHeight: 44,
+    minHeight: 36,
+    paddingVertical: 6,
+  },
+  thinkingTogglePressed: {
+    opacity: 0.6,
+  },
+  thinkingLabel: {
+    ...Typography.default(),
+    color: theme.colors.agentEventText,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  thinkingBody: {
+    marginLeft: 6,
+    marginTop: 2,
+    marginBottom: 6,
+    paddingLeft: 12,
+    paddingVertical: 2,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.divider,
   },
   thinkingText: {
+    ...Typography.default(),
     color: theme.colors.agentEventText,
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 21,
   },
   copyAction: {
     // No width, so the box shrink-wraps the glyph and its left edge lands on the

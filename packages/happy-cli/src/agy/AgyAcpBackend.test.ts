@@ -587,4 +587,68 @@ describe('persistent Antigravity ACP', () => {
     expect(agent.child.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
+  it('maps ACP diff content blocks for Edit and Write (including late tool_call_update diffs) with credential redaction', async () => {
+    const requestPermission = vi.fn(async () => ({ decision: 'approved' as const }));
+    const { backend, agent, messages } = setup({ requestPermission });
+    agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+    const turn = backend.sendPrompt('', 'edit files');
+    const prompt = await promptRequest(agent);
+
+    // 1) Permission request carrying an ACP diff block for a new file (oldText: null -> Write)
+    agent.stdout.write(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 980,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'session-1',
+        toolCall: {
+          toolCallId: 'write-1',
+          title: 'Create file',
+          kind: 'edit',
+          rawInput: {},
+          content: [{ type: 'diff', path: '/work/new.ts', oldText: null, newText: 'export const x = 1;\napi_key=secret_val' }],
+        },
+        options: [{ optionId: 'allow', name: 'Once', kind: 'allow_once' }],
+      },
+    }) + '\n');
+    await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledWith('write-1', 'Write', {
+      file_path: '/work/new.ts',
+      content: 'export const x = 1;\n[redacted]',
+    }));
+
+    // 2) Initial tool_call with empty placeholder strings followed by tool_call_update carrying an Edit diff block
+    agent.notify({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'edit-1',
+      title: 'Edit app.ts',
+      kind: 'edit',
+      status: 'in_progress',
+      rawInput: { Path: '/work/app.ts', Target: '', Replacement: '' },
+    });
+    agent.notify({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'edit-1',
+      status: 'completed',
+      rawInput: { Target: undefined },
+      content: [{ type: 'diff', path: '/work/app.ts', oldText: 'const a = 1;', newText: 'const a = 2;\ntoken=private_tok' }],
+    });
+
+    await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(1));
+    expect(messages).toContainEqual({
+      type: 'tool-call',
+      callId: 'edit-1',
+      toolName: 'Edit',
+      args: {
+        file_path: '/work/app.ts',
+        old_string: 'const a = 1;',
+        new_string: 'const a = 2;\n[redacted]',
+      },
+    });
+    expect(JSON.stringify(messages)).not.toContain('secret_val');
+    expect(JSON.stringify(messages)).not.toContain('private_tok');
+
+    agent.respond(prompt.id!, { stopReason: 'end_turn' });
+    await turn;
+  });
+
 });

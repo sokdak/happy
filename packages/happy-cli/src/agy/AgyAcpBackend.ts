@@ -4,7 +4,7 @@ import { Readable, Writable } from 'node:stream';
 import {
   ClientSideConnection, ndJsonStream,
   type McpServer, type ContentBlock, type NewSessionResponse, type SessionNotification,
-  type RequestPermissionRequest, type RequestPermissionResponse,
+  type RequestPermissionRequest, type RequestPermissionResponse, type ToolCallContent,
 } from '@agentclientprotocol/sdk';
 import type { PermissionMode } from '@/api/types';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
@@ -52,6 +52,30 @@ export interface AgyAcpOptions {
   stopHookLimits?: Partial<StopHookLimits>;
 }
 
+function mergeDefinedArgs(
+  older: Record<string, unknown>,
+  newer: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...older };
+  for (const [key, nextVal] of Object.entries(newer)) {
+    if (nextVal === undefined || nextVal === null) continue;
+    const prevVal = merged[key];
+    if (nextVal === '' && typeof prevVal === 'string' && prevVal.length > 0) continue;
+    merged[key] = nextVal;
+  }
+  return merged;
+}
+
+function argsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (!(key in b) || JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+  }
+  return true;
+}
+
 export class AgyAcpBackend implements AgentBackend {
   private handlers = new Set<AgentMessageHandler>();
   private child: ChildProcess | null = null;
@@ -67,7 +91,12 @@ export class AgyAcpBackend implements AgentBackend {
   private cancelled = false;
   private disposed = false;
   private replaying = false;
-  private tools = new Map<string, { toolName: string; commandExecution: boolean }>();
+  private tools = new Map<string, {
+    toolName: string;
+    nativeName: string;
+    args: Record<string, unknown>;
+    commandExecution: boolean;
+  }>();
   private completedTools = new Set<string>();
   private terminating = new Set<Promise<void>>();
   private permissionAbort = new AbortController();
@@ -316,8 +345,35 @@ export class AgyAcpBackend implements AgentBackend {
       if (this.completedTools.has(callId)) return;
       if (!this.tools.has(callId)) {
         const { nativeName, display } = this.describeTool(update);
-        this.tools.set(callId, { toolName: display.toolName, commandExecution: nativeName.toLowerCase() === 'run_command' });
+        this.tools.set(callId, {
+          toolName: display.toolName,
+          nativeName,
+          args: { ...display.args },
+          commandExecution: nativeName.toLowerCase() === 'run_command',
+        });
         this.emit({ type: 'tool-call', callId, ...display });
+      } else {
+        const existing = this.tools.get(callId)!;
+        if (
+          (existing.toolName === 'Edit' || existing.toolName === 'MultiEdit' || existing.toolName === 'Write')
+          && (Array.isArray(update.content) || isPlainRecord(update.rawInput))
+        ) {
+          const fallbackRawInput = isPlainRecord(update.rawInput)
+            ? { name: existing.nativeName, ...update.rawInput }
+            : { name: existing.nativeName };
+          const { nativeName, display } = this.describeTool({
+            ...update,
+            kind: update.kind ?? 'edit',
+            rawInput: fallbackRawInput,
+          });
+          const mergedArgs = mergeDefinedArgs(existing.args, display.args);
+          if (display.toolName !== existing.toolName || !argsEqual(existing.args, mergedArgs)) {
+            existing.toolName = display.toolName;
+            existing.nativeName = nativeName;
+            existing.args = mergedArgs;
+            this.emit({ type: 'tool-call', callId, toolName: existing.toolName, args: existing.args });
+          }
+        }
       }
       if (update.status === 'completed' || update.status === 'failed') {
         // Raw outputs may contain entire files/secrets. Happy currently renders lifecycle only.
@@ -334,6 +390,13 @@ export class AgyAcpBackend implements AgentBackend {
 
   private describeTool(update: RequestPermissionRequest['toolCall']) {
     const input = update.rawInput && typeof update.rawInput === 'object' ? update.rawInput as Record<string, unknown> : {};
+    const diffBlock = Array.isArray(update.content)
+      ? update.content.find((item): item is Extract<ToolCallContent, { type: 'diff' }> =>
+          isPlainRecord(item)
+          && item.type === 'diff'
+          && typeof item.path === 'string'
+          && typeof item.newText === 'string')
+      : undefined;
     // ACP titles are human labels ('File README.md', 'sleep 2'), not tool IDs.
     const kindTool: Record<string, string> = { read: 'read_file', edit: 'edit_file', execute: 'run_command', fetch: 'read_url_content' };
     // Antigravity 1.5.9 labels MCP calls as kind=other and omits their name in rawInput.
@@ -348,14 +411,46 @@ export class AgyAcpBackend implements AgentBackend {
     const searchTool = typeof parameters.query === 'string' ? 'search_web'
       : typeof parameters.Pattern === 'string' ? 'find_by_name'
       : typeof parameters.Query === 'string' ? 'grep_search' : 'search';
+    const hasExplicitWriteBody = typeof parameters.Content === 'string'
+      || typeof parameters.CodeContent === 'string'
+      || typeof parameters.content === 'string';
+    const hasExplicitEditBody = typeof parameters.Target === 'string'
+      || typeof parameters.TargetContent === 'string'
+      || typeof parameters.old_string === 'string'
+      || Array.isArray(parameters.ReplacementChunks);
+    const editTool = hasExplicitWriteBody && !hasExplicitEditBody
+      ? 'write_file'
+      : diffBlock && (diffBlock.oldText === null || diffBlock.oldText === undefined) && !hasExplicitEditBody
+        ? 'write_file'
+        : 'edit_file';
     const titleId = /^Run ([a-z][a-z0-9_]*)$/.exec(update.title ?? '')?.[1];
     const nativeTitle = (!update.kind || update.kind === 'other') && titleId && NATIVE_TOOL_LABELS.has(titleId)
       ? titleId : undefined;
-    const name = isHappyTitle ? 'mcp__happy__change_title' : typeof input.name === 'string' ? input.name
+    const explicitInputName = typeof input.name === 'string' ? input.name : undefined;
+    // When updating a generic kind=edit tool that originally had no explicit native name,
+    // allow diffBlock with oldText=null to refine edit_file -> write_file.
+    const resolvedInputName = explicitInputName === 'edit_file' && editTool === 'write_file'
+      ? 'write_file'
+      : explicitInputName;
+    const name = isHappyTitle ? 'mcp__happy__change_title' : resolvedInputName
+      ? resolvedInputName
       : nativeTitle ? nativeTitle
       : update.kind === 'search' ? searchTool
+      : update.kind === 'edit' ? editTool
       : update.kind ? kindTool[update.kind] ?? update.kind : 'agy_tool';
-    return { nativeName: name, display: mapAgyToolToDisplay(name, parameters) };
+    const diffFallback: Record<string, unknown> = diffBlock
+      ? {
+          Path: diffBlock.path,
+          ...(typeof diffBlock.oldText === 'string' ? { Target: diffBlock.oldText } : {}),
+          Replacement: diffBlock.newText,
+          Content: diffBlock.newText,
+        }
+      : {};
+    const definedParameters = Object.fromEntries(
+      Object.entries(parameters).filter(([, value]) => value !== undefined && value !== null),
+    );
+    const mergedParameters = diffBlock ? { ...diffFallback, ...definedParameters } : parameters;
+    return { nativeName: name, display: mapAgyToolToDisplay(name, mergedParameters) };
   }
 
   private async permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {

@@ -1,22 +1,29 @@
-import { MarkdownSpan, parseMarkdown } from './parseMarkdown';
+import {
+    MarkdownAlertKind,
+    MarkdownBlock,
+    MarkdownListItem,
+    MarkdownSpan,
+    parseMarkdown,
+} from './parseMarkdown';
 import * as React from 'react';
 import { Image, Pressable, View, Platform } from 'react-native';
 import { HorizontalScrollView } from '../HorizontalScrollView';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../StyledText';
 import { Typography } from '@/constants/Typography';
 import { SimpleSyntaxHighlighter } from '../SimpleSyntaxHighlighter';
 import { Modal } from '@/modal';
-import { useLocalSetting } from '@/sync/storage';
+import { storage, useLocalSetting } from '@/sync/storage';
 import { storeTempText } from '@/sync/persistence';
 import { useRouter } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import * as WebBrowser from 'expo-web-browser';
 import { MermaidRenderer } from './MermaidRenderer';
 import { t } from '@/text';
-import { isHttpMarkdownLink } from './linkUtils';
+import { isFileMarkdownLink, isHttpMarkdownLink, parseFileMarkdownLink } from './linkUtils';
 import { openExternalUrl } from '@/utils/openExternalUrl';
+import { buildSessionFileRoute } from '@/utils/sessionFileLinks';
 
 // Option type for callback
 export type Option = {
@@ -43,14 +50,22 @@ export const MarkdownView = React.memo((props: {
     const markdownCopyV2 = useLocalSetting('markdownCopyV2');
     const selectable = Platform.OS === 'web' || !(markdownCopyV2 || props.externalCopyHandler);
     const router = useRouter();
+    const canOpenFileLinks = Boolean(props.sessionId);
 
     const handleLinkPress = React.useCallback((url: string) => {
-        if (!isHttpMarkdownLink(url)) {
+        if (isHttpMarkdownLink(url)) {
+            void openExternalUrl(url);
             return;
         }
-
-        void openExternalUrl(url);
-    }, []);
+        if (!props.sessionId) {
+            return;
+        }
+        const sessionRoot = storage.getState()?.sessions?.[props.sessionId]?.metadata?.path ?? null;
+        const fileLink = parseFileMarkdownLink(url, sessionRoot);
+        if (fileLink) {
+            router.push(buildSessionFileRoute(props.sessionId, fileLink));
+        }
+    }, [props.sessionId, router]);
 
     const handleLongPress = React.useCallback(() => {
         try {
@@ -61,37 +76,16 @@ export const MarkdownView = React.memo((props: {
             Modal.alert('Error', 'Failed to open text selection. Please try again.');
         }
     }, [props.markdown, router]);
-    const renderContent = () => {
-        return (
-            <View style={{ width: '100%' }}>
-                {blocks.map((block, index) => {
-                    if (block.type === 'text') {
-                        return <RenderTextBlock spans={block.content} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} onLinkPress={handleLinkPress} />;
-                    } else if (block.type === 'header') {
-                        return <RenderHeaderBlock level={block.level} spans={block.content} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} onLinkPress={handleLinkPress} />;
-                    } else if (block.type === 'horizontal-rule') {
-                        return <View style={style.horizontalRule} key={index} />;
-                    } else if (block.type === 'list') {
-                        return <RenderListBlock items={block.items} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} onLinkPress={handleLinkPress} />;
-                    } else if (block.type === 'numbered-list') {
-                        return <RenderNumberedListBlock items={block.items} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} onLinkPress={handleLinkPress} />;
-                    } else if (block.type === 'code-block') {
-                        return <RenderCodeBlock content={block.content} language={block.language} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} />;
-                    } else if (block.type === 'mermaid') {
-                        return <MermaidRenderer content={block.content} key={index} />;
-                    } else if (block.type === 'options') {
-                        return <RenderOptionsBlock items={block.items} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} onOptionPress={props.onOptionPress} />;
-                    } else if (block.type === 'table') {
-                        return <RenderTableBlock headers={block.headers} rows={block.rows} onLinkPress={handleLinkPress} selectable={selectable} key={index} first={index === 0} last={index === blocks.length - 1} />;
-                    } else if (block.type === 'image') {
-                        return <RenderImageBlock url={block.url} alt={block.alt} key={index} first={index === 0} last={index === blocks.length - 1} />;
-                    } else {
-                        return null;
-                    }
-                })}
-            </View>
-        );
-    }
+
+    const renderContent = () => (
+        <RenderMarkdownBlocks
+            blocks={blocks}
+            selectable={selectable}
+            canOpenFileLinks={canOpenFileLinks}
+            onLinkPress={handleLinkPress}
+            onOptionPress={props.onOptionPress}
+        />
+    );
 
     if (props.externalCopyHandler || !markdownCopyV2) {
         return renderContent();
@@ -119,49 +113,238 @@ export const MarkdownView = React.memo((props: {
     );
 });
 
-type RenderSpanProps = {
-    spans: MarkdownSpan[];
-    baseStyle?: any;
+function RenderMarkdownBlocks(props: {
+    blocks: MarkdownBlock[];
     selectable: boolean;
+    canOpenFileLinks: boolean;
     onLinkPress: (url: string) => void;
-};
-
-function RenderTextBlock(props: { spans: MarkdownSpan[], first: boolean, last: boolean, selectable: boolean, onLinkPress: (url: string) => void }) {
-    return <Text selectable={props.selectable} style={[style.text, props.first && style.first, props.last && style.last]}><RenderSpans spans={props.spans} baseStyle={style.text} selectable={props.selectable} onLinkPress={props.onLinkPress} /></Text>;
-}
-
-function RenderHeaderBlock(props: { level: 1 | 2 | 3 | 4 | 5 | 6, spans: MarkdownSpan[], first: boolean, last: boolean, selectable: boolean, onLinkPress: (url: string) => void }) {
-    const s = (style as any)[`header${props.level}`];
-    const headerStyle = [style.header, s, props.first && style.first, props.last && style.last];
-    return <Text selectable={props.selectable} style={headerStyle}><RenderSpans spans={props.spans} baseStyle={headerStyle} selectable={props.selectable} onLinkPress={props.onLinkPress} /></Text>;
-}
-
-const BULLETS = ['•', '◦', '▪'] as const;
-
-function RenderListBlock(props: { items: { depth: number, spans: MarkdownSpan[] }[], first: boolean, last: boolean, selectable: boolean, onLinkPress: (url: string) => void }) {
-    const listStyle = [style.text, style.list];
+    onOptionPress?: (option: Option) => void;
+    compact?: boolean;
+}) {
     return (
-        <View style={{ flexDirection: 'column', marginBottom: 8, gap: 6 }}>
-            {props.items.map((item, index) => (
-                <View key={index} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingLeft: item.depth * 16 }}>
-                    <Text selectable={false} style={[listStyle, { marginRight: 8, marginTop: 1 }]}>{BULLETS[Math.min(item.depth, BULLETS.length - 1)]}</Text>
-                    <Text selectable={props.selectable} style={[listStyle, { flex: 1 }]}><RenderSpans spans={item.spans} baseStyle={listStyle} selectable={props.selectable} onLinkPress={props.onLinkPress} /></Text>
-                </View>
-            ))}
+        <View style={{ width: '100%' }}>
+            {props.blocks.map((block, index) => {
+                const first = index === 0;
+                const last = index === props.blocks.length - 1;
+                if (block.type === 'text') {
+                    return <RenderTextBlock spans={block.content} key={index} first={first} last={last} compact={props.compact} selectable={props.selectable} canOpenFileLinks={props.canOpenFileLinks} onLinkPress={props.onLinkPress} />;
+                } else if (block.type === 'header') {
+                    return <RenderHeaderBlock level={block.level} spans={block.content} key={index} first={first} last={last} selectable={props.selectable} canOpenFileLinks={props.canOpenFileLinks} onLinkPress={props.onLinkPress} />;
+                } else if (block.type === 'horizontal-rule') {
+                    return <View style={style.horizontalRule} key={index} />;
+                } else if (block.type === 'list' || block.type === 'numbered-list') {
+                    return <RenderListBlock items={block.items} key={index} first={first} last={last} compact={props.compact} selectable={props.selectable} canOpenFileLinks={props.canOpenFileLinks} onLinkPress={props.onLinkPress} />;
+                } else if (block.type === 'blockquote') {
+                    return (
+                        <RenderBlockquoteBlock
+                            alert={block.alert}
+                            blocks={block.blocks}
+                            key={index}
+                            first={first}
+                            last={last}
+                            selectable={props.selectable}
+                            canOpenFileLinks={props.canOpenFileLinks}
+                            onLinkPress={props.onLinkPress}
+                            onOptionPress={props.onOptionPress}
+                        />
+                    );
+                } else if (block.type === 'code-block') {
+                    return <RenderCodeBlock content={block.content} language={block.language} key={index} first={first} last={last} selectable={props.selectable} />;
+                } else if (block.type === 'mermaid') {
+                    return <MermaidRenderer content={block.content} key={index} />;
+                } else if (block.type === 'options') {
+                    return <RenderOptionsBlock items={block.items} key={index} first={first} last={last} selectable={props.selectable} onOptionPress={props.onOptionPress} />;
+                } else if (block.type === 'table') {
+                    return <RenderTableBlock headers={block.headers} rows={block.rows} onLinkPress={props.onLinkPress} canOpenFileLinks={props.canOpenFileLinks} selectable={props.selectable} key={index} first={first} last={last} />;
+                } else if (block.type === 'image') {
+                    return <RenderImageBlock url={block.url} alt={block.alt} key={index} first={first} last={last} />;
+                } else {
+                    return null;
+                }
+            })}
         </View>
     );
 }
 
-function RenderNumberedListBlock(props: { items: { number: number, depth: number, spans: MarkdownSpan[] }[], first: boolean, last: boolean, selectable: boolean, onLinkPress: (url: string) => void }) {
+type RenderSpanProps = {
+    spans: MarkdownSpan[];
+    baseStyle?: any;
+    inHeader?: boolean;
+    selectable: boolean;
+    canOpenFileLinks: boolean;
+    onLinkPress: (url: string) => void;
+};
+
+function RenderTextBlock(props: {
+    spans: MarkdownSpan[];
+    first: boolean;
+    last: boolean;
+    compact?: boolean;
+    selectable: boolean;
+    canOpenFileLinks: boolean;
+    onLinkPress: (url: string) => void;
+}) {
+    const textStyle = [
+        style.text,
+        props.compact && style.compactText,
+        props.first && (props.compact ? style.compactFirst : style.first),
+        props.last && (props.compact ? style.compactLast : style.last),
+    ];
+    return (
+        <Text selectable={props.selectable} style={textStyle}>
+            <RenderSpans spans={props.spans} baseStyle={style.text} selectable={props.selectable} canOpenFileLinks={props.canOpenFileLinks} onLinkPress={props.onLinkPress} />
+        </Text>
+    );
+}
+
+function RenderHeaderBlock(props: {
+    level: 1 | 2 | 3 | 4 | 5 | 6;
+    spans: MarkdownSpan[];
+    first: boolean;
+    last: boolean;
+    selectable: boolean;
+    canOpenFileLinks: boolean;
+    onLinkPress: (url: string) => void;
+}) {
+    const s = (style as any)[`header${props.level}`];
+    const headerStyle = [style.header, s, props.first && style.first, props.last && style.last];
+    return (
+        <Text selectable={props.selectable} style={headerStyle}>
+            <RenderSpans spans={props.spans} baseStyle={headerStyle} inHeader selectable={props.selectable} canOpenFileLinks={props.canOpenFileLinks} onLinkPress={props.onLinkPress} />
+        </Text>
+    );
+}
+
+const BULLETS = ['•', '◦', '▪'] as const;
+
+function RenderListBlock(props: {
+    items: MarkdownListItem[];
+    first: boolean;
+    last: boolean;
+    compact?: boolean;
+    selectable: boolean;
+    canOpenFileLinks: boolean;
+    onLinkPress: (url: string) => void;
+}) {
     const listStyle = [style.text, style.list];
     return (
-        <View style={{ flexDirection: 'column', marginBottom: 8, gap: 6 }}>
-            {props.items.map((item, index) => (
-                <View key={index} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingLeft: item.depth * 16 }}>
-                    <Text selectable={false} style={[listStyle, { marginRight: 8, marginTop: 1 }]}>{item.number}.</Text>
-                    <Text selectable={props.selectable} style={[listStyle, { flex: 1 }]}><RenderSpans spans={item.spans} baseStyle={listStyle} selectable={props.selectable} onLinkPress={props.onLinkPress} /></Text>
+        <View style={{ flexDirection: 'column', marginBottom: props.compact && props.last ? 0 : 8, gap: 6 }}>
+            {props.items.map((item, index) => {
+                const marker = typeof item.number === 'number'
+                    ? `${item.number}.`
+                    : BULLETS[Math.min(item.depth, BULLETS.length - 1)];
+                return (
+                    <View key={index} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingLeft: item.depth * 16 }}>
+                        <Text selectable={false} style={[listStyle, { marginRight: 8, marginTop: 1 }]}>{marker}</Text>
+                        <Text selectable={props.selectable} style={[listStyle, { flex: 1 }]}>
+                            <RenderSpans spans={item.spans} baseStyle={listStyle} selectable={props.selectable} canOpenFileLinks={props.canOpenFileLinks} onLinkPress={props.onLinkPress} />
+                        </Text>
+                    </View>
+                );
+            })}
+        </View>
+    );
+}
+
+const ALERT_META: Record<MarkdownAlertKind, { label: string; icon: React.ComponentProps<typeof Ionicons>['name'] }> = {
+    NOTE: { label: 'Note', icon: 'information-circle-outline' },
+    TIP: { label: 'Tip', icon: 'bulb-outline' },
+    IMPORTANT: { label: 'Important', icon: 'alert-circle-outline' },
+    WARNING: { label: 'Warning', icon: 'warning-outline' },
+    CAUTION: { label: 'Caution', icon: 'flame-outline' },
+};
+
+function RenderBlockquoteBlock(props: {
+    alert: MarkdownAlertKind | null;
+    blocks: MarkdownBlock[];
+    first: boolean;
+    last: boolean;
+    selectable: boolean;
+    canOpenFileLinks: boolean;
+    onLinkPress: (url: string) => void;
+    onOptionPress?: (option: Option) => void;
+}) {
+    const { theme } = useUnistyles();
+
+    const palette = React.useMemo(() => {
+        switch (props.alert) {
+            case 'NOTE': {
+                const accent = theme.dark ? '#4DA3FF' : '#007AFF';
+                return {
+                    border: accent,
+                    background: theme.dark ? 'rgba(10, 132, 255, 0.12)' : 'rgba(0, 122, 255, 0.07)',
+                    accent,
+                };
+            }
+            case 'TIP': {
+                const accent = theme.colors.success;
+                return {
+                    border: accent,
+                    background: theme.dark ? 'rgba(52, 199, 89, 0.12)' : 'rgba(52, 199, 89, 0.08)',
+                    accent,
+                };
+            }
+            case 'IMPORTANT': {
+                const accent = theme.dark ? '#9D8CFF' : '#5856D6';
+                return {
+                    border: accent,
+                    background: theme.dark ? 'rgba(125, 122, 255, 0.14)' : 'rgba(88, 86, 214, 0.08)',
+                    accent,
+                };
+            }
+            case 'WARNING':
+                return {
+                    border: theme.colors.box.warning.border,
+                    background: theme.colors.box.warning.background,
+                    accent: theme.colors.box.warning.text,
+                };
+            case 'CAUTION':
+                return {
+                    border: theme.colors.box.error.border,
+                    background: theme.colors.box.error.background,
+                    accent: theme.colors.box.error.text,
+                };
+            default:
+                return {
+                    border: theme.colors.divider,
+                    background: theme.colors.surfaceHigh,
+                    accent: theme.colors.textSecondary,
+                };
+        }
+    }, [props.alert, theme]);
+
+    const alertMeta = props.alert ? ALERT_META[props.alert] : null;
+
+    return (
+        <View
+            style={[
+                style.blockquote,
+                {
+                    borderLeftColor: palette.border,
+                    backgroundColor: palette.background,
+                },
+                props.first && style.first,
+                props.last && style.last,
+            ]}
+        >
+            {alertMeta ? (
+                <View style={style.alertHeader}>
+                    <Ionicons name={alertMeta.icon} size={16} color={palette.accent} />
+                    <Text selectable={props.selectable} style={[style.alertTitle, { color: palette.accent }]}>
+                        {alertMeta.label}
+                    </Text>
                 </View>
-            ))}
+            ) : null}
+            {props.blocks.length > 0 ? (
+                <RenderMarkdownBlocks
+                    blocks={props.blocks}
+                    selectable={props.selectable}
+                    canOpenFileLinks={props.canOpenFileLinks}
+                    onLinkPress={props.onLinkPress}
+                    onOptionPress={props.onOptionPress}
+                    compact
+                />
+            ) : null}
         </View>
     );
 }
@@ -269,16 +452,24 @@ function RenderOptionsBlock(props: {
 function RenderSpans(props: RenderSpanProps) {
     return (<>
         {props.spans.map((span, index) => {
+            const spanStyles = span.styles.map(s => (s === 'code' && props.inHeader ? style.headerCode : style[s]));
             if (span.url) {
                 const isExternalLink = isHttpMarkdownLink(span.url);
+                const isFileLink = !isExternalLink && isFileMarkdownLink(span.url);
+                const isInteractiveLink = isExternalLink || (isFileLink && props.canOpenFileLinks);
+                const linkStyle = isExternalLink
+                    ? style.link
+                    : isFileLink
+                        ? (props.canOpenFileLinks ? style.fileLink : style.fileLinkStatic)
+                        : null;
                 return (
                     <Text
                         key={index}
                         selectable={props.selectable}
-                        accessibilityRole={isExternalLink ? 'link' : undefined}
-                        style={[props.baseStyle, isExternalLink && style.link, span.styles.map(s => style[s])]}
-                        {...(isExternalLink && Platform.OS === 'web' ? { onClick: () => props.onLinkPress(span.url!) } as any : {})}
-                        onPress={isExternalLink && Platform.OS !== 'web'
+                        accessibilityRole={isInteractiveLink ? 'link' : undefined}
+                        style={[props.baseStyle, spanStyles, linkStyle]}
+                        {...(isInteractiveLink && Platform.OS === 'web' ? { onClick: () => props.onLinkPress(span.url!) } as any : {})}
+                        onPress={isInteractiveLink && Platform.OS !== 'web'
                             ? () => props.onLinkPress(span.url!)
                             : undefined}
                     >
@@ -286,7 +477,7 @@ function RenderSpans(props: RenderSpanProps) {
                     </Text>
                 );
             } else {
-                return <Text key={index} selectable={props.selectable} style={[props.baseStyle, span.styles.map(s => style[s])]}>{span.text}</Text>
+                return <Text key={index} selectable={props.selectable} style={[props.baseStyle, spanStyles]}>{span.text}</Text>
             }
         })}
     </>)
@@ -304,19 +495,11 @@ const TABLE_MAX_COL_WIDTH = 360;
 const TABLE_CHAR_WIDTH = 8.5;  // approx px per char at 16px default font
 const TABLE_CELL_H_PADDING = 24;
 
-// Row-first layout with content-estimated column widths.
-//
-// - Each column's width is picked from the widest text in that column (header +
-//   rows), clamped to [MIN, MAX]. This gives column-alignment across rows and
-//   lets narrow columns (like "1, 2, 3") stay narrow.
-// - Each row is a flex row — default `alignItems: 'stretch'` makes all cells in
-//   a row match the tallest cell's height.
-// - Wrapped in a horizontal ScrollView so wide tables still scroll instead of
-//   being squashed unreadably.
 function RenderTableBlock(props: {
     headers: MarkdownSpan[][],
     rows: MarkdownSpan[][][],
     onLinkPress: (url: string) => void,
+    canOpenFileLinks: boolean,
     selectable: boolean,
     first: boolean,
     last: boolean
@@ -354,7 +537,7 @@ function RenderTableBlock(props: {
                                 style={[style.tableCell, style.tableHeaderCell, { width: columnWidths[colIndex] }, !isLastCol(colIndex) && style.tableCellBorderRight]}
                             >
                                 <Text style={style.tableHeaderText}>
-                                    <RenderSpans spans={header} baseStyle={style.tableHeaderText} onLinkPress={props.onLinkPress} selectable={props.selectable} />
+                                    <RenderSpans spans={header} baseStyle={style.tableHeaderText} onLinkPress={props.onLinkPress} canOpenFileLinks={props.canOpenFileLinks} selectable={props.selectable} />
                                 </Text>
                             </View>
                         ))}
@@ -371,7 +554,7 @@ function RenderTableBlock(props: {
                                     style={[style.tableCell, { width: columnWidths[colIndex] }, !isLastCol(colIndex) && style.tableCellBorderRight]}
                                 >
                                     <Text style={style.tableCellText}>
-                                        <RenderSpans spans={row[colIndex] ?? []} baseStyle={style.tableCellText} onLinkPress={props.onLinkPress} selectable={props.selectable} />
+                                        <RenderSpans spans={row[colIndex] ?? []} baseStyle={style.tableCellText} onLinkPress={props.onLinkPress} canOpenFileLinks={props.canOpenFileLinks} selectable={props.selectable} />
                                     </Text>
                                 </View>
                             ))}
@@ -397,6 +580,16 @@ const style = StyleSheet.create((theme) => ({
         color: theme.colors.text,
         fontWeight: '400',
     },
+    compactText: {
+        marginTop: 4,
+        marginBottom: 4,
+    },
+    compactFirst: {
+        marginTop: 0,
+    },
+    compactLast: {
+        marginBottom: 0,
+    },
 
     italic: {
         fontStyle: 'italic',
@@ -411,16 +604,39 @@ const style = StyleSheet.create((theme) => ({
     },
     code: {
         ...Typography.mono(),
-        fontSize: 16,
-        lineHeight: 24,
-        color: theme.colors.text,
+        fontSize: 14,
+        lineHeight: 21,
+        backgroundColor: theme.colors.surfaceHighest,
+        ...(Platform.OS === 'web' ? {
+            borderRadius: 4,
+            paddingHorizontal: 4,
+            paddingVertical: 1,
+        } : {}),
+    },
+    headerCode: {
+        ...Typography.mono(),
+        backgroundColor: theme.colors.surfaceHighest,
+        ...(Platform.OS === 'web' ? {
+            borderRadius: 4,
+            paddingHorizontal: 4,
+            paddingVertical: 1,
+        } : {}),
     },
     link: {
-        ...Typography.default(),
-        color: theme.colors.text,
-        fontWeight: '400',
+        color: theme.colors.textLink,
         textDecorationLine: 'underline',
         cursor: 'pointer',
+    },
+    fileLink: {
+        color: theme.colors.textLink,
+        textDecorationLine: 'underline',
+        cursor: 'pointer',
+    },
+    fileLinkStatic: {
+        ...Typography.mono(),
+        fontSize: 14,
+        lineHeight: 21,
+        color: theme.colors.textLink,
     },
 
     // Headers
@@ -430,42 +646,47 @@ const style = StyleSheet.create((theme) => ({
         color: theme.colors.text,
     },
     header1: {
-        fontSize: 16,
-        lineHeight: 24,  // Reduced from 36 to 24
-        fontWeight: '900',
-        marginTop: 16,
-        marginBottom: 8
+        fontSize: 22,
+        lineHeight: 30,
+        fontWeight: '700',
+        marginTop: 18,
+        marginBottom: 8,
     },
     header2: {
-        fontSize: 20,
-        lineHeight: 24,  // Reduced from 36 to 32
-        fontWeight: '600',
-        marginTop: 16,
-        marginBottom: 8
-    },
-    header3: {
-        fontSize: 16,
-        lineHeight: 28,  // Reduced from 32 to 28
-        fontWeight: '600',
+        fontSize: 19,
+        lineHeight: 27,
+        fontWeight: '700',
         marginTop: 16,
         marginBottom: 8,
+    },
+    header3: {
+        fontSize: 17,
+        lineHeight: 24,
+        fontWeight: '600',
+        marginTop: 14,
+        marginBottom: 6,
     },
     header4: {
         fontSize: 16,
-        lineHeight: 24,
+        lineHeight: 23,
         fontWeight: '600',
-        marginTop: 8,
-        marginBottom: 8,
+        marginTop: 12,
+        marginBottom: 4,
     },
     header5: {
-        fontSize: 16,
-        lineHeight: 24,  // Reduced from 28 to 24
-        fontWeight: '600'
+        fontSize: 15,
+        lineHeight: 22,
+        fontWeight: '600',
+        marginTop: 10,
+        marginBottom: 4,
     },
     header6: {
-        fontSize: 16,
-        lineHeight: 24, // Reduced from 28 to 24
-        fontWeight: '600'
+        fontSize: 14,
+        lineHeight: 20,
+        fontWeight: '600',
+        color: theme.colors.textSecondary,
+        marginTop: 8,
+        marginBottom: 4,
     },
 
     //
@@ -477,6 +698,31 @@ const style = StyleSheet.create((theme) => ({
         color: theme.colors.text,
         marginTop: 0,
         marginBottom: 0,
+    },
+
+    //
+    // Blockquote / Alerts
+    //
+
+    blockquote: {
+        borderLeftWidth: 3,
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        marginVertical: 8,
+        gap: 4,
+    },
+    alertHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginBottom: 2,
+    },
+    alertTitle: {
+        ...Typography.default('semiBold'),
+        fontSize: 14,
+        lineHeight: 20,
+        fontWeight: '600',
     },
 
     //

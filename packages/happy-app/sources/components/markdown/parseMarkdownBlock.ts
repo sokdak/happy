@@ -1,5 +1,8 @@
-import type { MarkdownBlock, MarkdownSpan } from "./parseMarkdown";
+import type { MarkdownAlertKind, MarkdownBlock, MarkdownListItem, MarkdownSpan } from "./parseMarkdown";
 import { parseMarkdownSpans } from "./parseMarkdownSpans";
+
+const MAX_BLOCKQUOTE_DEPTH = 5;
+const GITHUB_ALERT_TAG = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s+(.*))?$/i;
 
 // Split a pipe-delimited table row into cells, stripping only the leading/trailing
 // empty strings caused by outer pipes while preserving interior empty cells.
@@ -12,19 +15,42 @@ function splitTableRow(line: string): string[] {
 
 function parseTable(lines: string[], startIndex: number): { table: MarkdownBlock | null; nextIndex: number } {
     let index = startIndex;
+    let lastConsumedIndex = startIndex;
+    let sawBlankSinceLastRow = false;
     const tableLines: string[] = [];
 
-    // Collect consecutive lines that contain pipe characters, skipping blank lines
-    // that LLMs often insert between table rows
+    // Collect consecutive table lines while stopping at block boundaries (headings,
+    // lists, blockquotes, fences, rules, or non-pipe-prefixed prose after a blank line).
     while (index < lines.length) {
-        if (lines[index].includes('|')) {
-            tableLines.push(lines[index]);
+        const rawLine = lines[index];
+        const trimmedLine = rawLine.trim();
+        if (trimmedLine === '') {
+            sawBlankSinceLastRow = true;
             index++;
-        } else if (lines[index].trim() === '') {
-            index++;
-        } else {
+            continue;
+        }
+        if (
+            trimmedLine.startsWith('>')
+            || trimmedLine.startsWith('```')
+            || trimmedLine.startsWith('<options>')
+            || /^\s{0,3}#{1,6}\s+/.test(rawLine)
+            || isHorizontalRule(trimmedLine)
+            || matchListLine(rawLine) !== null
+        ) {
             break;
         }
+        if (!rawLine.includes('|')) {
+            break;
+        }
+        // After a blank line following data rows, require an explicit leading pipe (`| ...`)
+        // so prose containing `a | b` after a table is not absorbed as a table row.
+        if (sawBlankSinceLastRow && tableLines.length >= 2 && !trimmedLine.startsWith('|')) {
+            break;
+        }
+        tableLines.push(rawLine);
+        sawBlankSinceLastRow = false;
+        index++;
+        lastConsumedIndex = index;
     }
 
     if (tableLines.length < 2) {
@@ -62,10 +88,115 @@ function parseTable(lines: string[], startIndex: number): { table: MarkdownBlock
         rows
     };
 
-    return { table, nextIndex: index };
+    return { table, nextIndex: lastConsumedIndex };
 }
 
-export function parseMarkdownBlock(markdown: string) {
+function getLeadingIndent(rawLine: string): number {
+    let indent = 0;
+    for (let i = 0; i < rawLine.length; i++) {
+        if (rawLine[i] === ' ') {
+            indent += 1;
+        } else if (rawLine[i] === '\t') {
+            indent += 4;
+        } else {
+            break;
+        }
+    }
+    return indent;
+}
+
+type RawListLine =
+    | { kind: 'ordered'; indent: number; number: number; content: string }
+    | { kind: 'unordered'; indent: number; content: string };
+
+function isHorizontalRule(trimmed: string): boolean {
+    return /^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed);
+}
+
+function matchListLine(rawLine: string): RawListLine | null {
+    const trimmed = rawLine.trim();
+    if (!trimmed || isHorizontalRule(trimmed)) {
+        return null;
+    }
+    const indent = getLeadingIndent(rawLine);
+    const orderedMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+    if (orderedMatch) {
+        return {
+            kind: 'ordered',
+            indent,
+            number: Number.parseInt(orderedMatch[1], 10),
+            content: orderedMatch[2],
+        };
+    }
+    const unorderedMatch = trimmed.match(/^([-*+])\s+(.*)$/);
+    if (unorderedMatch) {
+        return {
+            kind: 'unordered',
+            indent,
+            content: unorderedMatch[2],
+        };
+    }
+    return null;
+}
+
+function buildListItems(rawItems: RawListLine[], rootKind: 'ordered' | 'unordered'): MarkdownListItem[] {
+    let baseIndent = rawItems[0].indent;
+    for (const item of rawItems) {
+        if (item.kind === rootKind && item.indent < baseIndent) {
+            baseIndent = item.indent;
+        }
+    }
+
+    const indentStack: number[] = [baseIndent];
+    return rawItems.map((item) => {
+        const effectiveIndent = Math.max(baseIndent, item.indent);
+        while (indentStack.length > 1 && effectiveIndent < indentStack[indentStack.length - 1]) {
+            indentStack.pop();
+        }
+        if (effectiveIndent - indentStack[indentStack.length - 1] >= 2) {
+            indentStack.push(effectiveIndent);
+        }
+        const depth = indentStack.length - 1;
+        const spans = parseMarkdownSpans(item.content, false);
+        if (item.kind === 'ordered') {
+            return { number: item.number, depth, spans };
+        }
+        return { depth, spans };
+    });
+}
+
+function matchStandaloneImage(trimmed: string): { alt: string; url: string } | null {
+    if (!trimmed.startsWith('![')) {
+        return null;
+    }
+    const altEnd = trimmed.indexOf('](');
+    if (altEnd === -1 || !trimmed.endsWith(')')) {
+        return null;
+    }
+    const alt = trimmed.slice(2, altEnd);
+    if (alt.includes('[')) {
+        return null;
+    }
+    const innerUrl = trimmed.slice(altEnd + 2, -1);
+    // Ensure balanced parentheses so `![a](u) text (more)` is not misclassified as a standalone image.
+    let depth = 1;
+    for (let i = 0; i < innerUrl.length; i++) {
+        if (innerUrl[i] === '(') depth += 1;
+        else if (innerUrl[i] === ')') {
+            depth -= 1;
+            if (depth === 0) {
+                return null;
+            }
+        }
+    }
+    if (depth !== 1) {
+        return null;
+    }
+    const url = innerUrl.trim();
+    return url ? { alt, url } : null;
+}
+
+function parseMarkdownBlockInternal(markdown: string, quoteDepth: number): MarkdownBlock[] {
     const blocks: MarkdownBlock[] = [];
     const lines = markdown.split('\n');
     let index = 0;
@@ -73,21 +204,24 @@ export function parseMarkdownBlock(markdown: string) {
         const line = lines[index];
         index++;
 
-        // Headers
-        for (let i = 1; i <= 6; i++) {
-            if (line.startsWith(`${'#'.repeat(i)} `)) {
-                blocks.push({ type: 'header', level: i as 1 | 2 | 3 | 4 | 5 | 6, content: parseMarkdownSpans(line.slice(i + 1).trim(), true) });
-                continue outer;
-            }
+        // Headers (allow up to 3 leading spaces per CommonMark)
+        const headerMatch = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+        if (headerMatch) {
+            const level = headerMatch[1].length as 1 | 2 | 3 | 4 | 5 | 6;
+            blocks.push({
+                type: 'header',
+                level,
+                content: parseMarkdownSpans(headerMatch[2].trim(), true),
+            });
+            continue outer;
         }
 
-        // Trim
-        let trimmed = line.trim();
+        const trimmed = line.trim();
 
         // Code block
         if (trimmed.startsWith('```')) {
             const language = trimmed.slice(3).trim() || null;
-            let content = [];
+            const content: string[] = [];
             while (index < lines.length) {
                 const nextLine = lines[index];
                 if (nextLine.trim() === '```') {
@@ -109,21 +243,20 @@ export function parseMarkdownBlock(markdown: string) {
         }
 
         // Horizontal rule
-        if (trimmed === '---') {
+        if (isHorizontalRule(trimmed)) {
             blocks.push({ type: 'horizontal-rule' });
             continue;
         }
 
         // Options block
         if (trimmed.startsWith('<options>')) {
-            let items: string[] = [];
+            const items: string[] = [];
             while (index < lines.length) {
                 const nextLine = lines[index];
                 if (nextLine.trim() === '</options>') {
                     index++;
                     break;
                 }
-                // Extract content from <option> tags
                 const optionMatch = nextLine.match(/<option>(.*?)<\/option>/);
                 if (optionMatch) {
                     items.push(optionMatch[1]);
@@ -136,48 +269,85 @@ export function parseMarkdownBlock(markdown: string) {
             continue;
         }
 
-        // Image block
-        const imageMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+        // Blockquotes & GitHub-style alerts (> [!NOTE], > [!TIP], > [!IMPORTANT], > [!WARNING], > [!CAUTION])
+        if (trimmed.startsWith('>') && quoteDepth < MAX_BLOCKQUOTE_DEPTH) {
+            const quoteLines: string[] = [trimmed.replace(/^>\s?/, '')];
+            while (index < lines.length) {
+                const nextTrimmed = lines[index].trim();
+                if (!nextTrimmed.startsWith('>')) {
+                    break;
+                }
+                quoteLines.push(nextTrimmed.replace(/^>\s?/, ''));
+                index++;
+            }
+
+            let alert: MarkdownAlertKind | null = null;
+            const contentLines = [...quoteLines];
+            const firstNonEmptyIdx = contentLines.findIndex(l => l.trim().length > 0);
+            if (firstNonEmptyIdx !== -1) {
+                const alertMatch = contentLines[firstNonEmptyIdx].trim().match(GITHUB_ALERT_TAG);
+                if (alertMatch) {
+                    alert = alertMatch[1].toUpperCase() as MarkdownAlertKind;
+                    const inlineBody = alertMatch[2]?.trim() ?? '';
+                    if (inlineBody) {
+                        contentLines.splice(0, firstNonEmptyIdx + 1, inlineBody);
+                    } else {
+                        contentLines.splice(0, firstNonEmptyIdx + 1);
+                    }
+                }
+            }
+
+            const innerBlocks = parseMarkdownBlockInternal(contentLines.join('\n'), quoteDepth + 1);
+            if (alert !== null || innerBlocks.length > 0) {
+                blocks.push({
+                    type: 'blockquote',
+                    alert,
+                    blocks: innerBlocks,
+                });
+            }
+            continue;
+        }
+
+        // Standalone image block
+        const imageMatch = matchStandaloneImage(trimmed);
         if (imageMatch) {
-            blocks.push({ type: 'image', alt: imageMatch[1], url: imageMatch[2].trim() });
+            blocks.push({ type: 'image', alt: imageMatch.alt, url: imageMatch.url });
             continue;
         }
 
-        // If it is a numbered list
-        const numberedListMatch = trimmed.match(/^(\d+)\.\s+/);
-        if (numberedListMatch) {
-            const indent = line.length - line.trimStart().length;
-            let allLines = [{ number: parseInt(numberedListMatch[1]), indent, content: trimmed.slice(numberedListMatch[0].length) }];
-            while (index < lines.length) {
-                const nextRaw = lines[index];
-                const nextTrimmed = nextRaw.trim();
-                const nextMatch = nextTrimmed.match(/^(\d+)\.\s+/);
-                if (!nextMatch) break;
-                const nextIndent = nextRaw.length - nextRaw.trimStart().length;
-                allLines.push({ number: parseInt(nextMatch[1]), indent: nextIndent, content: nextTrimmed.slice(nextMatch[0].length) });
-                index++;
-            }
-            const baseIndent = allLines[0].indent;
-            blocks.push({ type: 'numbered-list', items: allLines.map((l) => ({ number: l.number, depth: Math.floor((l.indent - baseIndent) / 2), spans: parseMarkdownSpans(l.content, false) })) });
-            continue;
-        }
+        // Lists (ordered, unordered, and mixed nested sublists)
+        const firstListItem = matchListLine(line);
+        if (firstListItem) {
+            const rootKind = firstListItem.kind;
+            const baseIndent = firstListItem.indent;
+            const rawItems: RawListLine[] = [firstListItem];
 
-        // If it is a list
-        const listMatch = trimmed.match(/^([-*+])\s+/);
-        if (listMatch) {
-            const indent = line.length - line.trimStart().length;
-            let allLines = [{ indent, content: trimmed.slice(listMatch[0].length) }];
             while (index < lines.length) {
-                const nextRaw = lines[index];
-                const nextTrimmed = nextRaw.trim();
-                const nextMatch = nextTrimmed.match(/^([-*+])\s+/);
-                if (!nextMatch) break;
-                const nextIndent = nextRaw.length - nextRaw.trimStart().length;
-                allLines.push({ indent: nextIndent, content: nextTrimmed.slice(nextMatch[0].length) });
-                index++;
+                let peek = index;
+                while (peek < lines.length && lines[peek].trim() === '') {
+                    peek++;
+                }
+                if (peek >= lines.length) {
+                    break;
+                }
+                const nextItem = matchListLine(lines[peek]);
+                if (!nextItem) {
+                    break;
+                }
+                // Switching marker type at root indentation starts a separate list block,
+                // while indented sub-items (nextItem.indent > baseIndent) nest inside this list.
+                if (nextItem.indent <= baseIndent && nextItem.kind !== rootKind) {
+                    break;
+                }
+                rawItems.push(nextItem);
+                index = peek + 1;
             }
-            const baseIndent = allLines[0].indent;
-            blocks.push({ type: 'list', items: allLines.map((l) => ({ depth: Math.floor((l.indent - baseIndent) / 2), spans: parseMarkdownSpans(l.content, false) })) });
+
+            const items = buildListItems(rawItems, rootKind);
+            blocks.push({
+                type: rootKind === 'ordered' ? 'numbered-list' : 'list',
+                items,
+            });
             continue;
         }
 
@@ -197,4 +367,8 @@ export function parseMarkdownBlock(markdown: string) {
         }
     }
     return blocks;
+}
+
+export function parseMarkdownBlock(markdown: string): MarkdownBlock[] {
+    return parseMarkdownBlockInternal(markdown, 0);
 }

@@ -61,4 +61,162 @@ describe('parseMarkdown', () => {
             { styles: [], text: ' for more.', url: null },
         ]);
     });
+
+    it('recursively parses inline code and links nested inside bold and italic spans', () => {
+        const blocks = parseMarkdown('반드시 **`LED+`와 `LED-`** 및 **`10A` 단자**를 확인하고 *`COM` 기준*으로 측정하세요.');
+
+        expect(blocks).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: '반드시 ', url: null },
+                    { styles: ['bold', 'code'], text: 'LED+', url: null },
+                    { styles: ['bold'], text: '와 ', url: null },
+                    { styles: ['bold', 'code'], text: 'LED-', url: null },
+                    { styles: [], text: ' 및 ', url: null },
+                    { styles: ['bold', 'code'], text: '10A', url: null },
+                    { styles: ['bold'], text: ' 단자', url: null },
+                    { styles: [], text: '를 확인하고 ', url: null },
+                    { styles: ['italic', 'code'], text: 'COM', url: null },
+                    { styles: ['italic'], text: ' 기준', url: null },
+                    { styles: [], text: '으로 측정하세요.', url: null },
+                ],
+            },
+        ]);
+    });
+
+    it('parses file:// and http links containing balanced parentheses and styled labels', () => {
+        const blocks = parseMarkdown([
+            '참고: [인계 진입점 (README.md)](file:///home/blupine/work/README.md#L10-L20)',
+            '라우트: [`file.tsx`](file:///home/blupine/app/(app)/session/[id]/file.tsx#L85)',
+            '위키: (https://en.wikipedia.org/wiki/Rust_(programming_language))',
+        ].join('\n'));
+
+        expect(blocks).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: '참고: ', url: null },
+                    {
+                        styles: [],
+                        text: '인계 진입점 (README.md)',
+                        url: 'file:///home/blupine/work/README.md#L10-L20',
+                    },
+                ],
+            },
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: '라우트: ', url: null },
+                    {
+                        styles: ['code'],
+                        text: 'file.tsx',
+                        url: 'file:///home/blupine/app/(app)/session/[id]/file.tsx#L85',
+                    },
+                ],
+            },
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: '위키: (', url: null },
+                    {
+                        styles: [],
+                        text: 'https://en.wikipedia.org/wiki/Rust_(programming_language)',
+                        url: 'https://en.wikipedia.org/wiki/Rust_(programming_language)',
+                    },
+                    { styles: [], text: ')', url: null },
+                ],
+            },
+        ]);
+    });
+
+    it('preserves multiplication asterisks and glob wildcards while stripping emphasis inside headers', () => {
+        const blocks = parseMarkdown([
+            '### **`12V` 출력** 점검',
+            '전력 계산: 12V * 2A = 24W (대상 파일: *.ts)',
+        ].join('\n'));
+
+        expect(blocks).toEqual([
+            {
+                type: 'header',
+                level: 3,
+                content: [
+                    { styles: ['code'], text: '12V', url: null },
+                    { styles: [], text: ' 출력 점검', url: null },
+                ],
+            },
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: '전력 계산: 12V * 2A = 24W (대상 파일: *.ts)', url: null },
+                ],
+            },
+        ]);
+    });
+
+    it('handles pathological unclosed delimiters in linear time (< 50ms) and preserves code subscript calls, escapes, globstars, and link titles', () => {
+        const startedAt = performance.now();
+        parseMarkdown('*a '.repeat(1500) + '[x'.repeat(1500));
+        parseMarkdown('['.repeat(5000));
+        parseMarkdown('[a]('.repeat(5000));
+        parseMarkdown('https://a.co/' + ')'.repeat(5000));
+        expect(performance.now() - startedAt).toBeLessThan(100);
+
+        expect(parseMarkdown('Calling handlers[idx](arg1, fn(arg2)) and fn[0](foo.bar) failed')).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: 'Calling handlers[idx](arg1, fn(arg2)) and fn[0](foo.bar) failed', url: null },
+                ],
+            },
+        ]);
+
+        expect(parseMarkdown('Check src/**/*.ts and lib/**/*.ts')).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: 'Check src/**/*.ts and lib/**/*.ts', url: null },
+                ],
+            },
+        ]);
+
+        expect(parseMarkdown('Check src/**/*.ts and **important** with [spec](<https://example.com/a)b>) and **read**/write')).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: 'Check src/**/*.ts and ', url: null },
+                    { styles: ['bold'], text: 'important', url: null },
+                    { styles: [], text: ' with ', url: null },
+                    { styles: [], text: 'spec', url: 'https://example.com/a)b' },
+                    { styles: [], text: ' and ', url: null },
+                    { styles: ['bold'], text: 'read', url: null },
+                    { styles: [], text: '/write', url: null },
+                ],
+            },
+        ]);
+
+        expect(parseMarkdown('Escaped \\*literal\\* and \\[not-link\\](https://x.test) vs [Docs](https://example.com/docs "Guide") and [a](file:///work/a\\(1\\).md)')).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: [], text: 'Escaped *literal* and [not-link](', url: null },
+                    { styles: [], text: 'https://x.test', url: 'https://x.test' },
+                    { styles: [], text: ') vs ', url: null },
+                    { styles: [], text: 'Docs', url: 'https://example.com/docs' },
+                    { styles: [], text: ' and ', url: null },
+                    { styles: [], text: 'a', url: 'file:///work/a(1).md' },
+                ],
+            },
+        ]);
+
+        expect(parseMarkdown('**bold *italic***')).toEqual([
+            {
+                type: 'text',
+                content: [
+                    { styles: ['bold'], text: 'bold ', url: null },
+                    { styles: ['bold', 'italic'], text: 'italic', url: null },
+                ],
+            },
+        ]);
+    });
 });
