@@ -108,6 +108,18 @@ describe('daemon resume fallback', () => {
       expect.objectContaining({ env: expect.objectContaining({ HAPPY_RECONNECT_SESSION_ID: 'old-session' }) }));
   });
 
+  it('forwards the selected AGY settings when spawning a new remote session', async () => {
+    await boot();
+    expect(await mocks.handlers.spawnSession({
+      directory: '/project', agent: 'agy', permissionMode: 'plan',
+      modelMode: 'Gemini 4 Argon', effortLevel: 'high',
+    })).toMatchObject({ type: 'success' });
+    expect(mocks.spawn).toHaveBeenCalledWith([
+      'agy', '--happy-starting-mode', 'remote', '--started-by', 'daemon',
+      '--permission-mode', 'plan', '--model', 'Gemini 4 Argon', '--effort', 'high',
+    ], expect.objectContaining({ cwd: '/project' }));
+  });
+
   it('refuses AGY resume without its native ID instead of spawning a fresh conversation', async () => {
     await boot();
     expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: { path: '/project', machineId: 'machine-1', flavor: 'agy' } } }))
