@@ -103,11 +103,11 @@ describe('persistent Antigravity ACP', () => {
       agent.respond(request.id!, { stopReason: 'end_turn' }); await rejected;
     });
     it.each(['printf DONE', 'Run read_file', 'Run schedule'])('resets the stalled allowance after a real command finishes despite its title: %s', async (title) => {
-      const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: true, stopHookLimits: { maxBackoffMs: 0, maxStalledContinuations: 4 } });
       agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
       const pending = backend.sendPrompt('', 'background');
       const request = await promptRequest(agent);
-      const limit = STOP_HOOK_LIMITS.maxStalledContinuations;
+      const limit = 4;
       for (let i = 0; i < limit; i++) expect((await invokeStop(spawnFn, i, false)).decision).toBe('continue');
       agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'command', title, kind: 'execute', status: 'completed', rawInput: { CommandLine: 'printf DONE' } });
       await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(1));
@@ -115,6 +115,23 @@ describe('persistent Antigravity ACP', () => {
       expect((await invokeStop(spawnFn, limit, false)).decision).toBe('continue');
       await invokeStop(spawnFn, limit + 1, true);
       agent.respond(request.id!, { stopReason: 'end_turn' }); await pending;
+    });
+    it('resets the stalled allowance on file edit and subagent delegation, but not on manage_subagents polling', async () => {
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: true, stopHookLimits: { maxBackoffMs: 0, maxStalledContinuations: 3 } });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'subagent-review');
+      const request = await promptRequest(agent);
+      for (let i = 0; i < 3; i++) {
+        agent.notify({ sessionUpdate: 'tool_call', toolCallId: `sub-poll-${i}`, title: 'Run manage_subagents', kind: 'other', status: 'completed', rawInput: { Action: 'list' } });
+        await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(i + 1));
+        expect((await invokeStop(spawnFn, i, false)).decision).toBe('continue');
+      }
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'edit-1', title: 'edit_file', kind: 'edit', status: 'completed', rawInput: { Path: '/work/a.ts', Target: 'old', Replacement: 'new' } });
+      await vi.waitFor(() => expect(messages.filter(m => m.type === 'tool-result')).toHaveLength(4));
+      expect((await invokeStop(spawnFn, 3, false)).decision).toBe('continue');
+      await invokeStop(spawnFn, 4, true);
+      agent.respond(request.id!, { stopReason: 'end_turn' });
+      await pending;
     });
     it('wakes Stop-hook backoff immediately when run_command finishes, ignoring status/schedule completions', async () => {
       const { backend, agent, spawnFn } = setup({
