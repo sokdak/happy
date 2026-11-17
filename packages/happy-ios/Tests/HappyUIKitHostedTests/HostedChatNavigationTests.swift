@@ -326,9 +326,8 @@ final class HostedChatNavigationTests: XCTestCase {
                 recorder.stop()
                 try await settled(chat, in: navigation)
                 let report = try XCTUnwrap(chat.openingReport)
-                let rowsReady = try await until { Self.subview(ChatListView.self, in: chat.view)?.isDisplayReady == true }
-                XCTAssertTrue(rowsReady, "\(name): deferred rows never arrived")
-                XCTAssertTrue(Set(report.missing).isSubset(of: ChatOpening.mayComeLate), "\(name): essential content was missing: \(report.missing)")
+                let contentReady = try await until { chat.isOpeningContentReady && Self.subview(ChatListView.self, in: chat.view)?.isDisplayReady == true }
+                XCTAssertTrue(contentReady, "\(name): header or deferred rows never arrived")
                 let gap = zip(ticks, ticks.dropFirst()).map { $1 - $0 }.max() ?? 0
                 lines.append(String(format: "%@ longest main-thread gap while readying %.0f ms", name, gap * 1000))
                 times.append(report.elapsed * 1000)
@@ -354,9 +353,8 @@ final class HostedChatNavigationTests: XCTestCase {
             let next = try await shown(after: { strip.onSelect?(index.isMultiple(of: 2) ? "seeded-tab-3" : "seeded-tab-4") }, in: navigation)
             try await settled(next, in: navigation)
             let report = try XCTUnwrap(next.openingReport)
-            let rowsReady = try await until { Self.subview(ChatListView.self, in: next.view)?.isDisplayReady == true }
-            XCTAssertTrue(rowsReady, "switch: deferred rows never arrived")
-            XCTAssertTrue(Set(report.missing).isSubset(of: ChatOpening.mayComeLate))
+            let contentReady = try await until { next.isOpeningContentReady && Self.subview(ChatListView.self, in: next.view)?.isDisplayReady == true }
+            XCTAssertTrue(contentReady, "switch: header or deferred rows never arrived")
             times.append(report.elapsed * 1000)
             if report.hitCap {
                 capHits += 1

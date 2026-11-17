@@ -141,6 +141,10 @@ final class ChatViewController: UIViewController, ChatListViewDelegate, ChatComp
     var constructionStageSeconds: [CFTimeInterval] { construction?.stageSeconds ?? [] }
     private var constructionStarted = false
     #if DEBUG || HAPPY_FIXTURES
+    /// Current readiness, unlike the immutable timing report captured while
+    /// navigation was in progress. Integration tests wait for the actual UI.
+    var isOpeningContentReady: Bool { contentInstalled && openingMissing().isEmpty }
+
     /// Separate from ChatOpening's readiness clock, which starts after load.
     var constructionSeconds: CFTimeInterval = 0
     private(set) var loadingSeconds: CFTimeInterval = 0

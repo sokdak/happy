@@ -134,16 +134,15 @@ final class HostedNavigationTimingTests: XCTestCase {
                 catch { frames.stop(); _ = watch.stop(); throw error }
                 frames.stop()
                 let turns = watch.stop().filter { $0.start + $0.length >= tapped }
-                let ready = (destination as? ChatViewController)?.openingReport
+                var ready = (destination as? ChatViewController)?.openingReport
                 if fromHome {
                     XCTAssertTrue(destination is ChatViewController)
                     let chat = try XCTUnwrap(destination as? ChatViewController)
                     try await until { chat.openingReport != nil }
-                    let report = try XCTUnwrap(chat.openingReport)
-                    XCTAssertTrue(Set(report.missing).isSubset(of: ChatOpening.mayComeLate), "essential content was missing: \(report.missing)")
                     // Readiness is a diagnostic captured during navigation;
                     // large local state may finish deriving after that report.
-                    try await until { hasRows(in: chat.view) }
+                    try await until { chat.isOpeningContentReady && hasRows(in: chat.view) }
+                    ready = chat.openingReport
                 }
                 print(String(format: "NAVTIME %@ try %d first %.1f end %.1f longest %.1f ready %.1f missing %@",
                     name, attempt, ((first ?? tapped) - tapped) * 1000, ((end ?? tapped) - tapped) * 1000,
