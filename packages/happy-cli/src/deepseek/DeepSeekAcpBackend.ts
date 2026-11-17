@@ -247,8 +247,10 @@ export async function apply(ctx, config) {
             if (typeof id !== 'string') return;
             const previous = this.tools.get(id);
             const raw = record(update.rawInput);
-            const name = toolName(typeof raw.name === 'string' ? raw.name : previous?.name ?? update.title ?? update.kind ?? 'tool');
-            const args = { ...previous?.args, ...(raw.arguments ? record(raw.arguments) : raw) };
+            const name = toolName(previous?.name ?? update.title ?? update.kind ?? 'tool');
+            // DSH rawInput is the argument object itself. Fields such as
+            // `name` or `arguments` belong to the tool, not an RPC wrapper.
+            const args = { ...previous?.args, ...raw };
             if (!previous || Object.keys(raw).length) {
                 this.tools.set(id, { name, args });
                 this.emit({ type: 'tool-call', callId: id, toolName: name, args });

@@ -119,6 +119,9 @@ describe.skipIf(!process.env.HAPPY_TEST_DEEPSEEK_PATH)('published DeepSeek Harne
         await backend.setSessionConfigOption('reasoning_effort', 'off');
         await backend.sendPrompt(sessionId, 'no reasoning');
         expect(requests.at(-1).thinking).toEqual({ type: 'disabled' });
+        nextTool('skill', { name: 'missing-fixture-skill' });
+        await backend.sendPrompt(sessionId, 'try a named skill');
+        expect(events).toContainEqual(expect.objectContaining({ type: 'tool-call', toolName: 'skill', args: { name: 'missing-fixture-skill' } }));
     }, 60_000);
 
     it('changes the real sandbox and resumes the same conversation with its selections', async () => {
