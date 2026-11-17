@@ -57,6 +57,9 @@
                     startOnLoad: false,
                     theme: theme
                 });
+                // Reject malformed input before Mermaid mutates temporary SVG
+                // nodes. WebKit can otherwise stall on its render-error path.
+                await mermaid.parse(content);
                 const { svg } = await mermaid.render('mermaid-diagram-' + token, content);
                 if (token !== current) return;
                 container.innerHTML = svg;
@@ -68,7 +71,9 @@
                 container.replaceChildren(message);
             }
 
-            // SVG sizing can settle asynchronously, so report again after a delay
+            // Error text needs no animation frame. Report even when WebKit
+            // throttles frames, then refresh as SVG sizing settles.
+            reportHeight(token);
             requestAnimationFrame(() => {
                 reportHeight(token);
                 setTimeout(() => reportHeight(token), 200);
