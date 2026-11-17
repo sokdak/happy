@@ -192,6 +192,18 @@ describe('persistent Antigravity ACP', () => {
       agent.respond(request.id!, { stopReason: 'end_turn' }); await result;
       expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
     });
+    it.each(['1.5.9', '1.5.10'])('accepts verified server version %s when Stop hook is enabled', async (version) => {
+      const { backend, agent, spawnFn } = setup({ stopHook: true });
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') agent.respond(rpc.id!, { protocolVersion: 1, agentInfo: { name: 'Antigravity ACP Server', version }, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
+        else if (rpc.method !== 'session/prompt') fallback(rpc);
+      });
+      const pending = backend.sendPrompt('', 'verified');
+      const request = await promptRequest(agent);
+      await invokeStop(spawnFn, 0, true);
+      agent.respond(request.id!, { stopReason: 'end_turn' });
+      await pending;
+    });
     it('rejects an unverified server version before sending a prompt', async () => {
       const { backend, agent } = setup({ stopHook: true });
       agent.setHandler((rpc, fallback) => {

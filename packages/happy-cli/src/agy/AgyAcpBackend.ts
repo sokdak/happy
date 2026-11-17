@@ -37,6 +37,8 @@ const PROGRESS_NATIVE_TOOLS = new Set([
   'swarm', 'run_workflow',
 ]);
 
+const VERIFIED_STOP_HOOK_VERSIONS = new Set(['1.5.9', '1.5.10']);
+
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
 }
@@ -231,8 +233,8 @@ export class AgyAcpBackend implements AgentBackend {
         protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'happy', version: '1' },
       }), this.lifetime]));
       this.capabilities = initialized.agentCapabilities ?? {};
-      if (this.stopHook && initialized.agentInfo?.version !== '1.5.9') {
-        throw new Error('The experimental Stop hook is verified only with AGY 1.5.9. Set HAPPY_AGY_STOP_HOOK=0 for this version.');
+      if (this.stopHook && (!initialized.agentInfo?.version || !VERIFIED_STOP_HOOK_VERSIONS.has(initialized.agentInfo.version))) {
+        throw new Error('The experimental Stop hook is verified only with AGY 1.5.9 and 1.5.10. Set HAPPY_AGY_STOP_HOOK=0 for this version.');
       }
       if (this.sessionId) {
         if (!this.capabilities.loadSession) throw new Error('Antigravity does not support loading the requested ACP session');

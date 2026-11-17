@@ -8,7 +8,7 @@ AGY's documented `Stop` hook **before** it returns `end_turn`.
 
 ## Enable / remove
 
-Default **off**. Verified only with AGY **1.5.9** on Linux; Unix socket transport
+Default **off**. Verified only with AGY **1.5.9** and **1.5.10** on Linux; Unix socket transport
 also supports Unix hosts, but macOS has not had authenticated live validation.
 Other AGY versions and Windows reject an explicit opt-in before prompting.
 
