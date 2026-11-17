@@ -78,6 +78,7 @@ object ModeOptions {
 
     /** getHardcodedPermissionModes: Claude's for an unknown flavor. */
     fun permissionModes(flavor: String?, translate: (Int) -> String): List<ModeOption> = when (flavor) {
+        "deepseek" -> codexPermissionModes(translate)
         "codex" -> codexPermissionModes(translate)
         "gemini" -> geminiPermissionModes(translate)
         "openclaw" -> openClawPermissionModes(translate)
@@ -177,7 +178,7 @@ object ModeOptions {
 
     /** getEffortLevelsForModel without rig metadata: empty when the model has no effort. */
     fun effortLevelsForModel(flavor: String?, modelKey: String?): List<ModeOption> = when (flavor) {
-        "deepseek" -> effortLevels(listOf("low", "high", "max"))
+        "deepseek" -> effortLevels(listOf("off", "low", "high", "max"))
         "claude" -> effortLevels(claudeEfforts)
         "codex" -> effortLevels(codexEffortsByModel[modelKey] ?: codexEffortsFallback)
         "agy" -> effortLevels(agyEffortsByModel[modelKey] ?: emptyList())

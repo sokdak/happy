@@ -4,6 +4,7 @@ import os from 'os';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { findAgyBin } from '@/agy/constants';
+import { findDeepSeekCli, supportsDeepSeekNode } from '@/deepseek/options';
 import { detectCLIAvailability } from './detectCLI';
 
 vi.mock('child_process', () => ({ execSync: vi.fn() }));
@@ -15,6 +16,7 @@ vi.mock('os', () => ({
   },
 }));
 vi.mock('@/agy/constants', () => ({ findAgyBin: vi.fn() }));
+vi.mock('@/deepseek/options', () => ({ findDeepSeekCli: vi.fn(), supportsDeepSeekNode: vi.fn() }));
 
 const mockedExecSync = vi.mocked(execSync);
 const mockedExistsSync = vi.mocked(existsSync);
@@ -22,14 +24,21 @@ const mockedFindAgyBin = vi.mocked(findAgyBin);
 const mockedPlatform = vi.mocked(os.platform);
 
 describe('CLI availability detection', () => {
-  it('advertises DeepSeek only with a nonblank API key and an allowing policy', () => {
+  it('advertises DeepSeek only with its own CLI, supported Node, key, and allowing policy', () => {
     expect(detectCLIAvailability({}).deepseek).toBe(false);
     expect(detectCLIAvailability({ DEEPSEEK_API_KEY: '  ' }).deepseek).toBe(false);
     expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key' }).deepseek).toBe(true);
     expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key', HAPPY_ENABLED_AGENTS: 'codex' }).deepseek).toBe(false);
     expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key', HAPPY_ENABLED_AGENTS: 'deepseek' }).deepseek).toBe(true);
+    vi.mocked(findDeepSeekCli).mockReturnValue(undefined);
+    expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key' }).deepseek).toBe(false);
+    vi.mocked(findDeepSeekCli).mockReturnValue('/bin/dsh');
+    vi.mocked(supportsDeepSeekNode).mockReturnValue(false);
+    expect(detectCLIAvailability({ DEEPSEEK_API_KEY: 'key' }).deepseek).toBe(false);
   });
   beforeEach(() => {
+    vi.mocked(findDeepSeekCli).mockReturnValue('/bin/dsh');
+    vi.mocked(supportsDeepSeekNode).mockReturnValue(true);
     mockedExecSync.mockReset();
     mockedExecSync.mockImplementation(() => {
       throw new Error('not installed');

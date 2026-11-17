@@ -40,13 +40,14 @@ public enum SessionComposerRules {
 
     /// `canUseAttachments`: Happy Agent sessions by capability, the others
     /// by flavor (attachmentSupport.ts: none, Claude or Codex).
-    public static func canUseAttachments(_ record: SessionRecord?) -> Bool {
+    public static func canUseAttachments(_ record: SessionRecord?, model: String? = nil) -> Bool {
         guard let record else { return false }
         let metadata = record.metadata
         if RigCatalog.isRigV1(metadata) {
             return metadata?["capabilities"]?["attachments"]?["enabled"]?.boolValue == true
         }
         let flavor = metadata?["flavor"]?.stringValue ?? ""
+        if flavor == "deepseek" { return (model ?? metadata?["modelMode"]?.stringValue ?? metadata?["currentModelCode"]?.stringValue ?? "deepseek-flash") == "deepseek-flash" }
         return flavor.isEmpty || flavor == "claude" || flavor == "codex"
     }
 }

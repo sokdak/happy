@@ -274,20 +274,6 @@ function summaryMessages(sessionClient: { sendClaudeSessionMessage: { mock: { ca
 }
 
 describe('runClaude remote JSONL scanner', () => {
-    it('runs DeepSeek through the existing tool loop and publishes its own model catalog', async () => {
-        const harness = await startRemoteRunClaudeHarness({ startOptions: { flavor: 'deepseek', model: 'deepseek-v4-pro', effort: 'max', claudeEnvVars: { DEEPSEEK_API_KEY: 'test-key' } } });
-        expect(harness.api.getOrCreateSession).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({ flavor: 'deepseek', currentModelCode: 'deepseek-v4-pro', models: [{ code: 'deepseek-flash', value: 'DeepSeek Flash' }, { code: 'deepseek-v4-pro', value: 'DeepSeek V4 Pro' }] }) }));
-        expect(harness.loopOptions).toMatchObject({ model: 'deepseek-v4-pro', claudeEnvVars: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic', ANTHROPIC_AUTH_TOKEN: 'test-key' } });
-        const onUserMessage = harness.sessionClient.onUserMessage.mock.calls[0][0];
-        await onUserMessage({ content: { text: 'switch to Flash' }, meta: { model: 'deepseek-flash', effort: 'low' } });
-        expect(harness.loopOptions.messageQueue.queue.at(-1).mode).toMatchObject({ model: 'deepseek-flash', effort: 'low' });
-        expect(harness.sessionClient.getMetadata()).toMatchObject({ currentModelCode: 'deepseek-flash', modelMode: 'deepseek-flash', effortLevel: 'low' });
-        await onUserMessage({ content: { text: 'stale client settings' }, meta: { model: 'claude-opus-5', effort: 'medium' } });
-        expect(harness.loopOptions.messageQueue.queue.at(-1).mode).toMatchObject({ model: 'deepseek-flash', effort: 'low' });
-        await onUserMessage({ content: { text: 'reset to DeepSeek defaults' }, meta: { model: null, effort: null } });
-        expect(harness.loopOptions.messageQueue.queue.at(-1).mode).toMatchObject({ model: 'deepseek-flash', effort: 'high' });
-        await harness.finish();
-    });
     const processEvents = ['SIGTERM', 'SIGINT', 'uncaughtException', 'unhandledRejection'] as const;
     const originalListeners = new Map<string, Array<(...args: any[]) => void>>();
 

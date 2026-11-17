@@ -7,18 +7,20 @@ export type ImageAttachmentSendPlan = {
     shouldSendText: boolean;
 };
 
-export function supportsImageAttachmentsForFlavor(flavor: ImageAttachmentFlavor): boolean {
+export function supportsImageAttachmentsForFlavor(flavor: ImageAttachmentFlavor, model?: string | null): boolean {
+    if (flavor === 'deepseek') return !model || model === 'deepseek-flash';
     return !flavor || flavor === 'claude' || flavor === 'codex' || flavor === 'agy';
 }
 
 export function getImageAttachmentSendPlan(opts: {
     flavor: ImageAttachmentFlavor;
+    model?: string | null;
     text: string;
     attachmentCount: number;
     supportsAttachments?: boolean;
 }): ImageAttachmentSendPlan {
     const hasAttachments = opts.attachmentCount > 0;
-    const supportsAttachments = opts.supportsAttachments ?? supportsImageAttachmentsForFlavor(opts.flavor);
+    const supportsAttachments = opts.supportsAttachments ?? supportsImageAttachmentsForFlavor(opts.flavor, opts.model);
     const shouldShowUnsupportedAlert = hasAttachments && !supportsAttachments;
 
     return {

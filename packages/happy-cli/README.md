@@ -30,27 +30,63 @@ This will:
 
 ### DeepSeek
 
-Set `DEEPSEEK_API_KEY` on the computer running Happy, then start a session:
+Install the official [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+CLI with **Node.js 24.9 or newer**, then set its API key on the computer running Happy:
 
 ```bash
+pnpm add -g @deepseek-ai/dsh@0.2.2-rc.1
 export DEEPSEEK_API_KEY="your-api-key"
 happy deepseek
 happy deepseek --model deepseek-v4-pro --effort max
+happy deepseek --permission-mode read-only
+happy resume <happy-session-id>
 ```
 
 In PowerShell, use `$env:DEEPSEEK_API_KEY="your-api-key"`.
 
-Happy uses its bundled Claude Code harness with DeepSeek's Anthropic-compatible
-endpoint (`https://api.deepseek.com/anthropic`). The app lists **DeepSeek** once
-the machine reports a configured key. If the daemon is already running, restart
-it from the shell containing the key with `happy daemon stop` and `happy daemon start`.
+Happy runs `dsh --profile acp` directly. Claude Code is not required; an existing
+Claude installation and its credentials are independent. The app lists **DeepSeek**
+when the machine has a supported Node version, `dsh`, and a configured key.
+Restart an already-running daemon from that shell with `happy daemon stop` and
+`happy daemon start` so it inherits the key and PATH.
 `HAPPY_ENABLED_AGENTS` / `HAPPY_DISABLED_AGENTS` accept `deepseek`.
+
+Set `HAPPY_DEEPSEEK_PATH` to a specific executable or the installed package's
+`lib/bin.js`. Happy stores its isolated Harness profile and persistent sessions
+in `~/.happy/deepseek` (`HAPPY_DEEPSEEK_HOME` overrides this). Use
+`happy deepseek --resume <harness-session-id>` for a native session, or
+`happy resume <happy-session-id>` to reconnect the same encrypted Happy conversation.
 
 The current [DeepSeek API models](https://api-docs.deepseek.com/quick_start/pricing)
 (verified November 15, 2026) are `deepseek-flash` (default, DeepSeek V4.1 Flash)
-and `deepseek-v4-pro`. Both offer `low`, `high` (default), and `max` reasoning
-effort. Retired model aliases are omitted from the pickers. API keys stay in the
-machine environment; session metadata contains model selections only.
+and `deepseek-v4-pro`. Both offer `off`, `low`, `high` (default), and `max`
+reasoning effort. Flash accepts images; Pro accepts text only. Keys stay in the
+machine environment; session metadata contains selections and the native ID.
+
+Permissions use the Codex picker vocabulary: `auto`/`default` permit workspace
+writes and ask for escalation, `safe-yolo` permits workspace writes without
+escalation, `read-only` rejects writes, and `yolo` permits full access. The fork's
+default is `yolo`. Permission changes apply through Harness's durable policy
+setters when resuming the same native session. Harness currently treats
+`default` like `auto`; it has no Codex `untrusted` command policy.
+"Allow for session" remembers the exact tool and arguments in the current
+Happy process; changing permission modes clears these approvals.
+
+Happy forwards text, reasoning, tools, results, context usage, cancellation,
+model/effort changes, and persistent resume. Happy MCP tools supply question
+cards and task plans. Native ACP delivers committed text blocks rather than
+every provider token. DSH ACP currently has no session fork or transcript replay;
+Happy retains its own chat history. Old Claude-based DeepSeek sessions cannot
+be resumed as native Harness sessions.
+
+Protocol support checks can run without a live API key:
+
+```bash
+HAPPY_TEST_DEEPSEEK_PATH=/path/to/dsh/lib/bin.js pnpm --filter happy exec vitest run --project unit src/deepseek/DeepSeekAcpBackend.test.ts
+```
+
+Live acceptance tests use `HAPPY_RUN_DEEPSEEK_INTEGRATION=1`, your own
+`DEEPSEEK_API_KEY`, and `vitest run --project integration-deepseek-local`.
 
 ### More agents
 

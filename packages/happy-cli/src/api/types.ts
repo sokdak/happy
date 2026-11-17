@@ -152,6 +152,7 @@ export const MachineMetadataSchema = z.object({
     detectedAt: z.number(),
   }).optional(),
   resumeSupport: z.object({
+    deepseek: z.boolean().optional(),
     agy: z.boolean().optional(),
     rpcAvailable: z.boolean(),
     requiresSameMachine: z.boolean(),
@@ -302,6 +303,7 @@ export type Metadata = {
   models?: Array<{ code: string; value: string; description?: string | null }>,
   currentModelCode?: string,
   modelMode?: string | null,
+  permissionMode?: string | null,
   effortLevel?: string | null,
   operatingModes?: Array<{ code: string; value: string; description?: string | null }>,
   currentOperatingModeCode?: string,
@@ -320,6 +322,7 @@ export type Metadata = {
   gitBranch?: string,
   claudeSessionId?: string, // Claude Code session ID
   codexThreadId?: string, // Codex app-server thread ID
+  deepseekSessionId?: string, // DeepSeek Harness ACP session ID
   agySessionId?: string, // Explicit Antigravity ACP session ID for recovery
   tools?: string[],
   slashCommands?: string[],

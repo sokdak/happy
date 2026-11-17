@@ -130,7 +130,7 @@ export function resolveMessageModeMeta(
     // of omitting them: Codex can reset to its launch mode during an abort, and
     // Agy maps its model + effort pair independently at the provider boundary.
     // In either case an omitted fallback could execute differently from the UI.
-    if (flavor === 'codex' || flavor === 'agy') {
+    if (flavor === 'codex' || flavor === 'agy' || flavor === 'deepseek') {
         const defaults = resolveAgentDefaultConfig(settings?.agentDefaultOverrides, flavor, cliVersion);
         meta.permissionMode = supported(retirePermissionMode(session.permissionMode ?? defaults.permissionMode));
 

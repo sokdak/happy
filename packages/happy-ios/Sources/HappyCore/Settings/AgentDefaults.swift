@@ -75,7 +75,7 @@ public enum AgentDefaults {
 
     static func codeDefaults(_ agent: Agent) -> Config {
         switch agent {
-        case .deepseek: Config(permissionMode: "bypassPermissions", modelMode: "deepseek-flash", effortLevel: "high")
+        case .deepseek: Config(permissionMode: "yolo", modelMode: "deepseek-flash", effortLevel: "high")
         case .claude: Config(permissionMode: "auto", modelMode: "claude-opus-5-5", effortLevel: "medium")
         case .codex: Config(permissionMode: "auto", modelMode: "gpt-6.1-sol", effortLevel: "medium")
         case .gemini: Config(permissionMode: "default", modelMode: "gemini-2.5-pro", effortLevel: nil)
@@ -174,7 +174,8 @@ public enum AgentDefaults {
 
     public static func permissionModes(_ agent: Agent) -> [Option] {
         switch agent {
-        case .claude, .deepseek:
+        case .deepseek: permissionModes(.codex)
+        case .claude:
             [
                 Option("auto", "Auto", "asks when unsure"),
                 Option("acceptEdits", "Edits", "edits, no asking"),
@@ -271,7 +272,7 @@ public enum AgentDefaults {
         let keys: [String]
         switch agent {
         case .deepseek:
-            keys = ["low", "high", "max"]
+            keys = ["off", "low", "high", "max"]
         case .claude:
             keys = ["low", "medium", "high", "xhigh", "max"]
         case .codex:

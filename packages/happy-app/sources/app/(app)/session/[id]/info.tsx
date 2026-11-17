@@ -79,7 +79,7 @@ function formatDangerouslySkipPermissionsMetadata(
         return 'Enabled';
     }
 
-    if ((flavor === 'claude' || flavor === 'deepseek') && sandbox && typeof sandbox === 'object') {
+    if (flavor === 'claude' && sandbox && typeof sandbox === 'object') {
         const sandboxValue = sandbox as Record<string, unknown>;
         if (sandboxValue.enabled === true) {
             return 'Enabled';

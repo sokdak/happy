@@ -89,6 +89,10 @@ public enum SessionDetails {
             return nil
         }
         let flavor = metadata?["flavor"]?.stringValue
+        if flavor == "deepseek" {
+            guard let native = truthy(metadata?["deepseekSessionId"]) else { return nil }
+            return "happy deepseek --resume \(native)"
+        }
         if flavor == "codex" || flavor == "openai" || flavor == "gpt", let thread = truthy(metadata?["codexThreadId"]) {
             return "happy codex --resume \(thread)"
         }
@@ -216,13 +220,17 @@ public enum SessionDetails {
         if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false { return .hidden }
         if SessionState(session) != .disconnected { return .hidden }
         guard truthy(metadata?["machineId"]) != nil else { return .missingMachine }
-        guard truthy(metadata?["claudeSessionId"]) != nil || truthy(metadata?["codexThreadId"]) != nil else {
+        let deepseek = metadata?["flavor"]?.stringValue == "deepseek"
+        let hasNativeId = deepseek ? truthy(metadata?["deepseekSessionId"]) != nil
+            : truthy(metadata?["claudeSessionId"]) != nil || truthy(metadata?["codexThreadId"]) != nil
+        guard hasNativeId else {
             return .missingBackendId
         }
         guard let machine else { return .sameMachineOnly }
         guard machine.active else { return .machineOffline }
         // Older daemons don't publish resumeSupport and can't run the RPC.
         guard machine.metadata?["resumeSupport"]?["rpcAvailable"] == .bool(true) else { return .hidden }
+        if deepseek && machine.metadata?["resumeSupport"]?["deepseek"] != .bool(true) { return .hidden }
         return .available
     }
 

@@ -81,7 +81,7 @@ object MessageMetaResolver {
 
         // Codex and Agy always run with a concrete permission, model and effort:
         // send what the composer shows rather than leaving the agent to guess.
-        if (flavor == "codex" || flavor == "agy") {
+        if (flavor == "codex" || flavor == "agy" || flavor == "deepseek") {
             val defaults = AgentDefaults.resolve(overrides, flavor, cliVersion)
             val modelMode = mirror.modelMode ?: defaults.modelMode
             return MessageModeMeta(

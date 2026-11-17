@@ -335,6 +335,7 @@ export function filterPermissionModesForCli<T extends ModeOption>(
 }
 
 export function getHardcodedPermissionModes(flavor: AgentFlavor, translate: Translate): PermissionMode[] {
+    if (flavor === 'deepseek') return getCodexPermissionModes(translate);
     if (flavor === 'codex') {
         return getCodexPermissionModes(translate);
     }
@@ -631,7 +632,10 @@ export function getEffortLevelsForModel(
     // silently downgraded rather than rejected (sdk.d.ts:174). Codex is the
     // opposite — each model publishes its own supported levels — so it is asked
     // per model.
-    if (flavor === 'deepseek') return effortLevels(DEEPSEEK_EFFORT_LEVELS);
+    if (flavor === 'deepseek') {
+        const native = mapMetadataOptions(metadata?.thoughtLevels);
+        return native.length ? native : effortLevels(DEEPSEEK_EFFORT_LEVELS);
+    }
     if (flavor === 'claude') {
         return getClaudeEffortLevels();
     }

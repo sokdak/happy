@@ -107,6 +107,7 @@ export const ResumeFallbackSchema = z.object({
         flavor: z.string().nullish(),
         claudeSessionId: z.string().optional(),
         codexThreadId: z.string().optional(),
+        deepseekSessionId: z.string().optional(),
         agySessionId: z.string().optional(),
     }).passthrough(),
     metadataVersion: z.number().int().nonnegative(),

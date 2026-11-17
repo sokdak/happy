@@ -24,8 +24,8 @@ import android.content.res.Resources
 val LocalComposerImages = compositionLocalOf<ImagePicker?> { null }
 
 /** SessionView.tsx `canUseAttachments`: the rig's capability for rig v1 sessions, else the flavor. */
-fun canUseAttachments(metadata: SessionMetadata?): Boolean =
-    if (metadata.isRigV1()) metadata.rigCanUseAttachments() else supportsImageAttachmentsForFlavor(metadata?.flavor)
+fun canUseAttachments(metadata: SessionMetadata?, model: String? = null): Boolean =
+    if (metadata.isRigV1()) metadata.rigCanUseAttachments() else supportsImageAttachmentsForFlavor(metadata?.flavor, model ?: metadata?.modelMode ?: metadata?.currentModelCode)
 
 /**
  * [ImagePicker] for a chat, or null when [enabled] is false. Like

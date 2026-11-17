@@ -33,7 +33,7 @@ const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
     // This fork defaults both code agents to Yolo. Explicit user overrides
     // remain separate; model defaults keep upstream CLI compatibility gates.
     claude: { permissionMode: 'bypassPermissions', modelMode: 'claude-opus-5-5', effortLevel: 'medium' },
-    deepseek: { permissionMode: 'bypassPermissions', modelMode: 'deepseek-flash', effortLevel: 'high' },
+    deepseek: { permissionMode: 'yolo', modelMode: 'deepseek-flash', effortLevel: 'high' },
     codex: { permissionMode: 'yolo', modelMode: 'gpt-6.1-sol', effortLevel: 'medium' },
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },

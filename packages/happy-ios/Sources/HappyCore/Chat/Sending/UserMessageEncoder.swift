@@ -144,7 +144,7 @@ public enum UserMessageEncoder {
         let agent = AgentDefaults.Agent(rawValue: flavor) ?? .claude
         let overrides = settings?["agentDefaultOverrides"]?.objectValue ?? [:]
         let version = m["version"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
-        let concrete = flavor == "codex" || flavor == "agy"
+        let concrete = flavor == "codex" || flavor == "agy" || flavor == "deepseek"
         var permission = c["permissionMode"]?.stringValue
             ?? AgentDefaults.override(overrides, agent, .permissionMode)
         var model = c["modelMode"]?.stringValue

@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { AgentUserInputHandler } from '@/utils/AgentUserInputHandler';
+import { createInterface } from 'node:readline';
+import type { Metadata, AgentState, Session } from '@/api/types';
+import type { PendingAttachment } from '@/utils/MessageQueue2';
+import { acpPromptImages } from './promptImages';
 import { join } from 'node:path';
 import { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentMessage } from '@/agent/core';
-import { AcpBackend, type AcpPermissionHandler } from './AcpBackend';
+import { AcpBackend, type AcpBackendOptions, type AcpPermissionHandler } from './AcpBackend';
 import { DefaultTransport } from '@/agent/transport';
 import { AcpSessionManager } from './AcpSessionManager';
-import type { SessionEnvelope } from '@slopus/happy-wire';
+import { createEnvelope, type SessionEnvelope } from '@slopus/happy-wire';
 import { logger } from '@/ui/logger';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
@@ -28,7 +33,7 @@ import {
   extractModelStateFromPayload,
   mergeAcpSessionConfigIntoMetadata,
 } from './sessionConfigMetadata';
-import type { SessionConfigOption, SessionModeState, SessionModelState } from '@agentclientprotocol/sdk';
+import type { ContentBlock, SessionConfigOption, SessionModeState, SessionModelState } from '@agentclientprotocol/sdk';
 
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
 const ACP_EVENT_PREVIEW_CHARS = 240;
@@ -269,6 +274,7 @@ function formatEnvelopeForServerLog(agentName: string, envelope: SessionEnvelope
 type AcpSwitchMode = {
   permissionMode?: string;
   model?: string | null;
+  effort?: string | null;
 };
 
 type AcpSelectableOption = {
@@ -321,15 +327,14 @@ function flattenSelectOptions(options: unknown): AcpSelectableOption[] {
 
 function extractConfigSelector(
   configOptions: SessionConfigOption[],
-  category: 'mode' | 'model',
+  category: 'mode' | 'model' | 'thought_level',
 ): AcpConfigSelector | null {
   const optionMatchesCategory = (option: SessionConfigOption): boolean => {
-    if (option.category === category) {
-      return true;
-    }
+    if (option.category) return option.category === category;
     // Some ACP providers omit category; fallback to id/name heuristics.
     const id = normalizeComparable(option.id);
     const name = normalizeComparable(option.name);
+    if (category === 'thought_level') return id.includes('reasoning') || id.includes('effort') || id.includes('thought');
     if (category === 'model') {
       return id.includes('model') || name.includes('model');
     }
@@ -407,7 +412,7 @@ function resolveRequestedLegacyModelCode(models: SessionModelState, requested: s
 class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPermissionHandler {
   private readonly logPrefix: string;
 
-  constructor(session: ApiSessionClient, agentName: string) {
+  constructor(session: ApiSessionClient, agentName: string, private readonly resolveCallId: (id: string) => string = id => id) {
     super(session);
     this.logPrefix = `[${agentName}]`;
   }
@@ -417,6 +422,7 @@ class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPe
   }
 
   async handleToolCall(toolCallId: string, toolName: string, input: unknown): Promise<PermissionResult> {
+    toolCallId = this.resolveCallId(toolCallId);
     return new Promise<PermissionResult>((resolve, reject) => {
       this.pendingRequests.set(toolCallId, {
         resolve,
@@ -436,7 +442,8 @@ type PendingTurn = {
   timeout: NodeJS.Timeout;
 };
 
-function resolveSessionFlavor(agentName: string): 'gemini' | 'opencode' | 'acp' {
+function resolveSessionFlavor(agentName: string): 'gemini' | 'opencode' | 'acp' | 'deepseek' {
+  if (agentName === 'deepseek') return 'deepseek';
   if (agentName === 'gemini') {
     return 'gemini';
   }
@@ -446,14 +453,42 @@ function resolveSessionFlavor(agentName: string): 'gemini' | 'opencode' | 'acp' 
   return 'acp';
 }
 
-export async function runAcp(opts: {
+export interface AcpRunnerBackend {
+  startSession(): Promise<{ sessionId: string }>;
+  sendPrompt(sessionId: string, prompt: string, images?: ContentBlock[]): Promise<void>;
+  cancel(sessionId: string): Promise<void>;
+  dispose(): Promise<void>;
+  onMessage(handler: (message: AgentMessage) => void): void;
+  offMessage?(handler: (message: AgentMessage) => void): void;
+  setSessionConfigOption(id: string, value: string): Promise<boolean>;
+  setSessionMode(mode: string): Promise<boolean>;
+  setSessionModel(model: string): Promise<boolean>;
+}
+
+export interface AcpRunOptions {
   credentials: Credentials;
   agentName: string;
   command: string;
   args: string[];
   startedBy?: 'daemon' | 'terminal';
   verbose?: boolean;
-}): Promise<void> {
+  model?: string;
+  effort?: string;
+  permissionMode?: string;
+  defaultModel?: string;
+  defaultEffort?: string;
+  backendFactory?: (options: AcpBackendOptions) => AcpRunnerBackend;
+  reconnect?: (metadata: Metadata, state: AgentState) => Session | null;
+  nativeSessionIdKey?: 'deepseekSessionId';
+  responseCompletesTurn?: boolean;
+  recoverPromptErrors?: boolean;
+  preserveSessionOnExit?: boolean;
+  interactive?: boolean;
+  interactionTools?: boolean;
+  normalizePermissionMode?: (mode: string) => string;
+}
+
+export async function runAcp(opts: AcpRunOptions): Promise<void> {
   const verbose = opts.verbose === true;
   const sessionTag = randomUUID();
   connectionState.setBackend(opts.agentName);
@@ -473,13 +508,18 @@ export async function runAcp(opts: {
     flavor: resolveSessionFlavor(opts.agentName),
     machineId: settings.machineId,
     startedBy: opts.startedBy,
-    sandbox: settings.sandboxConfig,
+    sandbox: opts.agentName === 'deepseek' ? undefined : settings.sandboxConfig,
   });
-  const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  const reconnect = opts.reconnect?.(metadata, state);
+  if (reconnect?.metadata) Object.assign(metadata, reconnect.metadata);
+  const response = reconnect ?? await api.getOrCreateSession({ tag: sessionTag, metadata, state });
   if (response) {
     logAcp('muted', `Happy Session ID: ${response.id}`);
   }
 
+  let nativeSessionId: string | undefined;
+  let inputReady = false;
+  let userInputHandler: AgentUserInputHandler | undefined;
   let session: ApiSessionClient;
   let permissionHandler: GenericAcpPermissionHandler;
   const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
@@ -490,12 +530,20 @@ export async function runAcp(opts: {
     response,
     onSessionSwap: (newSession) => {
       session = newSession;
+      userInputHandler?.updateSession(newSession);
+      if (opts.nativeSessionIdKey && nativeSessionId) newSession.updateMetadata(current => ({ ...current, [opts.nativeSessionIdKey!]: nativeSessionId }));
+      if (inputReady) bindInput(newSession);
       if (permissionHandler) {
         permissionHandler.updateSession(newSession);
       }
     },
   });
   session = initialSession;
+  if (reconnect) {
+    session.suppressNextArchiveSignal();
+    session.skipExistingMessages();
+    session.updateMetadata(current => ({ ...current, lifecycleState: 'running', archivedBy: undefined, archiveReason: undefined }));
+  }
 
   if (response) {
     try {
@@ -511,15 +559,18 @@ export async function runAcp(opts: {
     }
   }
 
-  permissionHandler = new GenericAcpPermissionHandler(session, opts.agentName);
+  const sessionManager = new AcpSessionManager(opts.responseCompletesTurn ? { preserveTextWhitespace: true, forwardToolResults: true } : {});
+  permissionHandler = new GenericAcpPermissionHandler(session, opts.agentName,
+    opts.responseCompletesTurn ? id => sessionManager.resolveSessionCallId(id) : undefined);
   // Drop any permission requests left in agent state from a previous CLI
   // process that died while a tool prompt was open — see the matching
   // call in claudeRemoteLauncher for the full rationale.
   permissionHandler.reset('Previous CLI process exited before responding');
-  const sessionManager = new AcpSessionManager();
   const messageQueue = new MessageQueue2<AcpSwitchMode>((mode) => hashObject(mode));
-  let currentPermissionMode: string | undefined;
-  let currentModel: string | null | undefined;
+  let currentPermissionMode = opts.permissionMode;
+  let currentModel: string | null | undefined = opts.model;
+  let currentEffort: string | null | undefined = opts.effort;
+  let effortSelector: AcpConfigSelector | null = null;
   let modeSelector: AcpConfigSelector | null = null;
   let modelSelector: AcpConfigSelector | null = null;
   let legacyModes: SessionModeState | null = null;
@@ -528,15 +579,36 @@ export async function runAcp(opts: {
   let sawModes = false;
   let sawModels = false;
 
-  const happyServer = await startHappyServer(session);
+  if (opts.interactionTools) {
+    userInputHandler = new AgentUserInputHandler(session, () => sessionManager.getTurnId());
+    userInputHandler.reset();
+  }
+  const happyServer = await startHappyServer({
+    get sessionId() { return session.sessionId; },
+    sendClaudeSessionMessage: message => session.sendClaudeSessionMessage(message),
+  }, opts.interactionTools ? {
+    requestUserInput: (questions, signal) => userInputHandler!.handle({
+      callId: randomUUID(), questions: questions.map(question => ({ ...question, options: question.options ?? null, isOther: question.isOther ?? true, isSecret: question.isSecret ?? false })), signal,
+    }),
+    updatePlan: async plan => {
+      const call = randomUUID();
+      const turn = sessionManager.getTurnId();
+      const options = turn ? { turn } : {};
+      session.sendSessionProtocolMessage(createEnvelope('agent', { t: 'tool-call-start', call,
+        name: 'TodoWrite', title: 'Plan', description: 'Current task plan',
+        args: { todos: plan.map(item => ({ content: item.step, status: item.status, activeForm: item.step })) } }, options));
+      session.sendSessionProtocolMessage(createEnvelope('agent', { t: 'tool-call-end', call }, options));
+      return { success: true };
+    },
+  } : {});
   const mcpServers = {
     happy: {
-      command: join(projectPath(), 'bin', 'happy-mcp.mjs'),
-      args: ['--url', happyServer.url],
+      command: process.execPath,
+      args: [join(projectPath(), 'bin', 'happy-mcp.mjs'), '--url', happyServer.url, ...(opts.interactionTools ? ['--interactions'] : [])],
     },
   };
 
-  const backend = new AcpBackend({
+  const backend = (opts.backendFactory ?? (options => new AcpBackend(options)))({
     agentName: opts.agentName,
     cwd: process.cwd(),
     command: opts.command,
@@ -600,6 +672,7 @@ export async function runAcp(opts: {
   };
 
   const switchPermissionModeIfRequested = async (requestedMode: string): Promise<void> => {
+    requestedMode = opts.normalizePermissionMode?.(requestedMode) ?? requestedMode;
     if (!requestedMode) {
       return;
     }
@@ -607,6 +680,7 @@ export async function runAcp(opts: {
     if (modeSelector) {
       const resolved = resolveRequestedCode(modeSelector.options, requestedMode);
       if (!resolved) {
+        if (opts.responseCompletesTurn) throw new Error(`Unsupported ${opts.agentName} permission mode: ${requestedMode}`);
         logger.debug(`[${opts.agentName}] Ignoring unknown ACP permission mode request: ${requestedMode}`);
         return;
       }
@@ -650,6 +724,7 @@ export async function runAcp(opts: {
     if (modelSelector) {
       const resolved = resolveRequestedCode(modelSelector.options, requestedModel);
       if (!resolved) {
+        if (opts.responseCompletesTurn) throw new Error(`Unsupported ${opts.agentName} model: ${requestedModel}`);
         logger.debug(`[${opts.agentName}] Ignoring unknown ACP model request: ${requestedModel}`);
         return;
       }
@@ -682,6 +757,15 @@ export async function runAcp(opts: {
         ...legacyModels,
         currentModelId: resolvedLegacyModel,
       };
+    }
+  };
+
+  const switchEffortIfRequested = async (requested: string) => {
+    if (!effortSelector) return;
+    const value = resolveRequestedCode(effortSelector.options, requested);
+    if (value === null) throw new Error(`Unsupported ${opts.agentName} reasoning effort: ${requested}`);
+    if (value !== effortSelector.currentCode && !await backend.setSessionConfigOption(effortSelector.configId, value)) {
+      throw new Error('Reasoning selection was refused');
     }
   };
 
@@ -723,6 +807,10 @@ export async function runAcp(opts: {
 
         modeSelector = extractConfigSelector(configOptions, 'mode');
         modelSelector = extractConfigSelector(configOptions, 'model');
+        effortSelector = extractConfigSelector(configOptions, 'thought_level');
+        currentPermissionMode ??= modeSelector?.currentCode;
+        currentModel ??= modelSelector?.currentCode;
+        currentEffort ??= effortSelector?.currentCode;
         if (verbose) {
           if (modeSelector) {
             sawModes = true;
@@ -743,9 +831,13 @@ export async function runAcp(opts: {
             logAcp('muted', `Outgoing model options from ${opts.agentName}: not reported in config options`);
           }
         }
-        session.updateMetadata((currentMetadata) =>
-          mergeAcpSessionConfigIntoMetadata(currentMetadata, { configOptions }),
-        );
+        session.updateMetadata((currentMetadata) => {
+          const next = Object.assign(mergeAcpSessionConfigIntoMetadata(currentMetadata, { configOptions }),
+            opts.responseCompletesTurn ? { modelMode: modelSelector?.currentCode, effortLevel: effortSelector?.currentCode,
+              permissionMode: modeSelector?.currentCode } : {});
+          Object.assign(metadata, next);
+          return next;
+        });
       }
     }
 
@@ -804,6 +896,14 @@ export async function runAcp(opts: {
       }
     }
 
+    if (msg.type === 'event' && msg.name === 'context_usage') {
+      const usage = msg.payload as { used?: number; size?: number };
+      if (Number.isSafeInteger(usage.used) && usage.used! >= 0 && Number.isSafeInteger(usage.size) && usage.size! > 0) {
+        // ACP reports the next input context, not billable per-response output tokens.
+        sendEnvelopes([createEnvelope('agent', { t: 'service', text: '' }, { usage: { input_tokens: usage.used!, output_tokens: 0, context_window: usage.size! } })]);
+      }
+    }
+
     if (msg.type === 'status') {
       const suffix = msg.detail ? `: ${msg.detail}` : '';
       const statusLine = `Status: ${msg.status}${suffix}`;
@@ -841,26 +941,33 @@ export async function runAcp(opts: {
 
   backend.onMessage(onBackendMessage);
 
-  session.onUserMessage((message) => {
-    if (!message.content.text) {
-      return;
-    }
-
-    if (typeof message.meta?.permissionMode === 'string') {
-      currentPermissionMode = message.meta.permissionMode;
-      logger.debug(`[${opts.agentName}] Requested ACP permission mode: ${currentPermissionMode}`);
-    }
-
-    if (message.meta && Object.prototype.hasOwnProperty.call(message.meta, 'model')) {
-      currentModel = message.meta.model ?? null;
-      logger.debug(`[${opts.agentName}] Requested ACP model: ${currentModel ?? 'null'}`);
-    }
-
-    messageQueue.push(message.content.text, {
-      permissionMode: currentPermissionMode,
-      model: currentModel,
+  let enqueueTail = Promise.resolve();
+  function bindInput(inputSession: ApiSessionClient) {
+    inputSession.onFileEvent?.(message => {
+      const file = message.content.data.ev;
+      const download = inputSession.downloadAndDecryptAttachment(file.ref).then(data => {
+        if (!data) throw new Error('ACP attachment could not be decrypted');
+        return { data, mimeType: file.mimeType ?? '', name: file.name };
+      });
+      void download.catch(() => {});
+      inputSession.trackAttachmentDownload(download);
     });
-  });
+    inputSession.onUserMessage(message => {
+      const attachments = inputSession.drainAttachmentsForUserMessage?.() ?? Promise.resolve([] as PendingAttachment[]);
+      void attachments.catch(() => {});
+      if (typeof message.meta?.permissionMode === 'string') currentPermissionMode = message.meta.permissionMode;
+      if (message.meta?.hasOwnProperty('model')) currentModel = message.meta.model ?? opts.defaultModel ?? null;
+      if (message.meta?.hasOwnProperty('effort')) currentEffort = message.meta.effort ?? opts.defaultEffort ?? null;
+      const mode = { permissionMode: currentPermissionMode, model: currentModel, effort: currentEffort };
+      enqueueTail = enqueueTail.then(async () => {
+        const downloaded = await attachments;
+        if (shouldExit || (!message.content.text && !downloaded.length)) return;
+        messageQueue.push(message.content.text, mode, downloaded);
+      }).catch(() => { if (!shouldExit) session.sendSessionEvent({ type: 'message', message: 'The attachment could not be received. Please send the message again.' }); });
+    });
+  }
+  bindInput(session);
+  inputReady = true;
   session.keepAlive(thinking, 'remote');
 
   const keepAliveInterval = setInterval(() => {
@@ -868,6 +975,8 @@ export async function runAcp(opts: {
   }, 2000);
 
   async function handleAbort() {
+    permissionHandler.abortAll();
+    userInputHandler?.reset();
     try {
       if (acpSessionId) {
         await backend.cancel(acpSessionId);
@@ -881,6 +990,15 @@ export async function runAcp(opts: {
     }
   }
 
+  const flushInterval = opts.responseCompletesTurn ? setInterval(() => sendEnvelopes(sessionManager.flushPendingText()), 50) : undefined;
+  const terminal = opts.interactive ? createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY === true }) : undefined;
+  terminal?.on('line', line => {
+    if (line.trim()) messageQueue.push(line, { permissionMode: currentPermissionMode, model: currentModel, effort: currentEffort });
+  });
+  const stop = () => { shouldExit = true; messageQueue.close(); void handleAbort(); };
+  terminal?.on('SIGINT', stop);
+  terminal?.on('close', () => messageQueue.close());
+  if (opts.interactive) { process.on('SIGINT', stop); process.on('SIGTERM', stop); }
   session.rpcHandlerManager.registerHandler('abort', handleAbort);
   registerKillSessionHandler(session, async () => {
     shouldExit = true;
@@ -892,6 +1010,15 @@ export async function runAcp(opts: {
   try {
     const started = await backend.startSession();
     acpSessionId = started.sessionId;
+    if (opts.nativeSessionIdKey) {
+      nativeSessionId = started.sessionId;
+      metadata[opts.nativeSessionIdKey] = nativeSessionId;
+      session.updateMetadata(current => ({ ...current, [opts.nativeSessionIdKey!]: nativeSessionId }));
+      if (response) await notifyDaemonSessionStarted(response.id, metadata, {
+        encryptionKey: encodeBase64(response.encryptionKey), encryptionVariant: response.encryptionVariant,
+        seq: response.seq, metadataVersion: response.metadataVersion, agentStateVersion: response.agentStateVersion,
+      }).catch(error => logger.debug('[acp] Failed to persist native session identity:', error));
+    }
     if (verbose) {
       if (!sawSlashCommands) {
         logAcp('muted', `Outgoing slash commands from ${opts.agentName}: not reported yet`);
@@ -924,7 +1051,8 @@ export async function runAcp(opts: {
       logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
       errorReportedForCurrentTurn = false;
       sendEnvelopes(sessionManager.startTurn());
-      const turnEnded = waitForTurnEnd();
+      const turnEnded = opts.responseCompletesTurn ? Promise.resolve() : waitForTurnEnd();
+      void turnEnded.catch(() => {});
       try {
         if (typeof batch.mode.permissionMode === 'string' && batch.mode.permissionMode.length > 0) {
           await switchPermissionModeIfRequested(batch.mode.permissionMode);
@@ -932,7 +1060,9 @@ export async function runAcp(opts: {
         if (typeof batch.mode.model === 'string' && batch.mode.model.length > 0) {
           await switchModelIfRequested(batch.mode.model);
         }
-        await backend.sendPrompt(acpSessionId, batch.message);
+        if (typeof batch.mode.effort === 'string') await switchEffortIfRequested(batch.mode.effort);
+        const images = batch.attachments?.length ? acpPromptImages(batch.attachments) : [];
+        await backend.sendPrompt(acpSessionId, batch.message, images);
         await turnEnded;
         sendEnvelopes(sessionManager.endTurn('completed'));
         session.sendSessionEvent({ type: 'ready' });
@@ -940,24 +1070,30 @@ export async function runAcp(opts: {
           logAcp('muted', `Outgoing prompt completion from ${opts.agentName}`);
         }
       } catch (error) {
+        const cancelled = error instanceof Error && error.name === 'DeepSeekCancelledError';
         const detail = error instanceof Error ? error.message : String(error);
-        if (!errorReportedForCurrentTurn) {
+        if (!cancelled && !errorReportedForCurrentTurn) {
           session.sendSessionEvent({
             type: 'message',
             message: `${opts.agentName} error: ${detail}`,
           });
           errorReportedForCurrentTurn = true;
         }
-        sendEnvelopes(sessionManager.endTurn('failed'));
+        sendEnvelopes(sessionManager.endTurn(cancelled ? 'cancelled' : 'failed'));
         session.sendSessionEvent({ type: 'ready' });
         logAcp('error', `Prompt error from ${opts.agentName}: ${detail}`);
         clearPendingTurn(error instanceof Error ? error : new Error(String(error)));
         await turnEnded.catch(() => {});
-        throw error;
+        if (!opts.recoverPromptErrors) throw error;
+      } finally {
+        if (opts.responseCompletesTurn) { thinking = false; session.keepAlive(false, 'remote'); userInputHandler?.reset(); }
       }
     }
   } finally {
     clearInterval(keepAliveInterval);
+    if (flushInterval) clearInterval(flushInterval);
+    terminal?.close();
+    if (opts.interactive) { process.off('SIGINT', stop); process.off('SIGTERM', stop); }
     reconnectionHandle?.cancel();
     clearPendingTurn(new Error('ACP runner shutting down'));
 
@@ -967,6 +1103,7 @@ export async function runAcp(opts: {
       logger.debug(`[${opts.agentName}] Failed to reset permission handler:`, error);
     }
 
+    userInputHandler?.reset();
     backend.offMessage?.(onBackendMessage);
     await backend.dispose();
 
@@ -979,10 +1116,10 @@ export async function runAcp(opts: {
     try {
       session.updateMetadata((currentMetadata) => ({
         ...currentMetadata,
-        lifecycleState: 'archived',
+        lifecycleState: opts.preserveSessionOnExit ? 'running' : 'archived',
         lifecycleStateSince: Date.now(),
-        archivedBy: 'cli',
-        archiveReason: 'Session ended',
+        archivedBy: opts.preserveSessionOnExit ? undefined : 'cli',
+        archiveReason: opts.preserveSessionOnExit ? undefined : 'Session ended',
       }));
       session.sendSessionDeath();
       await session.flush();

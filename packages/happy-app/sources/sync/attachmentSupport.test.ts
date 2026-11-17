@@ -7,6 +7,12 @@ import {
 } from './attachmentSupport';
 
 describe('supportsImageAttachmentsForFlavor', () => {
+    it('admits DeepSeek Flash images and refuses Pro image-only sends', () => {
+        expect(supportsImageAttachmentsForFlavor('deepseek', 'deepseek-flash')).toBe(true);
+        expect(supportsImageAttachmentsForFlavor('deepseek', 'deepseek-v4-pro')).toBe(false);
+        expect(getImageAttachmentSendPlan({ flavor: 'deepseek', model: 'deepseek-v4-pro', text: '', attachmentCount: 1 }))
+            .toMatchObject({ shouldUseAttachments: false, shouldShowUnsupportedAlert: true, shouldSendText: false });
+    });
     it('supports legacy sessions, Claude, Codex, and Antigravity', () => {
         expect(supportsImageAttachmentsForFlavor(undefined)).toBe(true);
         expect(supportsImageAttachmentsForFlavor(null)).toBe(true);

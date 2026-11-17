@@ -69,6 +69,8 @@ public struct OutboxSender: ChatSending {
         let supportsAttachments: Bool
         if rig {
             supportsAttachments = policy?["enabled"]?.boolValue == true
+        } else if flavor == "deepseek" {
+            supportsAttachments = (metadata["modelMode"]?.stringValue ?? metadata["currentModelCode"]?.stringValue ?? "deepseek-flash") == "deepseek-flash"
         } else {
             supportsAttachments = flavor == nil || flavor == "" || flavor == "claude" || flavor == "codex" || flavor == "agy"
         }

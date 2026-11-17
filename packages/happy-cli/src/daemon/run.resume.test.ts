@@ -34,6 +34,13 @@ vi.mock('@/utils/detectCLI', async () => {
   return { detectCLIAvailability: () => applyAgentPolicy(mocks.availability) };
 });
 vi.mock('@/utils/spawnHappyCLI', () => ({ spawnHappyCLI: mocks.spawn }));
+vi.mock('@/deepseek/options', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/deepseek/options')>();
+  return { ...actual, resolveDeepSeekOptions: (options: any, env: NodeJS.ProcessEnv) => {
+    if (!env.DEEPSEEK_API_KEY?.trim()) throw new Error('DeepSeek requires DEEPSEEK_API_KEY');
+    return { ...options, command: 'dsh', args: [], env };
+  } };
+});
 vi.mock('@/utils/tmux', () => ({ isTmuxAvailable: async () => false }));
 vi.mock('@/resume/localHappyAgentAuth', () => ({ detectResumeSupport: () => ({}), hasLocalHappyAgentAuth: () => false }));
 vi.mock('./happyTerminalBoot', () => ({ startHappyTerminalDaemon: vi.fn() }));

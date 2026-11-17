@@ -39,6 +39,7 @@ data class ResumeSupport(
     val requiresHappyAgentAuth: Boolean?,
     val happyAgentAuthenticated: Boolean?,
     val detectedAt: Double?,
+    val deepseek: Boolean? = null,
 )
 
 /**
@@ -161,6 +162,7 @@ data class MachineMetadata(
                 "resumeSupport",
                 Read.objectOf { o ->
                     ResumeSupport(
+                        deepseek = o.optional("deepseek", Read.boolean),
                         rpcAvailable = o.optional("rpcAvailable", Read.boolean),
                         requiresSameMachine = o.optional("requiresSameMachine", Read.boolean),
                         requiresHappyAgentAuth = o.optional("requiresHappyAgentAuth", Read.boolean),

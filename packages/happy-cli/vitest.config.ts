@@ -10,6 +10,16 @@ export default defineConfig({
             {
                 extends: true,
                 test: {
+                    name: 'integration-deepseek-local',
+                    fileParallelism: false,
+                    maxWorkers: 1,
+                    include: ['src/deepseek/deepseek.integration.test.ts'],
+                    sequence: { groupOrder: 1 },
+                },
+            },
+            {
+                extends: true,
+                test: {
                     name: 'unit',
                     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
                     exclude: ['src/**/*.integration.test.ts'],

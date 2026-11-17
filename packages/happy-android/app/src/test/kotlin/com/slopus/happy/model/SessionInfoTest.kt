@@ -15,6 +15,11 @@ import org.junit.Test
 
 /** resumeCommand.test.ts, versionUtils.test.ts's isVersionSupported, and info.tsx's formatting helpers. */
 class SessionInfoTest {
+    @Test fun deepSeekResumeRequiresItsNativeHarnessId() {
+        assertEquals("cd '/repo' && happy deepseek --resume native-dsh", metadata(path = "/repo") { put("flavor", "deepseek"); put("deepseekSessionId", "native-dsh") }.resumeCommand())
+        assertNull(metadata(path = "/repo") { put("flavor", "deepseek"); put("claudeSessionId", "legacy") }.resumeCommand())
+    }
+
     private val claudeId = "93a9705e-bc6a-406d-8dce-8acc014dedbd"
 
     @Test fun neverOffersANativeResumeForHappyAgentSessions() {

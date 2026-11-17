@@ -39,7 +39,9 @@ export function getResumeAvailability(session: Session, machine: Machine | null 
         };
     }
 
-    const hasBackendResumeId = session.metadata?.flavor === 'agy'
+    const hasBackendResumeId = session.metadata?.flavor === 'deepseek'
+        ? Boolean(session.metadata.deepseekSessionId?.trim())
+        : session.metadata?.flavor === 'agy'
         ? Boolean(session.metadata.agySessionId?.trim())
         : Boolean(session.metadata?.claudeSessionId || session.metadata?.codexThreadId);
     if (!hasBackendResumeId) {
@@ -75,6 +77,7 @@ export function getResumeAvailability(session: Session, machine: Machine | null 
     // resume RPC. Capability presence is the compatibility check; the UI is
     // hidden instead of offering an action that the machine cannot execute.
     if (machine.metadata?.resumeSupport?.rpcAvailable !== true
+        || (session.metadata?.flavor === 'deepseek' && machine.metadata.resumeSupport.deepseek !== true)
         || (session.metadata?.flavor === 'agy' && machine.metadata.resumeSupport.agy !== true)) {
         return {
             canResume: false,

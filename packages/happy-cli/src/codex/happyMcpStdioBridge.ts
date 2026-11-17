@@ -1,7 +1,7 @@
 /**
  * Happy MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing a single tool `change_title`.
+ * STDIO MCP server exposing `change_title` and opt-in Happy interaction tools.
  * On invocation it forwards the tool call to an existing Happy HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -16,6 +16,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
+import { agentQuestionSchema, agentPlanSchema } from '@/utils/agentInteractionSchema';
 
 function parseArgs(argv: string[]): { url: string | null } {
   let url: string | null = null;
@@ -63,7 +64,25 @@ async function main() {
     version: '1.0.0',
   });
 
-  // Register the single tool and forward to HTTP MCP
+  if (process.argv.includes('--interactions')) {
+    server.registerTool('request_user_input', {
+      description: 'Ask the user up to three questions using Happy question cards and wait for their answers.',
+      inputSchema: { questions: z.array(agentQuestionSchema).min(1).max(3) },
+    }, async (args, extra) => {
+      const client = await ensureHttpClient();
+      return await client.callTool({ name: 'request_user_input', arguments: args }, undefined,
+        { signal: extra.signal, timeout: 24 * 60 * 60 * 1000 }) as any;
+    });
+    server.registerTool('update_plan', {
+      description: 'Publish the current task plan in Happy. Update statuses as work progresses.',
+      inputSchema: { plan: agentPlanSchema },
+    }, async (args, extra) => {
+      const client = await ensureHttpClient();
+      return await client.callTool({ name: 'update_plan', arguments: args }, undefined, { signal: extra.signal }) as any;
+    });
+  }
+
+  // Existing consumers keep the title tool without enabling interactions.
   server.registerTool(
     'change_title',
     {

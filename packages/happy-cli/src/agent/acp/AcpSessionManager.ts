@@ -90,6 +90,8 @@ export class AcpSessionManager {
     return this.flush();
   }
 
+  getTurnId(): string | null { return this.currentTurnId; }
+
   startTurn(): SessionEnvelope[] {
     if (this.currentTurnId) {
       return [];

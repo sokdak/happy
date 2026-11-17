@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { buildResumeCommand, buildResumeCommandBlock } from './resumeCommand';
 
 describe('buildResumeCommand', () => {
+    it('uses only native Harness IDs for DeepSeek resume', () => {
+        expect(buildResumeCommand({ flavor: 'deepseek', deepseekSessionId: 'dsh-native', path: '/project' })).toBe("cd '/project' && happy deepseek --resume dsh-native");
+        expect(buildResumeCommand({ flavor: 'deepseek', claudeSessionId: 'legacy' })).toBeNull();
+    });
     it('builds an explicit AGY fallback command and refuses print sessions without an ACP ID', () => {
         expect(buildResumeCommand({ flavor: 'agy', agySessionId: 'agy-native', path: '/project' })).toBe("cd '/project' && happy agy --resume agy-native");
         expect(buildResumeCommand({ flavor: 'agy', claudeSessionId: 'stale' })).toBeNull();
