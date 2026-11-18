@@ -7,6 +7,13 @@ import {
 } from './attachmentSupport';
 
 describe('supportsImageAttachmentsForFlavor', () => {
+    it('honors a false AGY image capability for the picker and preserves the whole unsent prompt', () => {
+        expect(supportsImageAttachmentsForFlavor('agy', null, false)).toBe(false);
+        expect(getImageAttachmentSendPlan({ flavor: 'agy', agyImageInput: false, text: 'Describe this image', attachmentCount: 1 }))
+            .toMatchObject({ shouldShowUnsupportedAlert: true, shouldUseAttachments: false, shouldSendText: false });
+        expect(getImageAttachmentSendPlan({ flavor: 'agy', agyImageInput: false, text: 'Hello', attachmentCount: 0 }).shouldSendText).toBe(true);
+    });
+
     it('admits DeepSeek Flash images and refuses Pro image-only sends', () => {
         expect(supportsImageAttachmentsForFlavor('deepseek', 'deepseek-flash')).toBe(true);
         expect(supportsImageAttachmentsForFlavor('deepseek', 'deepseek-v4-pro')).toBe(false);

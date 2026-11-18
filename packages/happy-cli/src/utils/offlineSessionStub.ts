@@ -32,7 +32,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
  * ```
  */
 type OfflineRegistrations = {
-    userMessageHandler: Parameters<ApiSessionClient['onUserMessage']>[0] | null;
+    inputHandlers: Parameters<ApiSessionClient['onUserMessage']> | null;
     rpcHandlers: Map<string, (...args: any[]) => any>;
     onIdle: Parameters<ApiSessionClient['armIdleWatchdog']>[0] | null;
 };
@@ -42,7 +42,7 @@ const offlineRegistrations = new WeakMap<object, OfflineRegistrations>();
 export function createOfflineSessionStub(sessionTag: string): ApiSessionClient {
     // Backends register their handlers once, on whatever session they hold at
     // startup. Record them so they can be attached to the real session later.
-    const registrations: OfflineRegistrations = { userMessageHandler: null, rpcHandlers: new Map(), onIdle: null };
+    const registrations: OfflineRegistrations = { inputHandlers: null, rpcHandlers: new Map(), onIdle: null };
     const stub = {
         sessionId: `offline-${sessionTag}`,
         sendCodexMessage: () => {},
@@ -60,8 +60,8 @@ export function createOfflineSessionStub(sessionTag: string): ApiSessionClient {
         armIdleWatchdog: (onIdle: NonNullable<OfflineRegistrations['onIdle']>) => {
             registrations.onIdle = onIdle;
         },
-        onUserMessage: (handler: OfflineRegistrations['userMessageHandler']) => {
-            registrations.userMessageHandler = handler;
+        onUserMessage: (...handlers: Parameters<ApiSessionClient['onUserMessage']>) => {
+            registrations.inputHandlers = handlers;
         },
         rpcHandlerManager: {
             registerHandler: (method: string, handler: (...args: any[]) => any) => {
@@ -87,7 +87,7 @@ export function transferOfflineRegistrations(stub: ApiSessionClient, session: Ap
     if (registrations.onIdle) {
         session.armIdleWatchdog(registrations.onIdle);
     }
-    if (registrations.userMessageHandler) {
-        session.onUserMessage(registrations.userMessageHandler);
+    if (registrations.inputHandlers) {
+        session.onUserMessage(...registrations.inputHandlers);
     }
 }

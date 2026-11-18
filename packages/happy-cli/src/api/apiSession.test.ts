@@ -1392,6 +1392,27 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(debugOutput).not.toContain('signature=secret');
     });
 
+    it('replays interleaved attachments and text in delivery order when their handlers bind together', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const file = (ref: string) => ({ role: 'session', content: { type: 'session', data: {
+            id: ref, time: 1000, role: 'user', ev: { t: 'file', ref, name: ref, size: 8 },
+        } } });
+        const text = (value: string) => ({ role: 'user', content: { type: 'text', text: value } });
+        const input = [file('image-a'), text('first'), text('without image'), file('image-b'), text('last')];
+        mockAxiosGet.mockResolvedValueOnce({ data: {
+            messages: input.map((message, index) => ({ id: String(index), seq: index + 1,
+                content: { t: 'encrypted', c: encryptContent(session, message) },
+                localId: null, createdAt: 1000 + index, updatedAt: 1000 + index })),
+            hasMore: false,
+        } });
+        await (client as any).fetchMessages();
+        const turns: string[][] = [];
+        const files: string[] = [];
+        client.onUserMessage(message => turns.push([message.content.text, ...files.splice(0)]),
+            message => files.push(message.content.data.ev.ref));
+        expect(turns).toEqual([['first', 'image-a'], ['without image'], ['last', 'image-b']]);
+    });
+
     it('applies file event socket updates directly without logging sensitive names or refs', () => {
         const client = new ApiSessionClient('fake-token', session);
         const onFileEvent = vi.fn();

@@ -12,7 +12,7 @@ const fixture = vi.hoisted(() => {
     sendSessionProtocolMessage: vi.fn(), sendSessionEvent: vi.fn(), keepAlive: vi.fn(),
     skipExistingMessages: vi.fn(), suppressNextArchiveSignal: vi.fn(),
     updateMetadata: vi.fn(), updateAgentState: vi.fn(), sendSessionDeath: vi.fn(), flush: vi.fn(), close: vi.fn(),
-    onUserMessage: vi.fn((fn) => { session.user = fn; }),
+    onUserMessage: vi.fn((fn, onFile) => { session.user = fn; session.file = onFile; }),
     onFileEvent: vi.fn((fn) => { session.file = fn; }),
     pending: [] as Promise<any>[],
     trackAttachmentDownload: vi.fn((p) => session.pending.push(p)),
@@ -24,6 +24,7 @@ const fixture = vi.hoisted(() => {
   };
   class FakeBackend {
     mode = 'default'; model = ''; effort = '';
+    getSessionOptions = vi.fn(() => ({}));
     startSession = vi.fn(async () => ({ sessionId: 'acp-fixture' }));
     sendPrompt = vi.fn(async (_id: string, text: string, images: any[]) => {
       calls.push({ text, images, mode: this.mode, model: this.model, effort: this.effort });
@@ -90,7 +91,7 @@ describe('Antigravity Happy runner integration', () => {
     expect(events().at(-1)).toMatchObject({ t: 'turn-end', status: 'completed' });
   });
   it('reattaches to the existing encrypted Happy session without creating or replaying messages', async () => {
-    vi.stubEnv('HAPPY_AGY_RECONNECT_METADATA', JSON.stringify({ flavor: 'agy', agySessionId: 'existing-agy', summary: { text: 'Keep title' } }));
+    vi.stubEnv('HAPPY_AGY_RECONNECT_METADATA', JSON.stringify({ flavor: 'agy', agySessionId: 'existing-agy', effortLevel: 'high', summary: { text: 'Keep title' } }));
     const values = { SESSION_ID: 'existing-happy', ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), ENCRYPTION_VARIANT: 'dataKey', SEQ: '42', METADATA_VERSION: '3', AGENT_STATE_VERSION: '4' };
     for (const [key, value] of Object.entries(values)) vi.stubEnv(`HAPPY_RECONNECT_${key}`, value);
     await begin({ resumeSessionId: 'existing-agy', model: 'Gemini 4 Carbon', permissionMode: 'plan' });
@@ -102,7 +103,14 @@ describe('Antigravity Happy runner integration', () => {
     expect(fixture.calls).toHaveLength(0);
     user('continue');
     await vi.waitFor(() => expect(fixture.calls).toHaveLength(1));
-    expect(fixture.calls[0]).toMatchObject({ text: 'continue', model: 'Gemini 4 Carbon', mode: 'plan' });
+    expect(fixture.calls[0]).toMatchObject({ text: 'continue', model: 'Gemini 4 Carbon', mode: 'plan', effort: 'high' });
+  });
+
+  it('publishes explicit launch settings so the app can mirror the actual session', async () => {
+    await begin({ model: 'Gemini 4 Argon', effort: 'high', permissionMode: 'plan' });
+    expect(fixture.createSession).toHaveBeenCalledWith(expect.objectContaining({ metadata: expect.objectContaining({
+      modelMode: 'Gemini 4 Argon', effortLevel: 'high', permissionMode: 'plan',
+    }) }));
   });
 
   it('connects title MCP and instructions and stops its server on shutdown', async () => {
@@ -170,7 +178,7 @@ describe('Antigravity Happy runner integration', () => {
     const stub = createOfflineSessionStub('fixture');
     fixture.initialSession = stub;
     await begin();
-    // Transfer can synchronously deliver pending messages before onSessionSwap.
+    // Registering the real client can synchronously deliver pending messages.
     fixture.session.onUserMessage.mockImplementationOnce((fn: any) => {
       fixture.session.user = fn;
       fn({ role: 'user', content: { type: 'text', text: 'received during reconnect' } });
@@ -179,6 +187,17 @@ describe('Antigravity Happy runner integration', () => {
     fixture.swap(fixture.session);
     await vi.waitFor(() => expect(fixture.calls).toHaveLength(1));
     expect(fixture.calls[0].text).toBe('received during reconnect');
+  });
+
+  it('publishes ACP options with the native ID after an offline session reconnects', async () => {
+    fixture.initialSession = createOfflineSessionStub('fixture');
+    const options = { models: [{ code: 'a', value: 'Gemini A' }], operatingModes: [{ code: 'plan', value: 'Plan' }], agyImageInput: false };
+    fixture.backend.getSessionOptions.mockReturnValueOnce(options);
+    await begin();
+    for (const fn of fixture.listeners) fn({ type: 'event', name: 'agy_session_id', payload: 'native-id' });
+    fixture.swap(fixture.session);
+    const update = fixture.session.updateMetadata.mock.lastCall![0];
+    expect(update({ summary: { text: 'title' }, models: [] })).toEqual({ summary: { text: 'title' }, ...options, agySessionId: 'native-id' });
   });
 
   it.each([true, false])('preserves the native session ID when ACP becomes ready before reconnection: %s', async (readyBeforeReconnect) => {

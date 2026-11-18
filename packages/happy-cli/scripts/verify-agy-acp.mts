@@ -50,7 +50,12 @@ try {
   backend.onMessage(observe);
   turn = 3; emitEnvelopes(manager.startTurn());
   await backend.startSession();
-  backend.setModel('Gemini 4 Carbon');
+  const advertised = backend.getSessionOptions();
+  const alternate = advertised.models?.find(model => model.value === 'Gemini 4 Hydrogen (Medium)')
+    ?? advertised.models?.find(model => model.value === 'Gemini 3.8 Flash (High)');
+  assert(alternate, 'The model-switch fixture needs an advertised alternative to Flash Low');
+  assert(advertised.agyImageInput, 'The image fixture needs ACP image input');
+  backend.setModel(alternate.code);
   await backend.sendPrompt(sessionId, 'Reply with only the exact marker from the earlier conversation. Do not use tools.');
   emitEnvelopes(manager.endTurn('completed'));
   assert.match(texts.get(3) ?? '', /ACP_CONTEXT_PINE_731/);

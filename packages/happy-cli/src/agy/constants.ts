@@ -7,6 +7,7 @@
  * env-var-based API keys or MCP wiring like the Gemini ACP integration.
  */
 
+import { AGY_EFFORT_LEVELS } from '@slopus/happy-wire';
 import os from 'node:os';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -80,7 +81,7 @@ export const AGY_GEMINI_4_ARGON_MODEL = 'Gemini 4 Argon';
 export const AGY_GEMINI_4_CARBON_MODEL = 'Gemini 4 Carbon';
 export const AGY_GEMINI_4_HYDROGEN_MODEL = 'Gemini 4 Hydrogen';
 const AGY_STANDARD_EFFORTS = ['low', 'medium', 'high'] as const;
-export const AGY_EFFORTS = [...AGY_STANDARD_EFFORTS, 'xhigh'] as const;
+export const AGY_EFFORTS = AGY_EFFORT_LEVELS;
 export type AgyEffort = typeof AGY_EFFORTS[number];
 
 const AGY_EFFORTS_BY_MODEL = new Map<string, readonly AgyEffort[]>([

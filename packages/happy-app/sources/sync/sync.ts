@@ -794,6 +794,7 @@ class Sync {
             : null;
         const attachmentPlan = getImageAttachmentSendPlan({
             flavor,
+            agyImageInput: session.metadata?.agyImageInput,
             model: modeMeta.model ?? session.modelMode ?? session.metadata?.currentModelCode,
             text,
             attachmentCount: attachments?.length ?? 0,

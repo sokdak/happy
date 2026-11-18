@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { selectAgyEffort } from '@slopus/happy-wire';
 import {
     getAvailableModels,
     getAvailablePermissionModes,
@@ -88,11 +89,13 @@ export function useComposerModes(session: Session | null | undefined): ComposerM
         getEffortLevelsForModel(flavor, modelKey, metadata)
     ), [flavor, modelKey, metadata]);
     const effortLevel = React.useMemo<EffortLevel | null>(() => (
-        resolveCurrentOption(availableEffortLevels, [
+        resolveCurrentOption(availableEffortLevels, flavor === 'agy' && metadata?.models ? [
+            selectAgyEffort(availableEffortLevels.map(level => level.key), session?.effortLevel ?? effectiveAgentDefaults.effortLevel),
+        ] : [
             session?.effortLevel,
             isRig ? getRigReasoningSelection(metadata, modelKey) : effectiveAgentDefaults.effortLevel,
         ])
-    ), [availableEffortLevels, session?.effortLevel, effectiveAgentDefaults.effortLevel, metadata, modelKey, isRig]);
+    ), [availableEffortLevels, session?.effortLevel, effectiveAgentDefaults.effortLevel, metadata, modelKey, isRig, flavor]);
 
     return {
         availableModes,

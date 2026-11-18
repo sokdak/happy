@@ -334,6 +334,38 @@ describe('modelModeOptions', () => {
         ]);
     });
 
+    it('builds AGY rows and effort levels from the connected account, including pinned and retired selections', () => {
+        const metadata = { models: [
+            { code: 'high-id', value: 'Claude Sonnet 5.5 (High)' },
+            { code: 'low-id', value: 'Claude Sonnet 5.5 (Low)' },
+            { code: 'orch-id', value: 'Orchestrator (Argon)' },
+            { code: 'gpt-id', value: 'GPT-OSS 120B (Medium)' },
+        ] } as any;
+        const models = getAvailableModels('agy', metadata, translate);
+        expect(models.map(model => model.key)).toEqual(['Claude Sonnet 5.5', 'orch-id', 'gpt-id']);
+        expect(models[0].defaultThinkingLevel).toBe('low');
+        expect(getEffortLevelsForModel('agy', 'Claude Sonnet 5.5', metadata).map(level => level.key)).toEqual(['low', 'high']);
+        expect(getEffortLevelsForModel('agy', 'gpt-id', metadata)).toEqual([]);
+        const fixed = getAvailableModels('agy', metadata, translate, 'GPT-OSS 120B (Medium)').filter(model => model.name === 'GPT-OSS 120B (Medium)');
+        expect(fixed.map(model => model.key)).toEqual(['GPT-OSS 120B (Medium)']);
+        for (const pinned of ['high-id', 'Claude Sonnet 5.5 (High)']) {
+            expect(getAvailableModels('agy', metadata, translate, pinned)).toContainEqual(expect.objectContaining({ key: pinned, disabled: false }));
+        }
+        expect(getAvailableModels('agy', metadata, translate, 'Gemini 4 Carbon')).toContainEqual(expect.objectContaining({ key: 'Gemini 4 Carbon', disabled: true }));
+        expect(getAvailableModels('agy', { models: [] } as any, translate)).toEqual([]);
+    });
+
+    it('retains both native IDs when two effort variants share a display name', () => {
+        const models = [{ code: 'one', value: 'Gemini Test (High)' }, { code: 'two', value: 'Gemini Test (High)' }];
+        expect(getAvailableModels('agy', { models } as any, translate).map(option => option.key)).toEqual(['one', 'two']);
+    });
+
+    it('maps the advertised ACP modes to Happy permission keys', () => {
+        const metadata = { operatingModes: [{ code: 'accept-edits' }, { code: 'default' }, { code: 'plan' }, { code: 'other' }] } as any;
+        expect(getAvailablePermissionModes('agy', metadata, translate).map(mode => mode.key)).toEqual(['default', 'plan', 'acceptEdits', 'bypassPermissions']);
+        expect(getAvailablePermissionModes('agy', { operatingModes: [{ code: 'plan', value: 'Plan' }] } as any, translate).map(mode => mode.key)).toEqual(['plan']);
+    });
+
     it('gives agy its own models, not the claude fallback', () => {
         const models = getAvailableModels('agy', null, translate);
         // must be agy's own list, not claude's opus/sonnet/haiku

@@ -12,11 +12,22 @@ describe('buildAgyArgs', () => {
   });
 
   it('uses --dangerously-skip-permissions for yolo-style modes', () => {
-    for (const mode of ['yolo', 'safe-yolo', 'bypassPermissions', 'acceptEdits'] as const) {
+    for (const mode of ['yolo', 'bypassPermissions'] as const) {
       const args = buildAgyArgs({ prompt: 'p', permissionMode: mode });
       expect(args).toContain('--dangerously-skip-permissions');
       expect(args).not.toContain('--sandbox');
     }
+  });
+
+  it.each([['plan', 'plan'], ['read-only', 'plan'], ['acceptEdits', 'accept-edits']] as const)('honors %s in print mode', (permissionMode, nativeMode) => {
+    const args = buildAgyArgs({ prompt: 'p', permissionMode });
+    expect(args).toContain('--sandbox');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(args[args.indexOf('--mode') + 1]).toBe(nativeMode);
+  });
+
+  it('keeps safe-yolo sandboxed', () => {
+    expect(buildAgyArgs({ prompt: 'p', permissionMode: 'safe-yolo' })).toContain('--sandbox');
   });
 
   it('passes the model via --model', () => {

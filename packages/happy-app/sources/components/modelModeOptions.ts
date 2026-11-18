@@ -1,4 +1,4 @@
-import { DEEPSEEK_MODELS, DEEPSEEK_EFFORT_LEVELS } from '@slopus/happy-wire';
+import { AGY_EFFORT_LEVELS, groupAgyModels, selectAgyEffort, DEEPSEEK_MODELS, DEEPSEEK_EFFORT_LEVELS } from '@slopus/happy-wire';
 import type { Metadata } from '@/sync/storageTypes';
 import { hackModes } from '@/sync/modeHacks';
 import { sortPermissionModes } from '@/utils/permissionModeLabels';
@@ -252,17 +252,8 @@ export function getOpenClawPermissionModes(translate: Translate): PermissionMode
     ];
 }
 
-// agy --print only distinguishes --sandbox (default) from --dangerously-skip-permissions,
-// so only these two modes are offered. Default gets its own wording because agy
-// --print is one-shot and cannot prompt: it never asks, it just runs under agy's
-// own sandbox settings.
-//
-// The one place the shared ranking is deliberately ignored. Default sorts last
-// everywhere else because it means "ask me about everything", the choice you
-// make when none of the others fit. Here it means the opposite: it is agy's own
-// launch default, the only sandboxed option, and the one agentDefaults picks.
-// Ranking it below Yolo would put the escape hatch at the top of a two-item
-// list and read as the recommendation.
+// Before ACP discovery, or for a print session, only offer settings both
+// transports have historically supported. Live sessions advertise their modes.
 export function getAgyPermissionModes(translate: Translate): PermissionMode[] {
     return [
         { key: 'default', name: 'Default', description: translate('agentInput.permissionMode.agyDefault') },
@@ -448,6 +439,29 @@ export function getAvailableModels(
         }
         return models;
     }
+    if (flavor === 'agy' && metadata?.models) {
+        const matchingLabels = metadata.models.filter(model => model.value === selectedKey);
+        const pinnedId = matchingLabels.length === 1 ? matchingLabels[0].code : undefined;
+        const modes: ModelMode[] = groupAgyModels(metadata.models).map(group => {
+            const levels = AGY_EFFORT_LEVELS.filter(level => group.variants.has(level));
+            const provider = group.name.startsWith('Claude ') ? { providerId: 'anthropic', providerName: 'Anthropic' }
+                : group.name.startsWith('Gemini ') || group.key.startsWith('gemini-') ? { providerId: 'google', providerName: 'Google' }
+                : group.name.startsWith('GPT-OSS ') ? { providerId: 'openai', providerName: 'OpenAI' } : {};
+            return {
+                ...provider, key: group.key === pinnedId && selectedKey ? selectedKey : group.key,
+                name: group.name, description: group.description,
+                thinkingLevels: levels, defaultThinkingLevel: selectAgyEffort(levels),
+            };
+        });
+        // Preserve a pinned native ID or full display name. A saved model that
+        // the account no longer advertises stays visible for replacement.
+        if (selectedKey && !modes.some(mode => mode.key === selectedKey)) {
+            const exact = metadata.models.find(model => model.code === selectedKey)
+                ?? metadata.models.find(model => model.value === selectedKey);
+            modes.push({ key: selectedKey, name: exact?.value ?? selectedKey, disabled: !exact, unavailable: !exact });
+        }
+        return modes;
+    }
     const metadataModels = mapMetadataOptions(metadata?.models);
     if (metadataModels.length > 0) {
         if (flavor === 'codex' && !metadataModels.some((model) => model.key === 'default')) {
@@ -489,6 +503,16 @@ export function getAvailablePermissionModes(
             });
         }
         return modes;
+    }
+    if (flavor === 'agy' && metadata?.operatingModes) {
+        const advertised = new Set(metadata.operatingModes.map(mode => mode.code));
+        const choices = [
+            { native: 'default', key: 'default', name: 'Default', description: translate('agentInput.permissionMode.default') },
+            { native: 'plan', key: 'plan', name: 'Plan', description: translate('agentInput.permissionMode.plan') },
+            { native: 'accept-edits', key: 'acceptEdits', name: 'Edits', description: translate('agentInput.permissionMode.acceptEdits') },
+            { native: 'default', key: 'bypassPermissions', name: 'Yolo', description: translate('agentInput.permissionMode.bypassPermissions') },
+        ];
+        return choices.filter(mode => advertised.has(mode.native));
     }
     if (flavor === 'deepseek' || flavor === 'claude' || flavor === 'codex' || flavor === 'openclaw' || flavor === 'agy') {
         // metadata.version is the happy-cli version running this session
@@ -647,6 +671,10 @@ export function getEffortLevelsForModel(
         return getCodexEffortLevels(modelKey);
     }
     if (flavor === 'agy') {
+        if (metadata?.models) {
+            const group = groupAgyModels(metadata.models).find(model => model.key === modelKey);
+            return effortLevels(AGY_EFFORT_LEVELS.filter(level => group?.variants.has(level)));
+        }
         return getAgyEffortLevels(modelKey);
     }
     return [];
