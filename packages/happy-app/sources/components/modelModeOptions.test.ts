@@ -130,6 +130,8 @@ describe('modelModeOptions', () => {
     it('only offers the curated codex harness models, most capable first', () => {
         const models = getCodexModelModes();
         expect(models.map((model) => model.key)).toEqual([
+            'gpt-6.2-astra',
+            'gpt-6.2-sol',
             'gpt-6-astra',
             'gpt-6.1-sol',
             'gpt-6.1-terra',
@@ -139,7 +141,7 @@ describe('modelModeOptions', () => {
             'gpt-5.6-terra',
             'gpt-5.6-luna',
         ]);
-        expect(models[0].name).toBe('GPT-6 Astra');
+        expect(models.slice(0, 2).map((model) => model.name)).toEqual(['GPT-6.2 Astra', 'GPT-6.2 Sol']);
     });
 
     it('adds a configured custom codex model without expanding the shared catalog', () => {
@@ -147,6 +149,8 @@ describe('modelModeOptions', () => {
         const withCustom = includeConfiguredModel('codex', models, 'my-workspace-model');
 
         expect(withCustom.map((model) => model.key)).toEqual([
+            'gpt-6.2-astra',
+            'gpt-6.2-sol',
             'gpt-6-astra',
             'gpt-6.1-sol',
             'gpt-6.1-terra',
@@ -157,7 +161,7 @@ describe('modelModeOptions', () => {
             'gpt-5.6-luna',
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(8);
+        expect(models).toHaveLength(10);
         expect(includeConfiguredModel('gemini', models, 'my-workspace-model')).toBe(models);
         expect(includeConfiguredModel('openclaw', models, 'my-workspace-model')).toBe(models);
     });
@@ -225,6 +229,10 @@ describe('modelModeOptions', () => {
         // Straight from Codex's model registry: astra, every sol, and terra publish
         // ultra, neither luna does. The difference is the whole point of asking
         // per model rather than per flavor.
+        expect(getEffortLevelsForModel('codex', 'gpt-6.2-astra').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+        expect(getEffortLevelsForModel('codex', 'gpt-6.2-sol').map((level) => level.key))
+            .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-6-astra').map((level) => level.key))
             .toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
         expect(getEffortLevelsForModel('codex', 'gpt-6.1-sol').map((level) => level.key))
