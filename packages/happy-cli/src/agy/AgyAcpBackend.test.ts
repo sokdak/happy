@@ -64,7 +64,7 @@ function setup(options: Partial<AgyAcpOptions> = {}) {
   backend.onMessage(m => messages.push(m));
   return { agent, spawnFn, backend, messages };
 }
-afterEach(async () => { await Promise.all(backends.splice(0).map(b => b.dispose())); });
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(backends.splice(0).map(b => b.dispose())); });
 
 async function promptRequest(agent: ReturnType<typeof fakeAgent>) {
   await vi.waitFor(() => expect(agent.received.some(r => r.method === 'session/prompt')).toBe(true));
@@ -101,6 +101,19 @@ describe('persistent Antigravity ACP', () => {
       }
       expect(messages.filter(m => m.type === 'tool-call').every(m => m.type === 'tool-call' && m.toolName === 'Bash')).toBe(true);
       agent.respond(request.id!, { stopReason: 'end_turn' }); await rejected;
+    });
+    it('keeps the stalled continuation budget after a failed action', async () => {
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: true, stopHookLimits: { maxBackoffMs: 0, maxStalledContinuations: 1 } });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'background');
+      const request = await promptRequest(agent);
+      expect((await invokeStop(spawnFn, 0, false)).decision).toBe('continue');
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'edit', title: 'Edit file', kind: 'edit', status: 'failed' });
+      await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({ type: 'tool-result', isError: true })));
+      const decision = await invokeStop(spawnFn, 1, false);
+      agent.respond(request.id!, { stopReason: 'end_turn' });
+      await expect(pending).rejects.toThrow('no completed tool progress');
+      expect(decision).toEqual({});
     });
     it.each(['printf DONE', 'Run read_file', 'Run schedule'])('resets the stalled allowance after a real command finishes despite its title: %s', async (title) => {
       const { backend, agent, spawnFn, messages } = setup({ stopHook: true, stopHookLimits: { maxBackoffMs: 0, maxStalledContinuations: 4 } });
@@ -192,7 +205,7 @@ describe('persistent Antigravity ACP', () => {
       agent.respond(request.id!, { stopReason: 'end_turn' }); await result;
       expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
     });
-    it.each(['1.5.9', '1.5.10'])('accepts verified server version %s when Stop hook is enabled', async (version) => {
+    it.each(['1.5.9', '1.5.10', '1.5.11'])('accepts verified server version %s when Stop hook is enabled', async (version) => {
       const { backend, agent, spawnFn } = setup({ stopHook: true });
       agent.setHandler((rpc, fallback) => {
         if (rpc.method === 'initialize') agent.respond(rpc.id!, { protocolVersion: 1, agentInfo: { name: 'Antigravity ACP Server', version }, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
@@ -203,6 +216,22 @@ describe('persistent Antigravity ACP', () => {
       await invokeStop(spawnFn, 0, true);
       agent.respond(request.id!, { stopReason: 'end_turn' });
       await pending;
+    });
+    it('uses native completion on an unknown server in auto mode without creating sessions or prompting twice', async () => {
+      vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
+      const { backend, agent, spawnFn } = setup({ stopHook: undefined, resumeSessionId: 'saved-session' });
+      const clean = fakeAgent();
+      vi.mocked(spawnFn).mockReturnValueOnce(agent.child).mockReturnValueOnce(clean.child);
+      for (const server of [agent, clean]) server.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') server.respond(rpc.id!, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
+        else fallback(rpc);
+      });
+      await backend.sendPrompt('', 'only once');
+      expect(agent.received.map(r => r.method)).toEqual(['initialize']);
+      expect(agent.child.kill).toHaveBeenCalled();
+      expect(vi.mocked(spawnFn).mock.calls[1][1]).toEqual(['acp', '--add-dir', '/work']);
+      expect(clean.received.filter(r => r.method === 'session/load').map(r => r.params.sessionId)).toEqual(['saved-session']);
+      expect(clean.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
     });
     it('rejects an unverified server version before sending a prompt', async () => {
       const { backend, agent } = setup({ stopHook: true });
@@ -985,6 +1014,267 @@ describe('persistent Antigravity ACP', () => {
         await vi.waitFor(() => expect(agent.received.find(r => r.id === 704)?.result).toEqual({ outcome: { outcome: 'cancelled' } }));
         expect(JSON.stringify(messages)).not.toContain('UNVERIFIED_LATE');
       }
+    });
+  });
+
+  describe.skipIf(process.platform === 'win32')('AGY 1.5.10 observer Stop hook (zero forced continuations)', () => {
+    function setupObserver1510(options: Partial<AgyAcpOptions> = {}) {
+      const ctx = setup({ stopHook: true, observerSettleMs: 10, permissionDenialSettleMs: 50, ...options });
+      ctx.agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') {
+          ctx.agent.respond(rpc.id!, {
+            protocolVersion: 1,
+            agentInfo: { name: 'Antigravity ACP Server', version: '1.5.10' },
+            agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+          });
+        } else if (rpc.method !== 'session/prompt') fallback(rpc);
+      });
+      return ctx;
+    }
+
+    it('keeps a single turn open across staggered reactive wakeups and late permissions without forcing continue', async () => {
+      const logs: string[] = [];
+      const requestPermission = vi.fn(async (_id: string, tool: string, input: any) => ({
+        decision: tool === 'Bash' && ['python3 bg1.py', 'python3 bg2.py', 'python3 followup.py'].includes(input.command)
+          ? 'approved' as const : 'denied' as const,
+      }));
+      const { backend, agent, spawnFn, messages } = setupObserver1510({
+        log: m => logs.push(m),
+        requestPermission,
+      });
+
+      const pending = backend.sendPrompt('', 'parallel background');
+      const req = await promptRequest(agent);
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'bg-1', title: 'bg1', kind: 'execute', status: 'in_progress', rawInput: { CommandLine: 'python3 bg1.py' } });
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'bg-2', title: 'bg2', kind: 'execute', status: 'in_progress', rawInput: { CommandLine: 'python3 bg2.py' } });
+      agent.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'WAITING_INITIAL' } });
+
+      // Foreground Stop reports fullyIdle=false -> hook returns {} (NOT continue!)
+      expect(await invokeStop(spawnFn, 0, false)).toEqual({});
+      agent.respond(req.id!, { stopReason: 'end_turn' });
+      await vi.waitFor(() => expect(messages.filter(m => m.type === 'event' && m.name === 'agy_step_complete')).toHaveLength(1));
+      expect(messages.some(m => m.type === 'status' && m.status === 'idle')).toBe(false);
+
+      // bg-1 completes -> intermediate wakeup -> Stop(executionNum=0, fullyIdle=false) -> still open!
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'bg-1', status: 'completed' });
+      agent.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\nBG1_SEEN' } });
+      expect(await invokeStop(spawnFn, 0, false)).toEqual({});
+      await vi.waitFor(() => expect(messages.filter(m => m.type === 'event' && m.name === 'agy_step_complete')).toHaveLength(2));
+      expect(messages.some(m => m.type === 'status' && m.status === 'idle')).toBe(false);
+
+      // bg-2 completes -> followup requests permission -> final answer -> Stop(executionNum=0, fullyIdle=true)!
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'bg-2', status: 'completed' });
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'followup-1', title: 'followup', kind: 'execute', status: 'pending', rawInput: { CommandLine: 'python3 followup.py' } });
+      agent.stdout.write(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 801,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'session-1',
+          toolCall: { toolCallId: 'followup-1', title: 'followup', kind: 'execute', rawInput: { CommandLine: 'python3 followup.py' } },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      }) + '\n');
+      await vi.waitFor(() => expect(agent.received.find(r => r.id === 801)?.result).toEqual({
+        outcome: { outcome: 'selected', optionId: 'allow' },
+      }));
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'followup-1', status: 'completed' });
+      agent.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n\nFINAL_VISIBLE' } });
+      expect(await invokeStop(spawnFn, 0, true)).toEqual({});
+
+      await pending;
+      expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
+      expect(messages.at(-1)).toEqual({ type: 'status', status: 'idle' });
+      expect(logs.some(l => l.includes('0 continuations, mode=observe, observations=3, idle=true'))).toBe(true);
+    });
+
+    it('fails deterministically without hanging when a late wakeup permission is denied and AGY skips Stop', async () => {
+      const requestPermission = vi.fn(async (_id: string, _tool: string, input: any) => ({
+        decision: input.command === 'python3 bg1.py' ? 'approved' as const : 'denied' as const,
+      }));
+      const { backend, agent, spawnFn } = setupObserver1510({ requestPermission, permissionDenialSettleMs: 40 });
+      const pending = backend.sendPrompt('', 'deny late');
+      const rejected = expect(pending).rejects.toThrow('permission was denied');
+      const req = await promptRequest(agent);
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'bg-1', title: 'bg1', kind: 'execute', status: 'in_progress', rawInput: { CommandLine: 'python3 bg1.py' } });
+      await invokeStop(spawnFn, 0, false);
+      agent.respond(req.id!, { stopReason: 'end_turn' });
+
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'bg-1', status: 'completed' });
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'followup-deny', title: 'followup', kind: 'execute', status: 'pending', rawInput: { CommandLine: 'python3 denied.py' } });
+      agent.stdout.write(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 802,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'session-1',
+          toolCall: { toolCallId: 'followup-deny', title: 'followup', kind: 'execute', rawInput: { CommandLine: 'python3 denied.py' } },
+          options: [{ optionId: 'deny', name: 'Deny', kind: 'reject_once' }],
+        },
+      }) + '\n');
+      await vi.waitFor(() => expect(agent.received.find(r => r.id === 802)?.result).toEqual({
+        outcome: { outcome: 'selected', optionId: 'deny' },
+      }));
+      agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'followup-deny', status: 'failed' });
+      await rejected;
+    });
+
+    it('cancels during observer background wait, drains failed tool update, fences late events, and reuses cooperative server', async () => {
+      const { backend, agent, spawnFn, messages } = setupObserver1510();
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') {
+          agent.respond(rpc.id!, {
+            protocolVersion: 1,
+            agentInfo: { name: 'Antigravity ACP Server', version: '1.5.10' },
+            agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+          });
+        } else if (rpc.method === 'session/cancel') {
+          agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'bg-cancel', status: 'failed' });
+        } else if (rpc.method !== 'session/prompt') fallback(rpc);
+      });
+
+      const pending = backend.sendPrompt('', 'cancel in observer wait');
+      const rejected = expect(pending).rejects.toBeInstanceOf(AgyCancelledError);
+      const req = await promptRequest(agent);
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'bg-cancel', title: 'sleep 20', kind: 'execute', status: 'in_progress', rawInput: { CommandLine: 'sleep 20' } });
+      await invokeStop(spawnFn, 0, false);
+      agent.respond(req.id!, { stopReason: 'end_turn' });
+
+      await new Promise(resolve => setTimeout(resolve, 15));
+      await backend.cancel();
+      await rejected;
+      expect(agent.received.some(r => r.method === 'session/cancel')).toBe(true);
+      expect(agent.child.kill).not.toHaveBeenCalled();
+
+      const countAfterCancel = messages.length;
+      agent.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'LATE_AFTER_CANCEL' } });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(messages.length).toBe(countAfterCancel);
+
+      // Subsequent prompt reuses the same cooperative process
+      const next = backend.sendPrompt('', 'next turn');
+      const req2 = await vi.waitFor(() => {
+        const prompts = agent.received.filter(r => r.method === 'session/prompt');
+        expect(prompts).toHaveLength(2);
+        return prompts[1];
+      });
+      await invokeStop(spawnFn, 0, true);
+      agent.respond(req2.id!, { stopReason: 'end_turn' });
+      await next;
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds unconfirmed non-daemon watchers in observer mode, retires wedged server, and recovers cleanly on next turn', async () => {
+      const agent1 = fakeAgent();
+      const agent2 = fakeAgent();
+      for (const a of [agent1, agent2]) {
+        a.setHandler((rpc, fallback) => {
+          if (rpc.method === 'initialize') {
+            a.respond(rpc.id!, {
+              protocolVersion: 1,
+              agentInfo: { name: 'Antigravity ACP Server', version: '1.5.10' },
+              agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+            });
+          } else if (rpc.method !== 'session/prompt') fallback(rpc);
+        });
+      }
+      let calls = 0;
+      const spawnFn = vi.fn(() => (++calls === 1 ? agent1.child : agent2.child)) as unknown as typeof spawn;
+      const { backend, messages } = setup({
+        stopHook: true,
+        observerSettleMs: 10,
+        stopHookLimits: { maxContinuationMs: 60 },
+        spawnFn,
+      });
+
+      const pending = backend.sendPrompt('', 'stuck watcher');
+      const rejected = expect(pending).rejects.toThrow('time limit reached');
+      const req = await promptRequest(agent1);
+      agent1.notify({ sessionUpdate: 'tool_call', toolCallId: 'watcher-1', title: 'sleep 999', kind: 'execute', status: 'in_progress', rawInput: { CommandLine: 'sleep 999' } });
+      await invokeStop(spawnFn, 0, false);
+      agent1.respond(req.id!, { stopReason: 'end_turn' });
+
+      await rejected;
+      expect(messages.some(m => m.type === 'status' && m.status === 'idle')).toBe(false);
+      expect(agent1.child.kill).toHaveBeenCalledWith('SIGTERM');
+
+      // Turn 2 reloads the saved session on a fresh ACP server without hanging on Turn 1's stuck watcher
+      const turn2 = backend.sendPrompt('', 'after watcher timeout');
+      const req2 = await promptRequest(agent2);
+      expect(agent2.received.some(r => r.method === 'session/load' && r.params?.sessionId === 'session-1')).toBe(true);
+      agent2.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'RECOVERED_CLEANLY' } });
+      await invokeStop(spawnFn, 0, true);
+      agent2.respond(req2.id!, { stopReason: 'end_turn' });
+      await turn2;
+      expect(messages.at(-1)).toEqual({ type: 'status', status: 'idle' });
+    });
+
+    it('reuses cooperative server on foreground cancel before Stop runs and preserves idle server on pre-prompt config error', async () => {
+      const { backend, agent, spawnFn } = setupObserver1510();
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') {
+          agent.respond(rpc.id!, {
+            protocolVersion: 1,
+            agentInfo: { name: 'Antigravity ACP Server', version: '1.5.10' },
+            agentCapabilities: { loadSession: true, promptCapabilities: { image: false } },
+          });
+        } else if (rpc.method === 'session/cancel') {
+          const pendingReq = [...agent.received].reverse().find(r => r.method === 'session/prompt');
+          if (pendingReq?.id !== undefined) agent.respond(pendingReq.id, { stopReason: 'cancelled' });
+        } else if (rpc.method !== 'session/prompt') fallback(rpc);
+      });
+
+      // Pre-prompt image capability error does not kill the healthy idle server
+      await expect(backend.sendPrompt('', 'img', [{ type: 'image', data: 'aa==', mimeType: 'image/png' } as any]))
+        .rejects.toThrow('does not support image input');
+      expect(agent.child.kill).not.toHaveBeenCalled();
+
+      // Foreground cancel before Stop hook runs reuses the cooperative server
+      const p1 = backend.sendPrompt('', 'foreground cancel');
+      const r1 = expect(p1).rejects.toBeInstanceOf(AgyCancelledError);
+      await promptRequest(agent);
+      await backend.cancel();
+      await r1;
+      expect(agent.child.kill).not.toHaveBeenCalled();
+
+      const p2 = backend.sendPrompt('', 'follow-up after foreground cancel');
+      const req2 = await vi.waitFor(() => {
+        const prompts = agent.received.filter(r => r.method === 'session/prompt');
+        expect(prompts).toHaveLength(2);
+        return prompts[1];
+      });
+      await invokeStop(spawnFn, 0, true);
+      agent.respond(req2.id!, { stopReason: 'end_turn' });
+      await p2;
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects explicit stopHook="observe" on AGY 1.5.9 before prompting', async () => {
+      const { backend, agent } = setup({ stopHook: 'observe' });
+      await expect(backend.sendPrompt('', 'version check')).rejects.toThrow('verified only with AGY 1.5.10');
+      expect(agent.received.some(r => r.method === 'session/prompt')).toBe(false);
+    });
+
+    it.each(['1.5.10', '1.5.11'])('auto-selects observer mode on AGY %s when HAPPY_AGY_STOP_HOOK is unset', async (version) => {
+      vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
+      const logs: string[] = [];
+      const { backend, agent, spawnFn } = setup({ stopHook: undefined, observerSettleMs: 10, log: m => logs.push(m) });
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') {
+          agent.respond(rpc.id!, {
+            protocolVersion: 1,
+            agentInfo: { name: 'Antigravity ACP Server', version },
+            agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+          });
+        } else if (rpc.method !== 'session/prompt') fallback(rpc);
+      });
+      const pending = backend.sendPrompt('', 'default auto observer');
+      const req = await promptRequest(agent);
+      expect(await invokeStop(spawnFn, 0, false)).toEqual({});
+      agent.respond(req.id!, { stopReason: 'end_turn' });
+      expect(await invokeStop(spawnFn, 0, true)).toEqual({});
+      await pending;
+      expect(logs.some(l => l.includes('0 continuations, mode=observe'))).toBe(true);
     });
   });
 

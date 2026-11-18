@@ -1,4 +1,9 @@
-/** Removable, opt-in workaround for early end_turn in AGY 1.5.9 ACP. */
+/**
+ * Removable AGY Stop-hook controller:
+ * - AGY 1.5.10 (`observe` mode): returns `{}` without forcing model continuations,
+ *   observing `fullyIdle` across initial `end_turn` and reactive background wakeups.
+ * - AGY 1.5.9 (`continue` mode): opt-in forced continuation workaround for #1461.
+ */
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,9 +18,12 @@ export const STOP_HOOK_LIMITS = {
   maxBackoffMs: 30_000,
 } as const;
 export type StopHookLimits = { [K in keyof typeof STOP_HOOK_LIMITS]: number };
+export type StopHookMode = 'observe' | 'continue';
+export type StopHookOption = boolean | StopHookMode;
+export type StopHookSetting = 'off' | 'auto' | 'enabled' | 'observe' | 'continue';
 type Decision = { decision?: 'continue'; reason?: string };
 type Turn = {
-  sessionId: string; active: boolean; count: number; stalled: number;
+  sessionId: string; active: boolean; count: number; observations: number; stalled: number;
   progress: number; lastProgress: number; delayMs: number; firstContinuationAt?: number;
   lastExecution: number; seen: boolean; fullyIdle?: boolean; issue?: string;
 };
@@ -31,30 +39,60 @@ export function agyStopHookEnabled(value = process.env.HAPPY_AGY_STOP_HOOK): boo
   throw new Error('HAPPY_AGY_STOP_HOOK must be 0 or 1');
 }
 
+export function resolveAgyStopHookSetting(
+  option?: StopHookOption,
+  ...envArg: [string | undefined] | []
+): StopHookSetting {
+  const env = envArg.length > 0 ? envArg[0] : process.env.HAPPY_AGY_STOP_HOOK;
+  if (option === false) return 'off';
+  if (option === true) return 'enabled';
+  if (option === 'observe' || option === 'continue') return option;
+  if (env === undefined) return 'auto';
+  if (env === '0') return 'off';
+  if (env === '1') return 'enabled';
+  if (env === 'observe' || env === 'continue') return env;
+  throw new Error('HAPPY_AGY_STOP_HOOK must be 0 or 1 (or observe/continue)');
+}
+
 /** Pure policy kept separate from the local transport for adversarial tests. */
 export class AgyStopPolicy {
   private readonly limits: StopHookLimits;
   private turn?: Turn;
   private listeners = new Set<() => void>();
-  constructor(limits: Partial<StopHookLimits> = STOP_HOOK_LIMITS, private readonly now = Date.now) {
+  constructor(
+    limits: Partial<StopHookLimits> = STOP_HOOK_LIMITS,
+    private readonly now = Date.now,
+    private mode: StopHookMode = 'continue',
+  ) {
     this.limits = { ...STOP_HOOK_LIMITS, ...limits };
   }
+  getMode(): StopHookMode { return this.mode; }
+  setMode(mode: StopHookMode): void { this.mode = mode; }
   private notify(): void { for (const listener of [...this.listeners]) listener(); }
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   }
   begin(sessionId: string): void {
-    this.turn = { sessionId, active: true, count: 0, stalled: 0, progress: 0, lastProgress: 0, delayMs: 0, lastExecution: -1, seen: false };
+    this.turn = {
+      sessionId, active: true, count: 0, observations: 0, stalled: 0,
+      progress: 0, lastProgress: 0, delayMs: 0, lastExecution: -1, seen: false,
+    };
     this.notify();
   }
   // A socket accepted during a previous turn can never act on the next one.
   epoch(): unknown { return this.turn; }
   cancel(): void { if (this.turn?.active) { this.turn.active = false; this.notify(); } }
   progress(): void { if (this.turn?.active) { this.turn.progress++; this.notify(); } }
-  canContinue(epoch = this.epoch()): boolean {
+  failWith(issue: string): void {
+    if (this.turn?.active && !this.turn.issue) {
+      this.turn.issue = issue;
+      this.notify();
+    }
+  }
+  canContinue(epoch = this.epoch(), execution = this.turn?.lastExecution ?? -1): boolean {
     const t = this.turn;
-    return Boolean(t && t === epoch && t.active && !t.issue);
+    return Boolean(t && t === epoch && t.active && !t.issue && t.fullyIdle === false && t.lastExecution === execution);
   }
   hasProgressSince(epoch: unknown, baseline: number): boolean {
     const t = this.turn;
@@ -67,27 +105,47 @@ export class AgyStopPolicy {
   snapshot() { return this.turn ? { ...this.turn } : undefined; }
   decide(input: unknown, epoch = this.epoch()): Decision {
     const t = this.turn;
-    if (!t?.active || epoch !== t) return {};
-    t.delayMs = 0;
+    if (!t?.active || epoch !== t || t.issue) return {};
     const fail = (issue: string): Decision => { t.issue = issue; this.notify(); return {}; };
     if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('invalid hook input');
     const d = input as Record<string, unknown>;
-    if (typeof d.conversationId !== 'string') return fail('invalid hook input');
-    if (d.conversationId !== t.sessionId) return fail('hook session mismatch');
+    if (typeof d.conversationId !== 'string' || !d.conversationId.trim()) return fail('invalid hook input');
+    // Subagents sharing the --add-dir hook workspace report their own conversationId;
+    // ignore foreign conversations without poisoning the parent turn.
+    if (d.conversationId !== t.sessionId) return {};
     if (d.hookEventName !== 'Stop' || typeof d.terminationReason !== 'string'
       || typeof d.fullyIdle !== 'boolean' || typeof d.continuationActive !== 'boolean'
       || !Number.isSafeInteger(d.executionNum) || (d.executionNum as number) < 0) {
       return fail('invalid hook input');
     }
     t.seen = true;
-    t.fullyIdle = d.fullyIdle;
     // Preserve cancellation, errors and all native invocation/token limits.
-    if (d.terminationReason !== 'NO_TOOL_CALL') return fail('native stop: ' + d.terminationReason.slice(0, 80));
-    if (d.fullyIdle) return {};
-    // Once a limit/invalid input is seen, later hooks cannot reopen this turn.
-    if (t.issue) return {};
-    if ((d.executionNum as number) <= t.lastExecution) return fail('repeated hook execution');
-    t.lastExecution = d.executionNum as number;
+    if (d.terminationReason !== 'NO_TOOL_CALL') {
+      t.fullyIdle = d.fullyIdle;
+      return fail('native stop: ' + d.terminationReason.slice(0, 80));
+    }
+    if (this.mode === 'observe') {
+      // Reactive background wakeups in AGY 1.5.10+ each start a fresh executor
+      // invocation (executionNum = 0). Observe state without forcing continuation.
+      t.observations++;
+      t.fullyIdle = d.fullyIdle;
+      t.lastExecution = d.executionNum as number;
+      t.delayMs = 0;
+      this.notify();
+      return {};
+    }
+    const execution = d.executionNum as number;
+    if (execution < t.lastExecution || (execution === t.lastExecution && t.fullyIdle)) return {};
+    if (!d.fullyIdle && execution === t.lastExecution) return fail('repeated hook execution');
+    t.observations++;
+    t.lastExecution = execution;
+    t.fullyIdle = d.fullyIdle;
+    // Retire any reply still in backoff for an earlier execution.
+    this.notify();
+    if (d.fullyIdle) {
+      t.delayMs = 0;
+      return {};
+    }
     if (t.count >= this.limits.maxContinuations) return fail('continuation limit reached');
     const now = this.now();
     if (t.progress !== t.lastProgress) {
@@ -113,8 +171,8 @@ export class AgyStopPolicy {
     const t = this.turn;
     if (!t) return 'Stop hook was not initialized';
     if (t.active) { t.active = false; this.notify(); }
-    if (!t.seen) return 'Stop hook did not report a valid result';
     if (t.issue) return 'Stop hook stopped: ' + t.issue;
+    if (!t.seen) return 'Stop hook did not report a valid result';
     if (t.fullyIdle !== true) return 'Background completion was not confirmed';
     return undefined;
   }
@@ -131,8 +189,8 @@ export class AgyStopHook {
   private readonly server: Server;
   private sockets = new Set<Socket>();
   private closed = false;
-  private constructor(limits: StopHookLimits) {
-    this.policy = new AgyStopPolicy(limits);
+  private constructor(limits: StopHookLimits, mode: StopHookMode) {
+    this.policy = new AgyStopPolicy(limits, Date.now, mode);
     this.root = mkdtempSync(join(tmpdir(), 'happy-agy-hook-'));
     this.workspace = join(this.root, 'workspace');
     this.socketPath = join(this.root, 'control.sock');
@@ -161,7 +219,6 @@ export class AgyStopHook {
         socket.setTimeout(0);
         let input: unknown;
         try { input = JSON.parse(buffer.slice(0, buffer.indexOf('\n'))); } catch { input = null; }
-        const progressBefore = this.policy.snapshot()?.progress ?? 0;
         const decision = this.policy.decide(input, epoch);
         const delayMs = decision.decision === 'continue' ? this.policy.plannedDelayMs(epoch) : 0;
         if (decision.decision !== 'continue' || delayMs <= 0) {
@@ -169,6 +226,7 @@ export class AgyStopHook {
           socket.end(JSON.stringify(decision) + '\n');
           return;
         }
+        const { lastExecution, progress } = this.policy.snapshot()!;
         let settled = false;
         const finishWait = () => {
           if (settled) return;
@@ -177,13 +235,13 @@ export class AgyStopHook {
           unsubscribe();
           if (this.closed || socket.destroyed || !socket.writable) return;
           responded = true;
-          const payload = this.policy.canContinue(epoch) ? decision : {};
+          const payload = this.policy.canContinue(epoch, lastExecution) ? decision : {};
           socket.end(JSON.stringify(payload) + '\n');
         };
         cleanupWait = finishWait;
         const timer = setTimeout(finishWait, delayMs);
         const unsubscribe = this.policy.subscribe(() => {
-          if (!this.policy.canContinue(epoch) || this.policy.hasProgressSince(epoch, progressBefore)) {
+          if (!this.policy.canContinue(epoch, lastExecution) || this.policy.hasProgressSince(epoch, progress)) {
             finishWait();
           }
         });
@@ -192,10 +250,10 @@ export class AgyStopHook {
     // A controller error must invalidate even a prior idle observation.
     this.server.on('error', () => { this.policy.decide(null); });
   }
-  static async create(limits: Partial<StopHookLimits> = {}): Promise<AgyStopHook> {
+  static async create(limits: Partial<StopHookLimits> = {}, mode: StopHookMode = 'continue'): Promise<AgyStopHook> {
     if (process.platform === 'win32') throw new Error('HAPPY_AGY_STOP_HOOK is currently supported on Unix hosts only');
     const resolved: StopHookLimits = { ...STOP_HOOK_LIMITS, ...limits };
-    const hook = new AgyStopHook(resolved);
+    const hook = new AgyStopHook(resolved, mode);
     try {
       mkdirSync(join(hook.workspace, '.agents'), { recursive: true, mode: 0o700 });
       const maxBackoffMs = Math.max(0, resolved.maxBackoffMs);
