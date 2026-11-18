@@ -47,9 +47,19 @@ final class AgentDefaultsTests: XCTestCase {
 
     func testEffortLevelsPerModel() {
         XCTAssertEqual(AgentDefaults.effortLevels(.claude, model: "x").map(\.name), ["Low", "Medium", "High", "xHigh", "Max"])
+        for model in ["gpt-6.2-astra", "gpt-6.2-sol"] {
+            XCTAssertEqual(AgentDefaults.effortLevels(.codex, model: model).map(\.key), ["low", "medium", "high", "xhigh", "max", "ultra"])
+        }
         XCTAssertEqual(AgentDefaults.effortLevels(.codex, model: "gpt-6-luna").count, 5)
         XCTAssertEqual(AgentDefaults.effortLevels(.codex, model: "custom").map(\.key), ["low", "medium", "high", "xhigh"])
         XCTAssertEqual(AgentDefaults.effortLevels(.agy, model: "GPT-OSS 120B (Medium)"), [])
+    }
+
+    func testGPT62ModelsLeadTheCodexPicker() {
+        XCTAssertEqual(Array(AgentDefaults.modelModes(.codex, configured: nil).prefix(2)), [
+            AgentDefaults.Option("gpt-6.2-astra", "GPT-6.2 Astra", "most capable"),
+            AgentDefaults.Option("gpt-6.2-sol", "GPT-6.2 Sol"),
+        ])
     }
 
     func testOptionName() {
