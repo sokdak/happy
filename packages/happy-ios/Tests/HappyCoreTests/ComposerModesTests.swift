@@ -71,6 +71,18 @@ private typealias Options = ModelModeOptions
 
 /// modelModeOptions.test.ts.
 final class ModelModeOptionsTests: XCTestCase {
+    func testDeepSeekModelsAndOverridesDoNotFallBackToClaude() {
+        XCTAssertEqual(AgentDefaults.Agent(flavor: "deepseek"), .deepseek)
+        XCTAssertEqual(Options.defaultModelKey(flavor: "deepseek"), "deepseek-flash")
+        XCTAssertEqual(Options.hardcodedModelModes(flavor: "deepseek").map(\.key), ["deepseek-flash", "deepseek-v4-pro"])
+        XCTAssertEqual(Options.effortLevelsForModel(flavor: "deepseek", modelKey: "deepseek-v4-pro").map(\.key), ["off", "low", "high", "max"])
+        let overrides: [String: JSONValue] = ["deepseek": .object(["modelMode": .string("deepseek-v4-pro"), "effortLevel": .string("max")])]
+        let saved = AgentDefaults.resolve(overrides, .deepseek, cliVersion: nil)
+        XCTAssertEqual(saved.modelMode, "deepseek-v4-pro")
+        XCTAssertEqual(saved.effortLevel, "max")
+        XCTAssertEqual(NewSessionDraft.Agent(rawValue: "deepseek")?.name, "DeepSeek")
+    }
+
     private func keys(_ options: [ModeOption]) -> [String] {
         options.map(\.key)
     }

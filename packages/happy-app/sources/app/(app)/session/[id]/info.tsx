@@ -444,6 +444,7 @@ function SessionInfoContent({ session }: { session: Session }) {
                                 const rigIdentity = getRigIdentity(session.metadata);
                                 if (rigIdentity) return rigIdentity.providerName;
                                 const flavor = session.metadata.flavor || 'claude';
+                                if (flavor === 'deepseek') return 'DeepSeek';
                                 if (flavor === 'claude') return 'Claude';
                                 if (flavor === 'gpt' || flavor === 'openai') return 'Codex';
                                 if (flavor === 'gemini') return 'Gemini';

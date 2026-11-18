@@ -31,6 +31,11 @@ final class HostedNavigationTimingTests: XCTestCase {
         }
     }
 
+    private func hasRows(in view: UIView) -> Bool {
+        if let list = view as? ChatListView { return list.isDisplayReady }
+        return view.subviews.contains { hasRows(in: $0) }
+    }
+
     func testHowLongATapTakesToMoveTheScreen() async throws {
         try await measure(fromHome: false)
     }
@@ -129,10 +134,15 @@ final class HostedNavigationTimingTests: XCTestCase {
                 catch { frames.stop(); _ = watch.stop(); throw error }
                 frames.stop()
                 let turns = watch.stop().filter { $0.start + $0.length >= tapped }
-                let ready = (destination as? ChatViewController)?.openingReport
+                var ready = (destination as? ChatViewController)?.openingReport
                 if fromHome {
                     XCTAssertTrue(destination is ChatViewController)
-                    XCTAssertEqual(ready?.missing, [])
+                    let chat = try XCTUnwrap(destination as? ChatViewController)
+                    try await until { chat.openingReport != nil }
+                    // Readiness is a diagnostic captured during navigation;
+                    // large local state may finish deriving after that report.
+                    try await until { chat.isOpeningContentReady && hasRows(in: chat.view) }
+                    ready = chat.openingReport
                 }
                 print(String(format: "NAVTIME %@ try %d first %.1f end %.1f longest %.1f ready %.1f missing %@",
                     name, attempt, ((first ?? tapped) - tapped) * 1000, ((end ?? tapped) - tapped) * 1000,

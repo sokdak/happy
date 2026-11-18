@@ -85,7 +85,7 @@ internal fun harnessBadgeSizes(size: Int, harness: AvatarHarness): Pair<Int, Int
         AvatarHarness.Rig -> (size * 0.26).roundToInt()
         AvatarHarness.Codex -> (size * 0.3).roundToInt()
         AvatarHarness.Claude -> (size * 0.34).roundToInt()
-        AvatarHarness.Agy -> (size * 0.42).roundToInt()
+        AvatarHarness.Agy, AvatarHarness.DeepSeek -> (size * 0.42).roundToInt()
     }
     return circle to icon
 }
@@ -174,6 +174,7 @@ fun Avatar(
                 Image(
                     painter = painterResource(
                         when (harness) {
+                            AvatarHarness.DeepSeek -> R.drawable.icon_deepseek
                             AvatarHarness.Claude -> R.drawable.icon_claude
                             AvatarHarness.Codex -> R.drawable.icon_gpt
                             AvatarHarness.Agy -> R.drawable.icon_agy

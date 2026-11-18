@@ -794,6 +794,7 @@ class Sync {
             : null;
         const attachmentPlan = getImageAttachmentSendPlan({
             flavor,
+            model: modeMeta.model ?? session.modelMode ?? session.metadata?.currentModelCode,
             text,
             attachmentCount: attachments?.length ?? 0,
             supportsAttachments: isRigMetadataV1(session.metadata)

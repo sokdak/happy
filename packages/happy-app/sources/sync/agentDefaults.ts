@@ -1,7 +1,7 @@
 import * as z from 'zod';
 import { compareVersionsWithPrerelease, isWellFormedVersion } from '@/utils/versionUtils';
 
-export const agentKeys = ['claude', 'codex', 'gemini', 'openclaw', 'agy'] as const;
+export const agentKeys = ['claude', 'codex', 'gemini', 'openclaw', 'agy', 'deepseek'] as const;
 export type AgentKey = typeof agentKeys[number];
 
 export const AgentDefaultOverrideSchema = z.object({
@@ -12,6 +12,7 @@ export const AgentDefaultOverrideSchema = z.object({
 
 export const AgentDefaultOverridesSchema = z.object({
     claude: AgentDefaultOverrideSchema.optional(),
+    deepseek: AgentDefaultOverrideSchema.optional(),
     codex: AgentDefaultOverrideSchema.optional(),
     gemini: AgentDefaultOverrideSchema.optional(),
     openclaw: AgentDefaultOverrideSchema.optional(),
@@ -32,6 +33,7 @@ const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
     // This fork defaults both code agents to Yolo. Explicit user overrides
     // remain separate; model defaults keep upstream CLI compatibility gates.
     claude: { permissionMode: 'bypassPermissions', modelMode: 'claude-opus-5-5', effortLevel: 'medium' },
+    deepseek: { permissionMode: 'yolo', modelMode: 'deepseek-flash', effortLevel: 'high' },
     codex: { permissionMode: 'yolo', modelMode: 'gpt-6.1-sol', effortLevel: 'medium' },
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },
@@ -83,7 +85,7 @@ function resolveCodeDefaultModelMode(
 }
 
 export function normalizeAgentKey(flavor: string | null | undefined): AgentKey {
-    if (flavor === 'codex' || flavor === 'gemini' || flavor === 'openclaw' || flavor === 'agy') {
+    if (flavor === 'deepseek' || flavor === 'codex' || flavor === 'gemini' || flavor === 'openclaw' || flavor === 'agy') {
         return flavor;
     }
     return 'claude';

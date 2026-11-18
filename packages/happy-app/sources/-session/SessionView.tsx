@@ -1007,7 +1007,7 @@ export function SessionViewLoaded({
     const { selectedImages, attachImages, removeImage, clearImages, addImages } = useImagePicker();
     const canUseAttachments = !!session && (isRigMetadataV1(session.metadata)
         ? rigCanUseAttachments(session.metadata)
-        : supportsImageAttachmentsForFlavor(session.metadata?.flavor));
+        : supportsImageAttachmentsForFlavor(session.metadata?.flavor, modelMode?.key ?? session.modelMode ?? session.metadata?.currentModelCode));
     React.useEffect(() => {
         if (!canUseAttachments && selectedImages.length > 0) {
             clearImages();

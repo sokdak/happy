@@ -13,6 +13,8 @@
  * the Codex type, and the help text each carried their own copy.
  */
 
+import { DEEPSEEK_EFFORT_LEVELS } from '@slopus/happy-wire';
+
 export const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 // Mirrors codex-rs `protocol/src/openai_models.rs` ReasoningEffort: gpt-5.6
@@ -27,6 +29,7 @@ export type CodexEffortLevel = typeof CODEX_EFFORT_LEVELS[number];
 // early for the rest.
 const EFFORT_LEVELS_BY_AGENT: Record<string, readonly string[]> = {
     claude: CLAUDE_EFFORT_LEVELS,
+    deepseek: DEEPSEEK_EFFORT_LEVELS,
     codex: CODEX_EFFORT_LEVELS,
 };
 

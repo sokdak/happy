@@ -37,6 +37,7 @@ public struct SessionAvatar: Equatable, Sendable {
     public var image: AvatarImageSource?
 
     public enum Harness: String, Equatable, Sendable {
+        case deepseek
         case claude
         case codex
         case agy
@@ -56,6 +57,7 @@ public struct SessionAvatar: Equatable, Sendable {
     public static func harness(flavor: String?, clientId: String?) -> Harness? {
         if clientId == "rig" { return .rig }
         switch flavor {
+        case "deepseek": return .deepseek
         case "claude": return .claude
         case "codex": return .codex
         case "agy": return .agy

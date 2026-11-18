@@ -161,7 +161,7 @@ private fun ChatRoute(
     val notSent = stringResource(R.string.errors_unknown_error)
     val latestState by rememberUpdatedState(state)
     val latestSettings by rememberUpdatedState(settings)
-    val images = rememberComposerImages(enabled = state.session != null && canUseAttachments(state.session?.metadata))
+    val images = rememberComposerImages(enabled = state.session != null && canUseAttachments(state.session?.metadata, modes.modelMode?.key))
     val latestImages by rememberUpdatedState(images)
     val notices = remember { mutableStateListOf<Alert>() }
     // Not lifecycle-bound: the change to the background is the one that matters.

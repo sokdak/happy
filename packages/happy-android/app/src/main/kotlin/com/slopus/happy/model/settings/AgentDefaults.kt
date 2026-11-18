@@ -10,7 +10,8 @@ enum class AgentKey(val wire: String) {
     Codex("codex"),
     Gemini("gemini"),
     Openclaw("openclaw"),
-    Agy("agy");
+    Agy("agy"),
+    DeepSeek("deepseek");
 
     companion object {
         /** normalizeAgentKey: an unknown or missing flavor is Claude. */
@@ -91,6 +92,7 @@ object AgentDefaults {
     // Auto is the reviewed everyday mode for both shipped code agents. The
     // old CLI fallback is applied only when a machine version is known.
     private val codeAgentDefaults = mapOf(
+        AgentKey.DeepSeek to AgentDefaultConfig("yolo", "deepseek-flash", "high"),
         AgentKey.Claude to AgentDefaultConfig("auto", "claude-opus-5-5", "medium"),
         AgentKey.Codex to AgentDefaultConfig("auto", "gpt-6.1-sol", "medium"),
         AgentKey.Gemini to AgentDefaultConfig("default", "gemini-2.5-pro", null),

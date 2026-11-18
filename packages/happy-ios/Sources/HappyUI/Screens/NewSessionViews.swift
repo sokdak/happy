@@ -322,6 +322,7 @@ final class NewSessionAgentButton: UIControl {
     /// new/index.tsx's `agentIcons`.
     static func logo(_ key: String) -> String {
         switch key {
+        case "deepseek": "icon-deepseek"
         case "rig": "logo-black"
         case "codex": "icon-gpt"
         case "agy": "icon-agy"

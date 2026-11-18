@@ -299,7 +299,7 @@ public enum ModelModeOptions {
             }
             return modes
         }
-        if flavor == "claude" || flavor == "codex" || flavor == "openclaw" || flavor == "agy" {
+        if flavor == "deepseek" || flavor == "claude" || flavor == "codex" || flavor == "openclaw" || flavor == "agy" {
             return ModeHacks.hack(filterPermissionModesForCli(
                 hardcodedPermissionModes(flavor: flavor),
                 cliVersion: metadata?["version"]?.stringValue
@@ -371,6 +371,7 @@ public enum ModelModeOptions {
     /// `getHardcodedEffortLevels`.
     public static func hardcodedEffortLevels(flavor: String?) -> [ModeOption] {
         switch flavor {
+        case "deepseek": effort(AgentDefaults.effortLevels(.deepseek, model: ""))
         case "claude": claudeEffortLevels()
         case "codex": codexEffortLevels(model: nil)
         case "agy": agyEffortLevels(model: defaultModelKey(flavor: "agy"))
@@ -387,6 +388,7 @@ public enum ModelModeOptions {
             }
         }
         switch flavor {
+        case "deepseek": return effort(AgentDefaults.effortLevels(.deepseek, model: modelKey))
         case "claude": return claudeEffortLevels()
         case "codex": return codexEffortLevels(model: modelKey)
         case "agy": return agyEffortLevels(model: modelKey)
@@ -460,6 +462,7 @@ public enum ModelModeOptions {
     /// The hardcoded catalogs fall back to Claude's for any other flavor.
     static func hardcodedAgent(_ flavor: String?) -> AgentDefaults.Agent {
         switch flavor {
+        case "deepseek": .deepseek
         case "codex": .codex
         case "gemini": .gemini
         case "openclaw": .openclaw
@@ -470,6 +473,7 @@ public enum ModelModeOptions {
 
     static func provider(_ agent: AgentDefaults.Agent, model: String) -> (id: String, name: String)? {
         switch agent {
+        case .deepseek: ("deepseek", "DeepSeek")
         case .claude: ("anthropic", "Anthropic")
         case .codex: ("openai", "OpenAI")
         case .agy:

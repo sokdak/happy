@@ -118,13 +118,12 @@ final class HostedChatListTests: XCTestCase {
     }
 
     private func scroll(_ list: ChatListView, toDistance distance: CGFloat) {
-        list.collectionView.contentOffset.y = distance - list.collectionView.contentInset.top
+        list.setVisibleMinY(distance)
         list.layoutIfNeeded()
     }
 
     private func maxDistance(_ list: ChatListView) -> CGFloat {
-        let collection = list.collectionView
-        return max(0, collection.contentSize.height + collection.contentInset.top + collection.contentInset.bottom - list.bounds.height)
+        list.maximumVisibleMinY
     }
 
     func testTheListNeverShowsAVerticalIndicator() async throws {
@@ -256,6 +255,9 @@ final class HostedChatListTests: XCTestCase {
             connector: NoSockets()
         )
         try await controller.signIn(Credentials(token: "t", secret: Data(repeating: 1, count: 32)))
+        let account = try XCTUnwrap(controller.session)
+        let store = account.store
+        try await Task.detached { try SeededAccount.seed(store) }.value
         return controller
     }
 
@@ -284,7 +286,9 @@ final class HostedChatListTests: XCTestCase {
         let context = AppContext(account: controller, variant: .development, version: "test")
         let scene = try await hostedActiveScene()
         let hostWindow = scene.keyWindow
-        let chat = ChatViewController(context: context, session: account, sessionId: FixtureScenarios.prefix + FixtureScenario.long.rawValue)
+        // A locally stored 300-message chat exercises the production feed and
+        // supplies several screens without generating thousands of debug rows.
+        let chat = ChatViewController(context: context, session: account, sessionId: "seeded-main")
         let navigation = UINavigationController(rootViewController: UIViewController())
         navigation.pushViewController(chat, animated: false)
         let window = hostedKeyWindow(in: scene, root: navigation)
@@ -297,7 +301,7 @@ final class HostedChatListTests: XCTestCase {
         XCTAssertTrue(constructed)
         let list = try XCTUnwrap(subview(ChatListView.self, in: chat.view))
         let dock = try XCTUnwrap(subview(ChatDockView.self, in: chat.view))
-        let filled = try await until { list.collectionView.numberOfItems(inSection: 0) > 20 && maxDistance(list) > list.bounds.height }
+        let filled = try await until { list.isDisplayReady && list.plans.count > 20 && maxDistance(list) > list.bounds.height }
         XCTAssertTrue(filled, "the fixture's rows never landed")
         chat.view.layoutIfNeeded()
         assertNoIndicator(list, "resting")

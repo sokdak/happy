@@ -1,7 +1,7 @@
 import type { CLIAvailability } from './detectCLI';
 import { agentSupportsEffortLevel } from './effortLevels';
 
-const AGENT_KEYS = ['claude', 'codex', 'gemini', 'openclaw', 'agy'] as const;
+const AGENT_KEYS = ['claude', 'codex', 'gemini', 'openclaw', 'agy', 'deepseek'] as const;
 
 export type AgentKey = typeof AGENT_KEYS[number];
 

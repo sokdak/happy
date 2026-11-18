@@ -119,6 +119,13 @@ describe('happy-agent CLI', () => {
     });
 
     describe('spawn command', () => {
+        it('accepts DeepSeek as a remote spawn agent', () => {
+            expect(runCli('spawn', '--help').stdout).toContain('deepseek');
+            const result = runCli('spawn', '--machine', 'test-machine', '--agent', 'deepseek');
+            expect(result.exitCode).not.toBe(0);
+            expect(result.stderr).toContain('happy-agent auth login');
+            expect(result.stderr).not.toContain('--agent must be one of');
+        });
         it('should show spawn help with machine, path, agent, and json options', () => {
             const { stdout } = runCli('spawn', '--help');
             expect(stdout).toContain('Spawn a new session on a machine');

@@ -25,6 +25,7 @@ private fun SessionMetadata.isWindows() = os?.lowercase() == "win32"
 fun SessionMetadata?.resumeCommandBlock(): ResumeCommandBlock? {
     if (this == null || client?.id == "rig" || (raw["capabilities"] as? JsonObject)?.get("resume") == JsonPrimitive(false)) return null
     val invocation = when {
+        flavor == "deepseek" -> deepseekSessionId?.takeIf { it.isNotBlank() }?.let { "happy deepseek --resume $it" } ?: return null
         (flavor == "codex" || flavor == "openai" || flavor == "gpt") && !codexThreadId.isNullOrEmpty() -> "happy codex --resume $codexThreadId"
         !claudeSessionId.isNullOrEmpty() -> "happy claude --resume $claudeSessionId"
         else -> return null

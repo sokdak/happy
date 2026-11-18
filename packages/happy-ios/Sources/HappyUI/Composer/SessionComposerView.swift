@@ -301,7 +301,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
             stopRequested = false
         }
         // Nothing to attach to: a picked image would be dropped at send.
-        if !SessionComposerRules.canUseAttachments(record), !images.images.isEmpty {
+        if !SessionComposerRules.canUseAttachments(record, model: modes.modelMode?.key), !images.images.isEmpty {
             images.clear()
         }
 
@@ -554,7 +554,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
     private func applyConfiguration() {
         let record = state?.session.record
         let chips = ComposerChipSet(modes: modes, record: record, titles: Self.titles)
-        let canAttach = SessionComposerRules.canUseAttachments(record)
+        let canAttach = SessionComposerRules.canUseAttachments(record, model: modes.modelMode?.key)
         let primary = AgentInputPrimaryAction.resolve(
             hasComposerContent: hasComposerContent,
             isSendBlocked: SessionComposerRules.isSendBlocked(record),

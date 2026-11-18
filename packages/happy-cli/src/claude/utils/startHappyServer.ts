@@ -14,8 +14,14 @@ import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
+import { agentQuestionSchema, agentPlanSchema } from '@/utils/agentInteractionSchema';
 
-function createMcpServer(handler: (title: string) => Promise<{ success: boolean; error?: string }>): McpServer {
+export interface HappyInteractionTools {
+    requestUserInput?: (questions: z.infer<typeof agentQuestionSchema>[], signal: AbortSignal) => Promise<unknown>;
+    updatePlan?: (plan: { step: string; status: 'pending' | 'in_progress' | 'completed' }[]) => Promise<unknown>;
+}
+
+function createMcpServer(handler: (title: string) => Promise<{ success: boolean; error?: string }>, interactions: HappyInteractionTools): McpServer {
     const mcp = new McpServer({
         name: "Happy MCP",
         version: "1.0.0",
@@ -54,10 +60,18 @@ function createMcpServer(handler: (title: string) => Promise<{ success: boolean;
         }
     });
 
+    if (interactions.requestUserInput) mcp.registerTool('request_user_input', {
+        description: 'Ask the user up to three questions using Happy question cards. Wait for their answers before continuing dependent work.',
+        inputSchema: { questions: z.array(agentQuestionSchema).min(1).max(3) },
+    }, async (args, extra) => ({ content: [{ type: 'text', text: JSON.stringify(await interactions.requestUserInput!(args.questions, extra.signal)) }] }));
+    if (interactions.updatePlan) mcp.registerTool('update_plan', {
+        description: 'Publish the current task plan in Happy. Keep statuses updated as work progresses.',
+        inputSchema: { plan: agentPlanSchema },
+    }, async args => ({ content: [{ type: 'text', text: JSON.stringify(await interactions.updatePlan!(args.plan)) }] }));
     return mcp;
 }
 
-export async function startHappyServer(client: Pick<ApiSessionClient, 'sessionId' | 'sendClaudeSessionMessage'>) {
+export async function startHappyServer(client: Pick<ApiSessionClient, 'sessionId' | 'sendClaudeSessionMessage'>, interactions: HappyInteractionTools = {}) {
     logger.debug(`[happyMCP] server:start sessionId=${client.sessionId}`);
 
     const handler = async (title: string) => {
@@ -75,7 +89,7 @@ export async function startHappyServer(client: Pick<ApiSessionClient, 'sessionId
     };
 
     const server = createServer(async (req, res) => {
-        const mcp = createMcpServer(handler);
+        const mcp = createMcpServer(handler, interactions);
         try {
             const transport = new StreamableHTTPServerTransport({
                 sessionIdGenerator: undefined
@@ -106,7 +120,7 @@ export async function startHappyServer(client: Pick<ApiSessionClient, 'sessionId
 
     return {
         url: baseUrl.toString(),
-        toolNames: ['change_title'],
+        toolNames: ['change_title', ...(interactions.requestUserInput ? ['request_user_input'] : []), ...(interactions.updatePlan ? ['update_plan'] : [])],
         stop: () => {
             logger.debug(`[happyMCP] server:stop sessionId=${client.sessionId}`);
             server.close();

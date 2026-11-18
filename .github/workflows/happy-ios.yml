@@ -37,7 +37,7 @@ jobs:
           brew install xcodegen
           xcodegen generate --spec project.yml
           mkdir -p build/ci
-      - name: Select and boot an available iPhone simulator
+      - name: Select a reference iPhone simulator
         run: |
           set -euo pipefail
           xcrun simctl list devices available --json > build/ci/simulators.json
@@ -53,13 +53,15 @@ jobs:
               if not version:
                   continue
               numbers = tuple(int(part or 0) for part in version.groups())
-              if numbers < (17, 0, 0):
+              if numbers < (26, 0, 0):
                   continue
               for entry in entries:
-                  if entry.get('isAvailable') and entry['name'].startswith('iPhone'):
+                  # The pixel-exact UIKit fixtures model a 3x Pro screen.
+                  # Sorting all iPhone names picked the 2x iPhone SE instead.
+                  if entry.get('isAvailable') and entry['name'] in ('iPhone 17 Pro', 'iPhone 16 Pro'):
                       candidates.append((numbers, entry['name'], entry['udid']))
           if not candidates:
-              raise SystemExit('No available iPhone simulator with iOS 17 or later')
+              raise SystemExit('No available iPhone 17 Pro or iPhone 16 Pro simulator with iOS 26 or later')
           _, _, device_id = max(candidates)
           if not re.fullmatch(r'[0-9A-Fa-f-]{36}', device_id):
               raise SystemExit('Invalid simulator UUID')

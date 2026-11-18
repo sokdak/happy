@@ -25,12 +25,15 @@ fun resumeAvailability(session: Session, machine: Machine?): ResumeAvailability 
     if (metadata.isRig() || metadata?.capabilities?.resume == false) return ResumeAvailability.Hidden
     if (session.isOnline) return ResumeAvailability.Hidden
     if (metadata?.machineId.isNullOrEmpty()) return ResumeAvailability.blocked(ResumeBlock.MissingMachine)
-    if (metadata.claudeSessionId.isNullOrEmpty() && metadata.codexThreadId.isNullOrEmpty()) {
+    val hasNativeId = if (metadata.flavor == "deepseek") !metadata.deepseekSessionId.isNullOrBlank()
+        else !metadata.claudeSessionId.isNullOrEmpty() || !metadata.codexThreadId.isNullOrEmpty()
+    if (!hasNativeId) {
         return ResumeAvailability.blocked(ResumeBlock.MissingBackendId)
     }
     if (machine == null) return ResumeAvailability.blocked(ResumeBlock.SameMachineOnly)
     if (!machine.isOnline) return ResumeAvailability.blocked(ResumeBlock.MachineOffline)
     if (machine.metadata?.resumeSupport?.rpcAvailable != true) return ResumeAvailability.Hidden
+    if (metadata.flavor == "deepseek" && machine.metadata?.resumeSupport?.deepseek != true) return ResumeAvailability.Hidden
     return ResumeAvailability(canResume = true, canShowResume = true, block = null)
 }
 

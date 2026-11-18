@@ -6,6 +6,14 @@ import { MetadataSchema, MachineMetadataSchema, type Machine, type Session } fro
 const session = { metadata: { flavor: 'agy', machineId: 'machine', agySessionId: 'native-agy' } } as Session;
 const machine = { active: true, metadata: { resumeSupport: { rpcAvailable: true, agy: true } } } as Machine;
 describe('AGY resume availability shared by app and web', () => {
+  it('resumes native DeepSeek sessions only on a daemon advertising the ACP route', () => {
+    const native = { metadata: { flavor: 'deepseek', machineId: 'machine', deepseekSessionId: 'dsh-native' } } as Session;
+    expect(getResumeAvailability(native, machine, false).canResume).toBe(false);
+    const compatible = { ...machine, metadata: { resumeSupport: { rpcAvailable: true, deepseek: true } } } as Machine;
+    expect(getResumeAvailability(native, compatible, false).canResume).toBe(true);
+    expect(getResumeAvailability({ metadata: { flavor: 'deepseek', machineId: 'machine', claudeSessionId: 'legacy' } } as Session, compatible, false).canResume).toBe(false);
+    expect(MetadataSchema.parse({ path: '/repo', host: 'host', deepseekSessionId: 'dsh-native' }).deepseekSessionId).toBe('dsh-native');
+  });
   it('enables resume for a disconnected ACP session on a compatible online machine', () => {
     expect(getResumeAvailability(session, machine, false).canResume).toBe(true);
   });

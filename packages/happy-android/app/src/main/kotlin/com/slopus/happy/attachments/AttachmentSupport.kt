@@ -8,7 +8,8 @@ import com.slopus.happy.sync.rigCanUseAttachments
 // attachments an agent can't take.
 
 /** supportsImageAttachmentsForFlavor: sessions without a flavor, Claude, Codex, and Antigravity. */
-fun supportsImageAttachmentsForFlavor(flavor: String?): Boolean =
+fun supportsImageAttachmentsForFlavor(flavor: String?, model: String? = null): Boolean =
+    (flavor == "deepseek" && (model.isNullOrEmpty() || model == "deepseek-flash")) ||
     flavor.isNullOrEmpty() || flavor == "claude" || flavor == "codex" || flavor == "agy"
 
 data class ImageAttachmentSendPlan(
@@ -24,9 +25,10 @@ fun imageAttachmentSendPlan(
     text: String,
     attachmentCount: Int,
     supportsAttachments: Boolean? = null,
+    model: String? = null,
 ): ImageAttachmentSendPlan {
     val hasAttachments = attachmentCount > 0
-    val supports = supportsAttachments ?: supportsImageAttachmentsForFlavor(flavor)
+    val supports = supportsAttachments ?: supportsImageAttachmentsForFlavor(flavor, model)
     val unsupportedAlert = hasAttachments && !supports
     return ImageAttachmentSendPlan(
         supportsAttachments = supports,
@@ -51,6 +53,7 @@ fun isAttachmentAllowedByPolicy(mimeType: String, size: Long, policy: Attachment
 /** sync.ts sendMessage: the plan for [metadata]'s session, with the rig policy where there is one. */
 fun imageAttachmentSendPlan(metadata: SessionMetadata?, text: String, attachmentCount: Int) = imageAttachmentSendPlan(
     flavor = metadata?.flavor,
+    model = metadata?.modelMode ?: metadata?.currentModelCode,
     text = text,
     attachmentCount = attachmentCount,
     supportsAttachments = if (metadata.isRigV1()) metadata.rigCanUseAttachments() else null,

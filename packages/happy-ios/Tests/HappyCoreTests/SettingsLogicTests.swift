@@ -60,7 +60,7 @@ final class AgentDefaultsTests: XCTestCase {
     }
 
     func testRetiredAgentsAreNotConfigurable() {
-        XCTAssertEqual(AgentDefaults.Agent.configurable, [.claude, .codex, .agy])
+        XCTAssertEqual(AgentDefaults.Agent.configurable, [.claude, .codex, .agy, .deepseek])
     }
 }
 

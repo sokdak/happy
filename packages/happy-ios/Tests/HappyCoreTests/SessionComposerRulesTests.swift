@@ -34,6 +34,15 @@ private func rig(capabilities: String = #"{ "abort": true, "rpcMethods": ["abort
 
 /// SessionView.tsx's composer props.
 final class SessionComposerRulesTests: XCTestCase {
+    func testDeepSeekImageSupportTracksTheSelectedModel() {
+        let flash = sessionRecord(metadata: #"{ "flavor": "deepseek", "modelMode": "deepseek-flash" }"#)
+        let pro = sessionRecord(metadata: #"{ "flavor": "deepseek", "modelMode": "deepseek-v4-pro" }"#)
+        XCTAssertTrue(SessionComposerRules.canUseAttachments(flash))
+        XCTAssertFalse(SessionComposerRules.canUseAttachments(pro))
+        XCTAssertFalse(SessionComposerRules.canUseAttachments(flash, model: "deepseek-v4-pro"))
+        XCTAssertTrue(SessionComposerRules.canUseAttachments(pro, model: "deepseek-flash"))
+    }
+
     func testStopShowsWhileTheAgentWorksOrWaitsOnThePerson() {
         XCTAssertTrue(SessionComposerRules.showsAbortButton(sessionRecord(thinking: true)))
         XCTAssertFalse(SessionComposerRules.showsAbortButton(sessionRecord()))

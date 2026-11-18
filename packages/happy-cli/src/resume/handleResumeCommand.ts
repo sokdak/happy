@@ -40,7 +40,8 @@ export function parseResumeCommandArgs(args: string[]): { showHelp: boolean; ses
     };
 }
 
-function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'agy' | null {
+function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'agy' | 'deepseek' | null {
+    if (metadata.flavor === 'deepseek') return 'deepseek';
     if (metadata.flavor === 'agy') return 'agy';
     if (metadata.flavor === 'codex' || metadata.codexThreadId) {
         return 'codex';
@@ -79,11 +80,22 @@ export function buildResumeLaunch(session: ResumableHappySession, options: Resum
         };
     }
 
+    if (flavor === 'deepseek') {
+        if (!metadata.deepseekSessionId?.trim()) throw new Error(`Happy session ${session.id} is missing its DeepSeek Harness session ID. A Claude Code-based DeepSeek session cannot be resumed by dsh.`);
+        const args = ['deepseek', '--resume', metadata.deepseekSessionId];
+        const model = metadata.modelMode !== undefined ? metadata.modelMode : metadata.currentModelCode;
+        if (model) args.push('--model', model);
+        if (metadata.effortLevel) args.push('--effort', metadata.effortLevel);
+        if (metadata.permissionMode) args.push('--permission-mode', metadata.permissionMode);
+        if (options.startedBy) args.push('--started-by', options.startedBy);
+        return { cwd: metadata.path, args };
+    }
+
     if (flavor === 'claude') {
         if (!metadata.claudeSessionId) {
             throw new Error(`Happy session ${session.id} is missing its Claude session ID.`);
         }
-        const args = ['claude'];
+        const args: string[] = [flavor];
         if (options.claudeStartingMode) {
             args.push('--happy-starting-mode', options.claudeStartingMode);
         }
@@ -119,6 +131,7 @@ export function formatResumeHelp(): string {
 function buildReconnectEnv(session: ReconnectableHappySession): NodeJS.ProcessEnv {
     return buildSessionChildEnvironment(process.env, {
         ...(session.metadata.flavor === 'agy' ? { HAPPY_AGY_RECONNECT_METADATA: JSON.stringify(session.metadata) } : {}),
+        ...(session.metadata.flavor === 'deepseek' ? { HAPPY_DEEPSEEK_RECONNECT_METADATA: JSON.stringify(session.metadata) } : {}),
         HAPPY_RECONNECT_SESSION_ID: session.id,
         HAPPY_RECONNECT_ENCRYPTION_KEY: encodeBase64(session.encryptionKey),
         HAPPY_RECONNECT_ENCRYPTION_VARIANT: session.encryptionVariant,

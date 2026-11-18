@@ -8,7 +8,7 @@ export function shouldForwardDaemonPermissionMode(
 
   // Claude's "default" means no harness override. Codex's "default" is a
   // concrete ask-first execution policy and differs from its ambient "auto".
-  return permissionMode !== 'default' || agent === 'codex';
+  return permissionMode !== 'default' || agent === 'codex' || agent === 'deepseek';
 }
 
 export function appendDaemonSpawnModeArgs(
@@ -16,7 +16,7 @@ export function appendDaemonSpawnModeArgs(
   options: SpawnSessionOptions,
   agent: string,
 ): void {
-  if (agent !== 'claude' && agent !== 'codex' && agent !== 'agy') return;
+  if (agent !== 'claude' && agent !== 'codex' && agent !== 'agy' && agent !== 'deepseek') return;
 
   if (shouldForwardDaemonPermissionMode(agent, options.permissionMode)) {
     args.push('--permission-mode', options.permissionMode);

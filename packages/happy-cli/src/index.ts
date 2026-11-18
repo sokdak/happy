@@ -135,6 +135,26 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'deepseek') {
+    const { parseDeepSeekArgs, runDeepSeek } = await import('./deepseek/runDeepSeek');
+    const { resolveDeepSeekOptions } = await import('./deepseek/options');
+    const options = parseDeepSeekArgs(args.slice(1));
+    if (options.help) {
+      console.log(`happy deepseek - DeepSeek Harness over ACP
+Requires Node.js 24.9+, @deepseek-ai/dsh, and DEEPSEEK_API_KEY.
+  --model deepseek-flash|deepseek-v4-pro
+  --effort off|low|high|max
+  --permission-mode auto|default|read-only|safe-yolo|yolo
+  --resume <Harness-session-id>
+  --verbose
+Set HAPPY_DEEPSEEK_PATH to select a dsh executable.
+Happy keeps the Harness profile and sessions in ~/.happy/deepseek.`);
+      return;
+    }
+    resolveDeepSeekOptions(options);
+    const { credentials } = await authAndSetupMachineIfNeeded();
+    await ensureDaemonRunning();
+    await runDeepSeek(credentials, options);
   } else if (subcommand === 'codex') {
     // Handle codex command
     try {
@@ -730,6 +750,7 @@ ${chalk.bold('Usage:')}
   happy [options]         Start Claude with mobile control
   happy auth              Manage authentication
   happy resume            Resume a previous Happy session by Happy session ID
+  happy deepseek          Start DeepSeek Harness (ACP)
   happy codex             Start Codex mode
   happy gemini            Start Gemini mode (ACP) [deprecated — use agy]
   happy agy               Start agy (Antigravity CLI) mode

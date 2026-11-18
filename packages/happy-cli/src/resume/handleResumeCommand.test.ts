@@ -175,6 +175,16 @@ describe('buildResumeLaunch', () => {
         });
     });
 
+    it('resumes DeepSeek with the same backend and selected model', () => {
+        expect(buildResumeLaunch({ id: 'deepseek-session', active: false, metadata: { path: '/repo', flavor: 'deepseek', deepseekSessionId: 'native-dsh-id', currentModelCode: 'deepseek-v4-pro', effortLevel: 'max', permissionMode: 'read-only' } } as any, { startedBy: 'daemon', claudeStartingMode: 'remote' })).toEqual({
+            cwd: '/repo', args: ['deepseek', '--resume', 'native-dsh-id', '--model', 'deepseek-v4-pro', '--effort', 'max', '--permission-mode', 'read-only', '--started-by', 'daemon'],
+        });
+    });
+
+    it('refuses legacy Claude-based DeepSeek sessions without a native Harness ID', () => {
+        expect(() => buildResumeLaunch({ id: 'legacy', active: false, metadata: { path: '/repo', flavor: 'deepseek', claudeSessionId: 'old-id' } } as any)).toThrow('missing its DeepSeek Harness session ID');
+    });
+
     it('rejects unsupported flavors', () => {
         expect(() => buildResumeLaunch({
             id: 'session-3',

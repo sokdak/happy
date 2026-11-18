@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { appendDaemonSpawnModeArgs, shouldForwardDaemonPermissionMode } from './spawnModeArgs';
 
 describe('daemon spawn mode arguments', () => {
+  it('forwards DeepSeek model, effort, and permissions to both launch paths', () => {
+    const args: string[] = [];
+    appendDaemonSpawnModeArgs(args, { directory: '/repo', modelMode: 'deepseek-v4-pro', effortLevel: 'max', permissionMode: 'plan' }, 'deepseek');
+    expect(args).toEqual(['--permission-mode', 'plan', '--model', 'deepseek-v4-pro', '--effort', 'max']);
+  });
+  it('forwards DeepSeek default instead of silently falling back to yolo', () => {
+    const args: string[] = [];
+    appendDaemonSpawnModeArgs(args, { directory: '/repo', permissionMode: 'default' }, 'deepseek');
+    expect(args).toEqual(['--permission-mode', 'default']);
+  });
   it('forwards Codex default because it is a concrete ask-first policy', () => {
     const args: string[] = [];
 

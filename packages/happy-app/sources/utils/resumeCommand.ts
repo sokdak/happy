@@ -5,6 +5,7 @@ export type ResumeCommandMetadata = {
     claudeSessionId?: string | null;
     codexThreadId?: string | null;
     agySessionId?: string | null;
+    deepseekSessionId?: string | null;
     client?: { id?: string | null } | null;
     capabilities?: { resume?: boolean | null } | null;
 };
@@ -32,6 +33,9 @@ function buildResumeInvocation(metadata: ResumeCommandMetadata): string | null {
     }
     if (metadata.flavor === 'agy') {
         return metadata.agySessionId?.trim() ? `happy agy --resume ${metadata.agySessionId}` : null;
+    }
+    if (metadata.flavor === 'deepseek') {
+        return metadata.deepseekSessionId?.trim() ? `happy deepseek --resume ${metadata.deepseekSessionId}` : null;
     }
     if ((metadata.flavor === 'codex' || metadata.flavor === 'openai' || metadata.flavor === 'gpt') && metadata.codexThreadId) {
         return `happy codex --resume ${metadata.codexThreadId}`;

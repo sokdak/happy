@@ -3,6 +3,7 @@ import os from 'os';
 import * as tmp from 'tmp';
 import axios from 'axios';
 
+import { resolveDeepSeekOptions } from '@/deepseek/options';
 import { ApiClient } from '@/api/api';
 import { TrackedSession, SessionEncryptionData } from './types';
 import { MachineMetadata, DaemonState, Metadata } from '@/api/types';
@@ -436,6 +437,10 @@ export async function startDaemon(): Promise<void> {
           };
         }
 
+        if (resolvedAgent === 'deepseek') {
+          resolveDeepSeekOptions({ model: spawnOptions.modelMode, effort: spawnOptions.effortLevel }, { ...ambientEnvironment, ...extraEnv });
+        }
+
         // Check if tmux is available and should be used
         const tmuxAvailable = await isTmuxAvailable();
         let useTmux = tmuxAvailable;
@@ -800,7 +805,9 @@ export async function startDaemon(): Promise<void> {
         // client has it. Fill only that gap; keep the tracked path and live IDs.
         const flavor = metadata.flavor ?? 'claude';
         if (fallback && (fallback.metadata.flavor ?? 'claude') === flavor) {
-          if (flavor === 'claude' && !metadata.claudeSessionId && fallback.metadata.claudeSessionId) {
+          if (flavor === 'deepseek' && !metadata.deepseekSessionId && fallback.metadata.deepseekSessionId) {
+            metadata = { ...metadata, deepseekSessionId: fallback.metadata.deepseekSessionId };
+          } else if (flavor === 'claude' && !metadata.claudeSessionId && fallback.metadata.claudeSessionId) {
             metadata = { ...metadata, claudeSessionId: fallback.metadata.claudeSessionId };
           } else if (flavor === 'agy' && !metadata.agySessionId && fallback.metadata.agySessionId) {
             metadata = { ...metadata, agySessionId: fallback.metadata.agySessionId };
@@ -818,6 +825,7 @@ export async function startDaemon(): Promise<void> {
         // The fetch is best effort: it reads the server's 150 most recent
         // sessions, and an older session simply keeps what the client sent.
         const needsFetch = (!metadata.claudeSessionId && (!metadata.flavor || metadata.flavor === 'claude'))
+          || (!metadata.deepseekSessionId && metadata.flavor === 'deepseek')
           || (!metadata.codexThreadId && metadata.flavor === 'codex')
           || (!metadata.agySessionId && metadata.flavor === 'agy');
         if (needsFetch) {
@@ -871,6 +879,7 @@ export async function startDaemon(): Promise<void> {
           reconnect: { happySessionId, happySessionMetadataFromLocalWebhook: metadata, encryption },
           env: buildSessionChildEnvironment(ambientEnvironment, {
             ...(metadata.flavor === 'agy' ? { HAPPY_AGY_RECONNECT_METADATA: JSON.stringify(metadata) } : {}),
+            ...(metadata.flavor === 'deepseek' ? { HAPPY_DEEPSEEK_RECONNECT_METADATA: JSON.stringify(metadata) } : {}),
             HAPPY_RECONNECT_SESSION_ID: happySessionId,
             HAPPY_RECONNECT_ENCRYPTION_KEY: encodeBase64(encryption.encryptionKey),
             HAPPY_RECONNECT_ENCRYPTION_VARIANT: encryption.encryptionVariant,

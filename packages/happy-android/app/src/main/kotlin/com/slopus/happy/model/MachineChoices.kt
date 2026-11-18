@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonPrimitive
 /** persistence.ts `NewSessionAgentType`; [wire] is the CLI/RPC id. */
 enum class AgentType(val wire: String, val displayName: String) {
     Claude("claude", "Claude Code"),
+    DeepSeek("deepseek", "DeepSeek"),
     Codex("codex", "Codex"),
     Gemini("gemini", "Gemini"),
     OpenClaw("openclaw", "OpenClaw"),
@@ -19,7 +20,7 @@ enum class AgentType(val wire: String, val displayName: String) {
         fun fromWire(value: String?): AgentType? = entries.find { it.wire == value }
 
         /** harnessCatalog.ts HARNESS_ORDER: the ones people reach for first. */
-        val Order = listOf(Claude, Codex, Agy, Rig)
+        val Order = listOf(Claude, Codex, Agy, DeepSeek, Rig)
 
         /** harnessCatalog.ts getHarnessName */
         fun harnessName(key: String): String = fromWire(key)?.displayName ?: key
@@ -29,6 +30,7 @@ enum class AgentType(val wire: String, val displayName: String) {
 /** A machine's reported CLI availability as harnessCatalog.ts reads it: `availability[key] === true`. */
 private fun CliAvailability.has(agent: AgentType): Boolean = when (agent) {
     AgentType.Claude -> claude
+    AgentType.DeepSeek -> deepseek == true
     AgentType.Codex -> codex
     AgentType.Gemini -> gemini
     AgentType.OpenClaw -> openclaw
@@ -41,6 +43,7 @@ fun isHarnessAvailable(availability: CliAvailability?, happyAgentAvailable: Bool
     AgentType.Rig -> happyAgentAvailable
     // Only an explicit installation report advertises Antigravity.
     AgentType.Agy -> availability?.agy == true
+    AgentType.DeepSeek -> availability?.deepseek == true
     else -> availability == null || availability.has(key)
 }
 

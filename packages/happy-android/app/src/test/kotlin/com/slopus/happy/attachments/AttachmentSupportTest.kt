@@ -8,6 +8,13 @@ import org.junit.Test
 /** attachmentSupport.test.ts */
 class AttachmentSupportTest {
     @Test
+    fun deepSeekImagesFollowTheSelectedModel() {
+        assertTrue(supportsImageAttachmentsForFlavor("deepseek", "deepseek-flash"))
+        assertFalse(supportsImageAttachmentsForFlavor("deepseek", "deepseek-v4-pro"))
+        assertFalse(imageAttachmentSendPlan(flavor = "deepseek", model = "deepseek-v4-pro", text = "", attachmentCount = 1).shouldSendText)
+    }
+
+    @Test
     fun flavorsThatTakeImages() {
         listOf(null, "", "claude", "codex", "agy").forEach { assertTrue("$it", supportsImageAttachmentsForFlavor(it)) }
         listOf("gemini", "openclaw", "custom-agent").forEach { assertFalse(it, supportsImageAttachmentsForFlavor(it)) }

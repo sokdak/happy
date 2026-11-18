@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { HARNESS_NAMES, isRetiredHarness, listAvailableHarnesses } from './harnessCatalog';
 
 describe('harness catalog', () => {
+    it('requires an explicit configured DeepSeek capability even for a saved selection', () => {
+        expect(listAvailableHarnesses({ availability: null, happyAgentAvailable: false, selected: 'deepseek' }).some((agent) => agent.key === 'deepseek')).toBe(false);
+        expect(listAvailableHarnesses({ availability: { deepseek: true }, happyAgentAvailable: false }).map((agent) => agent.key)).toEqual(['deepseek']);
+    });
     it('names Happy and Antigravity by product, not by CLI id', () => {
         expect(HARNESS_NAMES.rig).toBe('Happy');
         expect(HARNESS_NAMES.agy).toBe('Antigravity');
