@@ -64,7 +64,7 @@ function setup(options: Partial<AgyAcpOptions> = {}) {
   backend.onMessage(m => messages.push(m));
   return { agent, spawnFn, backend, messages };
 }
-afterEach(async () => { await Promise.all(backends.splice(0).map(b => b.dispose())); });
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(backends.splice(0).map(b => b.dispose())); });
 
 async function promptRequest(agent: ReturnType<typeof fakeAgent>) {
   await vi.waitFor(() => expect(agent.received.some(r => r.method === 'session/prompt')).toBe(true));
@@ -81,7 +81,7 @@ async function invokeStop(spawnFn: typeof spawn, executionNum: number, fullyIdle
 }
 
 describe('persistent Antigravity ACP', () => {
-  describe.skipIf(process.platform === 'win32')('optional Stop hook', () => {
+  describe.skipIf(process.platform === 'win32')('Stop hook', () => {
     it.each([
       ['Run manage_task', { name: 'manage_task', arguments: { Action: 'status', TaskId: 'session/task-12' } }],
       ['Run manage_task', { Action: 'status', TaskId: 'session/task-12' }],
@@ -170,17 +170,20 @@ describe('persistent Antigravity ACP', () => {
       agent.respond(request.id!, { stopReason: 'end_turn' });
       await pending;
     });
-    it('keeps the prompt open across Stop continuation, tool completion and a final idle hook', async () => {
-      const { backend, agent, spawnFn, messages } = setup({ stopHook: true });
+    it('keeps a default session running across a busy Stop until the follow-up and final idle Stop', async () => {
+      vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: undefined });
       agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
       const pending = backend.sendPrompt('', 'background');
       const request = await promptRequest(agent);
       const workspace = vi.mocked(spawnFn).mock.calls[0][1]!.at(-1)!;
       agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'bg', title: 'sleep', kind: 'execute', status: 'in_progress' });
       expect((await invokeStop(spawnFn, 0, false)).decision).toBe('continue');
+      expect((await invokeStop(spawnFn, 1, false)).decision).toBe('continue');
+      expect(messages.filter(m => m.type === 'status' && m.status === 'running' && m.detail)).toHaveLength(1);
       expect(messages.some(m => m.type === 'status' && m.status === 'idle')).toBe(false);
       agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'bg', status: 'completed' });
-      expect(await invokeStop(spawnFn, 1, true)).toEqual({});
+      expect(await invokeStop(spawnFn, 2, true)).toEqual({});
       agent.respond(request.id!, { stopReason: 'end_turn' }); await pending;
       expect(messages.at(-1)).toEqual({ type: 'status', status: 'idle' });
       await backend.dispose(); expect(existsSync(workspace)).toBe(false);
@@ -205,7 +208,7 @@ describe('persistent Antigravity ACP', () => {
       agent.respond(request.id!, { stopReason: 'end_turn' }); await result;
       expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
     });
-    it.each(['1.5.9', '1.5.10'])('accepts verified server version %s when Stop hook is enabled', async (version) => {
+    it.each(['1.5.9', '1.5.10', '1.5.11'])('accepts verified server version %s when Stop hook is enabled', async (version) => {
       const { backend, agent, spawnFn } = setup({ stopHook: true });
       agent.setHandler((rpc, fallback) => {
         if (rpc.method === 'initialize') agent.respond(rpc.id!, { protocolVersion: 1, agentInfo: { name: 'Antigravity ACP Server', version }, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
@@ -216,6 +219,22 @@ describe('persistent Antigravity ACP', () => {
       await invokeStop(spawnFn, 0, true);
       agent.respond(request.id!, { stopReason: 'end_turn' });
       await pending;
+    });
+    it('uses native completion on an unknown server without creating sessions or prompting twice', async () => {
+      vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
+      const { backend, agent, spawnFn } = setup({ stopHook: undefined, resumeSessionId: 'saved-session' });
+      const clean = fakeAgent();
+      vi.mocked(spawnFn).mockReturnValueOnce(agent.child).mockReturnValueOnce(clean.child);
+      for (const server of [agent, clean]) server.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') server.respond(rpc.id!, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
+        else fallback(rpc);
+      });
+      await backend.sendPrompt('', 'only once');
+      expect(agent.received.map(r => r.method)).toEqual(['initialize']);
+      expect(agent.child.kill).toHaveBeenCalled();
+      expect(vi.mocked(spawnFn).mock.calls[1][1]).toEqual(['acp', '--add-dir', '/work']);
+      expect(clean.received.filter(r => r.method === 'session/load').map(r => r.params.sessionId)).toEqual(['saved-session']);
+      expect(clean.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
     });
     it('rejects an unverified server version before sending a prompt', async () => {
       const { backend, agent } = setup({ stopHook: true });

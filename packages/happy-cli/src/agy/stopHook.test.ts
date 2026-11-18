@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { projectPath } from '@/projectPath';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { agyStopHookEnabled, AgyStopHook, AgyStopPolicy, STOP_HOOK_LIMITS, type StopHookLimits } from './stopHook';
+import { agyStopHookSetting, AgyStopHook, AgyStopPolicy, STOP_HOOK_LIMITS, type StopHookLimits } from './stopHook';
 
 const payload = (executionNum = 0, extra = {}) => ({ conversationId: 'session', hookEventName: 'Stop',
   terminationReason: 'NO_TOOL_CALL', fullyIdle: false, continuationActive: false, executionNum, ...extra });
@@ -25,9 +25,11 @@ function invokeHook(h: AgyStopHook, input: unknown): Promise<any> {
 }
 
 describe('AGY Stop policy', () => {
-  it('is opt-in and rejects typos instead of silently enabling', () => {
-    expect(agyStopHookEnabled('0')).toBe(false); expect(agyStopHookEnabled('1')).toBe(true);
-    expect(() => agyStopHookEnabled('true')).toThrow('0 or 1');
+  it('uses automatic selection by default and validates overrides', () => {
+    vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
+    try { expect(agyStopHookSetting()).toBe('auto'); } finally { vi.unstubAllEnvs(); }
+    expect(agyStopHookSetting('0')).toBe(false); expect(agyStopHookSetting('1')).toBe(true);
+    expect(() => agyStopHookSetting('true')).toThrow('0 or 1');
   });
   it('continues finite background work and confirms idle without synthetic user prompts', () => {
     const p = policy();

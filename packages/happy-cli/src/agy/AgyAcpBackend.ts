@@ -10,7 +10,7 @@ import type { PermissionMode } from '@/api/types';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import { resolveAgyBin, resolveAgyModelName } from './constants';
 import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
-import { agyStopHookEnabled, AgyStopHook, type StopHookLimits } from './stopHook';
+import { agyStopHookSetting, AgyStopHook, type StopHookLimits } from './stopHook';
 
 // AGY 1.5.9 omits rawInput.name on native calls. Only its exact "Run <id>"
 // labels for known native tools may override a broad ACP category such as other.
@@ -37,7 +37,7 @@ const PROGRESS_NATIVE_TOOLS = new Set([
   'swarm', 'run_workflow',
 ]);
 
-const VERIFIED_STOP_HOOK_VERSIONS = new Set(['1.5.9', '1.5.10']);
+const VERIFIED_STOP_HOOK_VERSIONS = new Set(['1.5.9', '1.5.10', '1.5.11']);
 
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
@@ -60,7 +60,7 @@ export interface AgyAcpOptions {
   spawnFn?: typeof spawn;
   requestTimeoutMs?: number;
   cancelGraceMs?: number;
-  /** Experimental AGY 1.5.9 workaround. Unset reads HAPPY_AGY_STOP_HOOK (default off). */
+  /** Unset uses HAPPY_AGY_STOP_HOOK, or automatic selection for verified Unix ACP servers. */
   stopHook?: boolean;
   stopHookLimits?: Partial<StopHookLimits>;
 }
@@ -182,11 +182,13 @@ export class AgyAcpBackend implements AgentBackend {
     try { await this.starting; } finally { this.starting = null; }
   }
 
-  private async open(): Promise<void> {
+  private async open(hookSetting = this.options.stopHook ?? agyStopHookSetting()): Promise<void> {
     this.stopProcess();
     this.permissionAbort = new AbortController();
-    if (this.options.stopHook ?? agyStopHookEnabled()) {
-      this.stopHook = await AgyStopHook.create(this.options.stopHookLimits);
+    if (hookSetting === true || (hookSetting === 'auto' && process.platform !== 'win32')) {
+      this.stopHook = await AgyStopHook.create(this.options.stopHookLimits, () => {
+        this.emit({ type: 'status', status: 'running', detail: 'Waiting for Antigravity background work to finish.' });
+      });
       if (this.disposed || this.cancelled) { this.stopProcess(); throw new AgyCancelledError(); }
     }
     let child: ChildProcess;
@@ -233,7 +235,13 @@ export class AgyAcpBackend implements AgentBackend {
       }), this.lifetime]));
       this.capabilities = initialized.agentCapabilities ?? {};
       if (this.stopHook && (!initialized.agentInfo?.version || !VERIFIED_STOP_HOOK_VERSIONS.has(initialized.agentInfo.version))) {
-        throw new Error('The experimental Stop hook is verified only with AGY 1.5.9 and 1.5.10. Set HAPPY_AGY_STOP_HOOK=0 for this version.');
+        if (hookSetting === 'auto') {
+          // AGY reads hook workspaces at process startup. Restart before
+          // creating/loading a conversation so an unknown server never runs it.
+          this.options.log?.('Antigravity ACP version has no verified Stop hook. Using native turn completion.');
+          return this.open(false);
+        }
+        throw new Error(`The Stop hook is verified only with AGY ${[...VERIFIED_STOP_HOOK_VERSIONS].join(', ')}. Set HAPPY_AGY_STOP_HOOK=0 for this version.`);
       }
       if (this.sessionId) {
         if (!this.capabilities.loadSession) throw new Error('Antigravity does not support loading the requested ACP session');

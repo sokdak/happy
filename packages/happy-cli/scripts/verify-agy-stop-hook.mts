@@ -20,7 +20,7 @@ const allowed = new Set(Object.values(commands));
 const messages: AgentMessage[] = [], logs: string[] = [], permissions: { tool: string; approved: boolean }[] = [];
 let started!: () => void;
 const startedPromise = new Promise<void>(resolve => { started = resolve; });
-const backend = new AgyAcpBackend({ cwd, stopHook: true, permissionMode: 'default', model: 'Gemini 3.8 Flash', effort: 'high',
+const backend = new AgyAcpBackend({ cwd, permissionMode: 'default', model: 'Gemini 3.8 Flash', effort: 'high',
   spawnFn: ((file: string, args: string[], options: any) => {
     if (scenario === 'broken-hook' || scenario === 'cancel-after-hook') {
       const configPath = join(args.at(-1)!, '.agents/hooks.json');

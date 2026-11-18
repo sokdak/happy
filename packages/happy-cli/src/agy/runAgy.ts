@@ -231,6 +231,11 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
         thinking = nextThinking;
         session.keepAlive(thinking, 'remote');
       }
+      if (msg.status === 'running' && msg.detail) {
+        sendEnvelopes(sessionManager.flushPendingText());
+        session.sendSessionEvent({ type: 'message', message: msg.detail });
+        messageBuffer.addMessage(msg.detail, 'status');
+      }
       if (msg.status === 'error' && msg.detail) {
         messageBuffer.addMessage(`Error: ${msg.detail}`, 'status');
       }

@@ -1,4 +1,4 @@
-/** Removable, opt-in workaround for early end_turn in AGY 1.5.9 ACP. */
+/** Bounded continuation for AGY ACP versions that can end a turn with background work pending. */
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,8 +25,9 @@ const REASON = 'An existing background task is still running. Do not rerun or du
   + 'If the task is an intentionally long-running server or watcher, explain that it remains running; do not stop or restart it. '
   + 'Happy bounds these continuation requests and will report unconfirmed completion if necessary.';
 
-export function agyStopHookEnabled(value = process.env.HAPPY_AGY_STOP_HOOK): boolean {
-  if (value === undefined || value === '0') return false;
+export function agyStopHookSetting(value = process.env.HAPPY_AGY_STOP_HOOK): boolean | 'auto' {
+  if (value === undefined) return 'auto';
+  if (value === '0') return false;
   if (value === '1') return true;
   throw new Error('HAPPY_AGY_STOP_HOOK must be 0 or 1');
 }
@@ -135,7 +136,7 @@ export class AgyStopHook {
   private readonly server: Server;
   private sockets = new Set<Socket>();
   private closed = false;
-  private constructor(limits: StopHookLimits) {
+  private constructor(limits: StopHookLimits, onBackgroundWait?: () => void) {
     this.policy = new AgyStopPolicy(limits);
     this.root = mkdtempSync(join(tmpdir(), 'happy-agy-hook-'));
     this.workspace = join(this.root, 'workspace');
@@ -166,6 +167,7 @@ export class AgyStopHook {
         let input: unknown;
         try { input = JSON.parse(buffer.slice(0, buffer.indexOf('\n'))); } catch { input = null; }
         const decision = this.policy.decide(input, epoch);
+        if (decision.decision === 'continue' && this.policy.snapshot()?.count === 1) onBackgroundWait?.();
         const delayMs = decision.decision === 'continue' ? this.policy.plannedDelayMs(epoch) : 0;
         if (decision.decision !== 'continue' || delayMs <= 0) {
           responded = true;
@@ -196,10 +198,10 @@ export class AgyStopHook {
     // A controller error must invalidate even a prior idle observation.
     this.server.on('error', () => { this.policy.decide(null); });
   }
-  static async create(limits: Partial<StopHookLimits> = {}): Promise<AgyStopHook> {
+  static async create(limits: Partial<StopHookLimits> = {}, onBackgroundWait?: () => void): Promise<AgyStopHook> {
     if (process.platform === 'win32') throw new Error('HAPPY_AGY_STOP_HOOK is currently supported on Unix hosts only');
     const resolved: StopHookLimits = { ...STOP_HOOK_LIMITS, ...limits };
-    const hook = new AgyStopHook(resolved);
+    const hook = new AgyStopHook(resolved, onBackgroundWait);
     try {
       mkdirSync(join(hook.workspace, '.agents'), { recursive: true, mode: 0o700 });
       const maxBackoffMs = Math.max(0, resolved.maxBackoffMs);

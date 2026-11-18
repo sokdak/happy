@@ -1,28 +1,29 @@
-# Optional AGY ACP background continuation
+# AGY ACP background continuation
 
 AGY 1.5.9 can return `end_turn` while a background command is still running.
 Its native transcript subsequently records completion, but no further ACP
 events arrive, including with a standalone ACP client. Happy cannot repair
-that by keeping its spinner active. This optional compatibility layer uses
+that by keeping its spinner active. Happy uses
 AGY's documented `Stop` hook **before** it returns `end_turn`.
 
-## Enable / remove
+## When Happy uses the hook
 
-Default **off**. Verified only with AGY **1.5.9** and **1.5.10** on Linux; Unix socket transport
-also supports Unix hosts, but macOS has not had authenticated live validation.
-Other AGY versions and Windows reject an explicit opt-in before prompting.
+Happy automatically installs the private hook for ACP sessions on Unix with AGY
+**1.5.9**, **1.5.10** or **1.5.11**. Linux has authenticated live validation.
+Windows and unrecognized ACP versions use native turn completion by default.
+Happy checks the server version before creating or resuming a conversation.
+
+For sessions that intentionally leave watchers or servers running, opt out:
 
 ```sh
-HAPPY_AGY_STOP_HOOK=1 happy agy
-# Rollback, including when reconnecting to the same native conversation:
+HAPPY_AGY_STOP_HOOK=0 happy agy
 HAPPY_AGY_STOP_HOOK=0 happy agy --resume <native-session-id>
 ```
 
-For app/web-launched sessions, set the variable in the **Happy daemon's**
-environment and restart that daemon, then start/resume the session. Existing
-session processes keep their environment. Installing a CLI build alone does
-not enable this experiment. No web/server or Helm configuration is required
-by this implementation.
+Set `HAPPY_AGY_STOP_HOOK=1` to require the hook and report an error if the
+platform or version is unsupported. For app/web-launched sessions, set any
+override in the Happy daemon's environment and restart the daemon, then start
+or resume the session. Existing session processes keep their environment.
 
 ## Behavior and boundaries
 
@@ -40,6 +41,8 @@ by this implementation.
   and `fullyIdle === false`. Cancellation, errors and native budget limits
   are never overridden. `continuationActive` is validated but is not a loop
   counter: AGY 1.5.9 reports false even during forced continuations.
+- On the first busy Stop of a turn, Happy sends the buffered response text and a
+  waiting notice to the session. The turn remains active through continuation.
 - Each turn tracks Stop observations for its own conversation. A newer
   execution or a current idle observation withdraws an earlier continuation
   still waiting in backoff. An older idle report cannot confirm newer work.
@@ -55,7 +58,7 @@ by this implementation.
 - Intentionally long-running servers/watchers cannot reliably be identified
   from `fullyIdle`. They receive the same bounded policy. A limit produces an
   explicit **unconfirmed completion / failed turn**, not a claim that the server
-  was stopped or that the user's work finished. Disable the experiment for
+  was stopped or that the user's work finished. Disable the hook for
   sessions whose normal workflow intentionally leaves tasks running.
 - Missing, malformed or failed hooks never trigger an unbounded retry. A
   missing final valid observation is reported as unconfirmed. A permission
@@ -74,7 +77,7 @@ by this implementation.
 
 1. Completion reporting: unresolved ACP tools no longer produce a successful
    turn or a fabricated “interrupted” command outcome. No hook dependency.
-2. Optional hook compatibility: `stopHook.ts`, `scripts/agy-stop-hook.cjs` and
+2. Stop hook compatibility: `stopHook.ts`, `scripts/agy-stop-hook.cjs` and
    AGY backend wiring. Disable with `HAPPY_AGY_STOP_HOOK=0`, then remove this
    layer when a fixed AGY release is verified. It does not alter generic ACP,
    Codex, Claude, app UI schemas or the legacy print transport.
@@ -83,7 +86,7 @@ by this implementation.
 ## Verification
 
 From `packages/happy-cli`, run the unit suite and `pnpm run typecheck`.
-Authenticated probes require a logged-in AGY 1.5.9:
+Authenticated probes require a logged-in, supported AGY version:
 
 ```sh
 pnpm exec tsx --tsconfig tsconfig.json scripts/verify-agy-stop-hook.mts single

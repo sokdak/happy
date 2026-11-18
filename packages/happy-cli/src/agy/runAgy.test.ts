@@ -72,6 +72,26 @@ function user(text: string, meta: Record<string, unknown> = {}) {
 }
 
 describe('Antigravity Happy runner integration', () => {
+  it('publishes pending text and the background wait before the turn is ready', async () => {
+    await begin();
+    let finish!: () => void;
+    fixture.backend.sendPrompt.mockImplementationOnce(async () => {
+      for (const fn of fixture.listeners) {
+        fn({ type: 'model-output', textDelta: 'Started both tasks.' });
+        fn({ type: 'status', status: 'running', detail: 'Waiting for Antigravity background work to finish.' });
+      }
+      await new Promise<void>(resolve => { finish = resolve; });
+    });
+    user('wait for both');
+    try {
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: expect.stringContaining('background work') });
+      expect(fixture.session.sendSessionProtocolMessage).toHaveBeenCalledWith(expect.objectContaining({ ev: { t: 'text', text: 'Started both tasks.' } }));
+      expect(fixture.session.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' });
+      expect(fixture.session.sendSessionProtocolMessage).not.toHaveBeenCalledWith(expect.objectContaining({ ev: expect.objectContaining({ t: 'turn-end' }) }));
+    } finally { finish?.(); }
+    await vi.waitFor(() => expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+  });
   it('marks unconfirmed background completion as failed, reports it once, and accepts the next request', async () => {
     await begin();
     fixture.backend.sendPrompt.mockImplementationOnce(async () => {
