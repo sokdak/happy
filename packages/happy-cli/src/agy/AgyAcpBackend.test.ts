@@ -421,6 +421,42 @@ describe('persistent Antigravity ACP', () => {
     expect(agent.received.filter(r => r.method === 'session/set_mode').map(r => r.params.modeId)).toEqual(['default', 'accept-edits']);
   });
 
+  it('publishes the resumed account catalog and sends the ID of its selected effort variant', async () => {
+    const { backend, agent } = setup({ resumeSessionId: 'session-1', model: 'Claude Sonnet 5.5', effort: 'high' });
+    const availableModels = [
+      { modelId: 'native-low', name: 'Claude Sonnet 5.5 (Low)' },
+      { modelId: 'native-high', name: 'Claude Sonnet 5.5 (High)' },
+    ];
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method === 'session/load') agent.respond(rpc.id!, { ...metadata, models: { availableModels, currentModelId: 'native-low' } });
+      else fallback(rpc);
+    });
+    await backend.startSession();
+    expect(backend.getSessionOptions()).toMatchObject({
+      models: [{ code: 'native-low' }, { code: 'native-high' }],
+      operatingModes: [{ code: 'default' }, { code: 'accept-edits' }, { code: 'plan' }],
+      agyImageInput: true,
+    });
+    await backend.sendPrompt('', 'one');
+    backend.setModel('Claude Sonnet 5.5 (Low)');
+    await backend.sendPrompt('', 'two');
+    expect(agent.received.filter(r => r.method === 'session/set_model').map(r => r.params.modelId)).toEqual(['native-high', 'native-low']);
+  });
+
+  it('uses the native default when an ACP server omits optional modes and rejects explicit Plan', async () => {
+    const { backend, agent } = setup();
+    agent.setHandler((rpc, fallback) => {
+      if (rpc.method === 'session/new') agent.respond(rpc.id!, { sessionId: 'session-1', models: metadata.models });
+      else fallback(rpc);
+    });
+    await backend.sendPrompt('', 'first');
+    expect(backend.getSessionOptions().operatingModes).toEqual([{ code: 'default', value: 'Default' }]);
+    backend.setPermissionMode('plan');
+    await expect(backend.sendPrompt('', 'second')).rejects.toThrow('mode is unavailable');
+    expect(agent.received.filter(r => r.method === 'session/set_mode')).toHaveLength(0);
+    expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
+  });
+
   it('rejects unavailable models before sending a prompt', async () => {
     const { backend, agent } = setup({ model: 'missing' });
     await expect(backend.sendPrompt('', 'do work')).rejects.toThrow('model is unavailable');

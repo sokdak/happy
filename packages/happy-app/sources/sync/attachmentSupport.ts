@@ -7,9 +7,10 @@ export type ImageAttachmentSendPlan = {
     shouldSendText: boolean;
 };
 
-export function supportsImageAttachmentsForFlavor(flavor: ImageAttachmentFlavor, model?: string | null): boolean {
+export function supportsImageAttachmentsForFlavor(flavor: ImageAttachmentFlavor, model?: string | null, agyImageInput?: boolean): boolean {
+    if (flavor === 'agy') return agyImageInput ?? true;
     if (flavor === 'deepseek') return !model || model === 'deepseek-flash';
-    return !flavor || flavor === 'claude' || flavor === 'codex' || flavor === 'agy';
+    return !flavor || flavor === 'claude' || flavor === 'codex';
 }
 
 export function getImageAttachmentSendPlan(opts: {
@@ -18,16 +19,17 @@ export function getImageAttachmentSendPlan(opts: {
     text: string;
     attachmentCount: number;
     supportsAttachments?: boolean;
+    agyImageInput?: boolean;
 }): ImageAttachmentSendPlan {
     const hasAttachments = opts.attachmentCount > 0;
-    const supportsAttachments = opts.supportsAttachments ?? supportsImageAttachmentsForFlavor(opts.flavor, opts.model);
+    const supportsAttachments = opts.supportsAttachments ?? supportsImageAttachmentsForFlavor(opts.flavor, opts.model, opts.agyImageInput);
     const shouldShowUnsupportedAlert = hasAttachments && !supportsAttachments;
 
     return {
         supportsAttachments,
         shouldUseAttachments: hasAttachments && supportsAttachments,
         shouldShowUnsupportedAlert,
-        shouldSendText: !shouldShowUnsupportedAlert || opts.text.trim().length > 0,
+        shouldSendText: !shouldShowUnsupportedAlert || (opts.flavor !== 'agy' && opts.text.trim().length > 0),
     };
 }
 

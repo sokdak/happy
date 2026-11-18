@@ -206,9 +206,8 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateVersion: number;
     private socket: Socket<ServerToClientEvents, ClientToServerEvents>;
     private idleWatchdog: IdleWatchdog | null = null;
-    private pendingMessages: UserMessage[] = [];
+    private pendingInput: Array<UserMessage | FileEventMessage> = [];
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null;
-    private pendingFileEvents: FileEventMessage[] = [];
     private pendingFileEventCallback: ((data: FileEventMessage) => void) | null = null;
     private blobKey: Uint8Array | null = null;
     /**
@@ -418,17 +417,44 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.connect();
     }
 
-    onUserMessage(callback: (data: UserMessage) => void) {
+    onUserMessage(callback: (data: UserMessage) => void, onFile?: (data: FileEventMessage) => void) {
         this.pendingMessageCallback = callback;
-        while (this.pendingMessages.length > 0) {
-            callback(this.pendingMessages.shift()!);
-        }
+        if (onFile) this.pendingFileEventCallback = onFile;
+        this.flushPendingInput();
     }
 
     onFileEvent(callback: (data: FileEventMessage) => void) {
         this.pendingFileEventCallback = callback;
-        while (this.pendingFileEvents.length > 0) {
-            callback(this.pendingFileEvents.shift()!);
+        this.flushPendingInput();
+    }
+
+    private canDeliverInput(input: UserMessage | FileEventMessage): boolean {
+        return input.role === 'user'
+            ? Boolean(this.pendingMessageCallback)
+            : Boolean(this.pendingFileEventCallback);
+    }
+
+    private deliverInput(input: UserMessage | FileEventMessage) {
+        if (this.pendingInput.length === 0 && this.canDeliverInput(input)) {
+            if (input.role === 'user') {
+                this.pendingMessageCallback!(input);
+            } else {
+                this.pendingFileEventCallback!(input);
+            }
+            return;
+        }
+        this.pendingInput.push(input);
+        this.flushPendingInput();
+    }
+
+    private flushPendingInput() {
+        while (this.pendingInput.length > 0 && this.canDeliverInput(this.pendingInput[0])) {
+            const input = this.pendingInput.shift()!;
+            if (input.role === 'user') {
+                this.pendingMessageCallback!(input);
+            } else {
+                this.pendingFileEventCallback!(input);
+            }
         }
     }
 
@@ -634,11 +660,7 @@ export class ApiSessionClient extends EventEmitter {
     private routeIncomingMessage(message: unknown) {
         const userResult = UserMessageSchema.safeParse(message);
         if (userResult.success) {
-            if (this.pendingMessageCallback) {
-                this.pendingMessageCallback(userResult.data);
-            } else {
-                this.pendingMessages.push(userResult.data);
-            }
+            this.deliverInput(userResult.data);
             return;
         }
 
@@ -650,11 +672,7 @@ export class ApiSessionClient extends EventEmitter {
                 size: ev.size,
                 hasMimeType: Boolean(ev.mimeType),
             });
-            if (this.pendingFileEventCallback) {
-                this.pendingFileEventCallback(fileResult.data);
-            } else {
-                this.pendingFileEvents.push(fileResult.data);
-            }
+            this.deliverInput(fileResult.data);
             return;
         }
 
@@ -691,7 +709,8 @@ export class ApiSessionClient extends EventEmitter {
                     maxSeq = message.seq;
                 }
 
-                if (skipRouting) continue;
+                // Socket delivery can advance the cursor while this GET is in flight.
+                if (skipRouting || message.seq <= this.lastReceivedSeq) continue;
 
                 if (message.content?.t !== 'encrypted') {
                     continue;

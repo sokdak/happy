@@ -323,6 +323,7 @@ export type Metadata = {
   claudeSessionId?: string, // Claude Code session ID
   codexThreadId?: string, // Codex app-server thread ID
   deepseekSessionId?: string, // DeepSeek Harness ACP session ID
+  agyImageInput?: boolean,
   agySessionId?: string, // Explicit Antigravity ACP session ID for recovery
   tools?: string[],
   slashCommands?: string[],

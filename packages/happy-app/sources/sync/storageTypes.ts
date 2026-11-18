@@ -174,6 +174,7 @@ export const MetadataSchema = z.object({
     claudeSessionId: z.string().optional(), // Claude Code session ID
     codexThreadId: z.string().optional(), // Codex app-server thread ID
     deepseekSessionId: z.string().optional(),
+    agyImageInput: z.boolean().optional(),
     agySessionId: z.string().optional(), // Antigravity ACP session ID
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),

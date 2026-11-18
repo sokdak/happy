@@ -20,7 +20,7 @@ import { AcpSessionManager } from '@/agent/acp/AcpSessionManager';
 import type { SessionEnvelope } from '@slopus/happy-wire';
 import { logger } from '@/ui/logger';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
-import type { PermissionMode, UserMessage } from '@/api/types';
+import type { Metadata, PermissionMode, UserMessage } from '@/api/types';
 import { Credentials, readSettings } from '@/persistence';
 import { initialMachineMetadata } from '@/daemon/run';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
@@ -38,7 +38,6 @@ import { createAgyBackend } from './createBackend';
 import { AgyPermissionHandler } from './permissionHandler';
 import { agyPromptImages } from './promptImages';
 import {
-  DEFAULT_AGY_EFFORT,
   DEFAULT_AGY_MODEL,
   normalizeAgyEffort,
   resolveAgyModelName,
@@ -83,8 +82,21 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     machineId: settings.machineId,
     startedBy: opts.startedBy,
   });
-  let metadata = initialMetadata;
+  const transport = process.env.HAPPY_AGY_TRANSPORT ?? 'acp';
+  const launchModes = {
+    ...(opts.model ? { modelMode: opts.model } : {}),
+    ...(opts.effort ? { effortLevel: normalizeAgyEffort(opts.effort) } : {}),
+    ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
+  };
+  let metadata: Metadata = { ...initialMetadata, ...launchModes };
+  if (transport === 'print') metadata.agyImageInput = false;
   let nativeSessionId = opts.resumeSessionId;
+  let nativeOptions: Pick<Metadata, 'models' | 'operatingModes' | 'agyImageInput'> = {};
+  function publishNativeSession(target: ApiSessionClient) {
+    if (!nativeSessionId) return;
+    const patch = { ...nativeOptions, agySessionId: nativeSessionId };
+    target.updateMetadata(current => ({ ...current, ...patch }));
+  }
   if (opts.resumeSessionId) metadata.agySessionId = opts.resumeSessionId;
   const reconnect = agyReconnectSession(metadata, state, opts.resumeSessionId);
   if (reconnect) metadata = reconnect.metadata;
@@ -107,10 +119,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
       permissionHandler?.updateSession(newSession);
       // The offline stub discards metadata writes. Re-publish an ACP ID that
       // arrived before the real Happy session existed so this chat can resume.
-      if (nativeSessionId) {
-        const agySessionId = nativeSessionId;
-        newSession.updateMetadata(current => ({ ...current, agySessionId }));
-      }
+      publishNativeSession(newSession);
       if (inputReady) bindInput(newSession);
     },
   });
@@ -118,7 +127,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   if (reconnect) {
     session.suppressNextArchiveSignal();
     session.skipExistingMessages();
-    session.updateMetadata(current => ({ ...current, lifecycleState: 'running',
+    session.updateMetadata(current => ({ ...current, ...launchModes, lifecycleState: 'running',
       lifecycleStateSince: Date.now(), archivedBy: undefined, archiveReason: undefined }));
   }
 
@@ -143,7 +152,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   });
   type TurnSettings = { model: string; effort: string; permissionMode: PermissionMode };
   const messageQueue = new MessageQueue2<TurnSettings>(JSON.stringify);
-  let incomingPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
+  let incomingPermissionMode: PermissionMode = normalizeRemotePermissionMode(metadata.permissionMode ?? undefined) ?? 'default';
   let enqueueTail = Promise.resolve();
   let shouldExit = false;
   let abortController = new AbortController();
@@ -151,12 +160,12 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   let foregroundTurnRunning = false;
   let errorReportedForCurrentTurn = false;
 
-  let selectedModel = opts.model ?? DEFAULT_AGY_MODEL;
-  let selectedEffort = opts.effort ? normalizeAgyEffort(opts.effort) : DEFAULT_AGY_EFFORT;
+  let selectedModel = metadata.modelMode ?? DEFAULT_AGY_MODEL;
+  let selectedEffort = normalizeAgyEffort(metadata.effortLevel);
   let displayedModel = resolveAgyModelName(selectedModel, selectedEffort);
 
   permissionHandler = new AgyPermissionHandler(session);
-  const happyServer = (process.env.HAPPY_AGY_TRANSPORT ?? 'acp') === 'acp'
+  const happyServer = transport === 'acp'
     ? await startAgyHappyMcp(() => session) : undefined;
   let backend: ReturnType<typeof createAgyBackend>;
   try {
@@ -202,7 +211,8 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
         sessionManager.resetSessionCallIds();
       }
       nativeSessionId = agySessionId;
-      session.updateMetadata(current => ({ ...current, agySessionId }));
+      if (backend instanceof AgyAcpBackend) nativeOptions = backend.getSessionOptions();
+      publishNativeSession(session);
     }
 
     if (msg.type === 'event' && msg.name === 'agy_step_complete' && !foregroundTurnRunning && thinking) {
@@ -290,7 +300,10 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   }
 
   function bindInput(inputSession: ApiSessionClient) {
-    inputSession.onFileEvent?.((message) => {
+    // Offline stubs have no input to drain. On swap, bind both callbacks on
+    // the real client before it replays buffered file and text events.
+    if (!inputSession.onFileEvent) return;
+    inputSession.onUserMessage(message => receiveUserMessage(inputSession, message), message => {
       const file = message.content.data.ev;
       const download = inputSession.downloadAndDecryptAttachment(file.ref).then(data => {
         if (!data) throw new Error('Antigravity attachment could not be decrypted');
@@ -300,15 +313,6 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
       // if its paired user text has not arrived yet.
       void download.catch(() => {});
       inputSession.trackAttachmentDownload(download);
-    });
-    inputSession.onUserMessage((message) => {
-      if (typeof inputSession.drainAttachmentsForUserMessage !== 'function') {
-        // Offline registrations are transferred before onSessionSwap runs.
-        // Defer only that stub callback so it uses the real session's attachments.
-        queueMicrotask(() => receiveUserMessage(session, message));
-      } else {
-        receiveUserMessage(inputSession, message);
-      }
     });
   }
   function receiveUserMessage(inputSession: ApiSessionClient, message: UserMessage) {

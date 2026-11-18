@@ -101,14 +101,12 @@ happy acp opencode
 happy acp -- custom-agent --flag
 ```
 
-> **Note on agy permissions:** the agy backend runs `agy --print`, which is
-> one-shot and has no interactive approval surface — tool calls proceed
-> automatically without ever prompting you. The permission mode you pick in
-> Happy only chooses which flag is passed to agy: the default modes use
-> `--sandbox`, and the bypass/yolo-style modes (including `acceptEdits`) use
-> `--dangerously-skip-permissions`. Neither adds a per-tool approval gate
-> inside Happy, so selecting "default" for an agy session does **not** give
-> you an approval prompt the way it does for Claude Code.
+> **Antigravity sessions** use persistent ACP. Once connected, the chat picker
+> shows the models, effort variants, and supported modes advertised by that
+> account. Default forwards native approval requests to Happy. Plan and Edits
+> select their corresponding native modes. Yolo approves native requests.
+> With `HAPPY_AGY_TRANSPORT=print`, approvals follow the CLI's noninteractive
+> policy. Plan and Edits run with their native mode and `--sandbox`.
 
 ## Daemon
 

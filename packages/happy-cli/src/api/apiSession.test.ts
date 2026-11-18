@@ -1453,6 +1453,61 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(debugOutput).not.toContain('signature=secret');
     });
 
+    it('replays interleaved attachments and text in delivery order when their handlers bind together', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const file = (ref: string) => ({ role: 'session', content: { type: 'session', data: {
+            id: ref, time: 1000, role: 'user', ev: { t: 'file', ref, name: ref, size: 8 },
+        } } });
+        const text = (value: string) => ({ role: 'user', content: { type: 'text', text: value } });
+        const input = [file('image-a'), text('first'), text('without image'), file('image-b'), text('last')];
+        mockAxiosGet.mockResolvedValueOnce({ data: {
+            messages: input.map((message, index) => ({ id: String(index), seq: index + 1,
+                content: { t: 'encrypted', c: encryptContent(session, message) },
+                localId: null, createdAt: 1000 + index, updatedAt: 1000 + index })),
+            hasMore: false,
+        } });
+        await (client as any).fetchMessages();
+        const turns: string[][] = [];
+        const files: string[] = [];
+        client.onUserMessage(message => turns.push([message.content.text, ...files.splice(0)]),
+            message => files.push(message.content.data.ev.ref));
+        expect(turns).toEqual([['first', 'image-a'], ['without image'], ['last', 'image-b']]);
+
+        const separateClient = new ApiSessionClient('fake-token', session);
+        mockAxiosGet.mockResolvedValueOnce({ data: {
+            messages: input.map((message, index) => ({ id: String(index), seq: index + 1,
+                content: { t: 'encrypted', c: encryptContent(session, message) },
+                localId: null, createdAt: 1000 + index, updatedAt: 1000 + index })),
+            hasMore: false,
+        } });
+        await (separateClient as any).fetchMessages();
+        const separateTurns: string[][] = [];
+        const separateFiles: string[] = [];
+        separateClient.onFileEvent(message => separateFiles.push(message.content.data.ev.ref));
+        separateClient.onUserMessage(message => separateTurns.push([message.content.text, ...separateFiles.splice(0)]));
+        expect(separateTurns).toEqual([['first', 'image-a'], ['without image'], ['last', 'image-b']]);
+    });
+
+    it('does not replay a live image when HTTP catch-up also contains the image pair and its prompt', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const files: string[] = [];
+        const turns: string[][] = [];
+        client.onUserMessage(message => turns.push([message.content.text, ...files.splice(0)]),
+            message => files.push(message.content.data.ev.ref));
+        const file = (name: string) => ({ role: 'session', content: { type: 'session', data: {
+            id: name, time: 1, role: 'user', ev: { t: 'file', ref: name, name, size: 8 },
+        } } });
+        const encrypted = [file('left'), file('right'), { role: 'user', content: { type: 'text', text: 'compare' } }]
+            .map(record => encryptContent(session, record));
+        mockAxiosGet.mockResolvedValueOnce({ data: { messages: encrypted.map((c, i) => ({
+            seq: i + 1, content: { t: 'encrypted', c },
+        })), hasMore: false } });
+        const catchUp = (client as any).fetchMessages();
+        emitSocketEvent('update', createNewMessageUpdate(1, encrypted[0]));
+        await catchUp;
+        expect(turns).toEqual([['compare', 'left', 'right']]);
+    });
+
     it('applies file event socket updates directly without logging sensitive names or refs', () => {
         const client = new ApiSessionClient('fake-token', session);
         const onFileEvent = vi.fn();

@@ -3,7 +3,8 @@ import type { Settings } from './settings';
 import type { MessageMeta } from './typesMessageMeta';
 import { resolveSessionState } from './sessionState';
 import { getAgentDefaultOverride, resolveAgentDefaultConfig, retirePermissionMode } from './agentDefaults';
-import { permissionModeSupportedByCli } from '@/components/modelModeOptions';
+import { selectAgyEffort } from '@slopus/happy-wire';
+import { getEffortLevelsForModel, permissionModeSupportedByCli } from '@/components/modelModeOptions';
 import type { PermissionModeKey } from '@/components/PermissionModeSelector';
 import {
     getRigComposerMode,
@@ -137,7 +138,13 @@ export function resolveMessageModeMeta(
         const modelMode = session.modelMode ?? defaults.modelMode;
         meta.model = modelMode === 'default' ? null : modelMode;
 
-        meta.effort = session.effortLevel ?? defaults.effortLevel;
+        const preferredEffort = session.effortLevel ?? defaults.effortLevel;
+        if (flavor === 'agy' && session.metadata?.models && meta.model) {
+            const levels = getEffortLevelsForModel(flavor, meta.model, session.metadata);
+            meta.effort = selectAgyEffort(levels.map(level => level.key), preferredEffort) ?? null;
+        } else {
+            meta.effort = preferredEffort;
+        }
         return meta;
     }
 

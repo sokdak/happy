@@ -6,7 +6,8 @@ import {
   type McpServer, type ContentBlock, type NewSessionResponse, type SessionNotification,
   type RequestPermissionRequest, type RequestPermissionResponse, type ToolCallContent,
 } from '@agentclientprotocol/sdk';
-import type { PermissionMode } from '@/api/types';
+import type { Metadata, PermissionMode } from '@/api/types';
+import { AGY_EFFORT_LEVELS, groupAgyModels, selectAgyEffort } from '@slopus/happy-wire';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import { resolveAgyBin, resolveAgyModelName } from './constants';
 import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
@@ -400,20 +401,40 @@ export class AgyAcpBackend implements AgentBackend {
     return { sessionId: this.sessionId! };
   }
 
+  getSessionOptions(): Pick<Metadata, 'models' | 'operatingModes' | 'agyImageInput'> {
+    return {
+      agyImageInput: this.capabilities.promptCapabilities?.image === true,
+      models: this.metadata.models?.availableModels.map(({ modelId, name, description }) => ({ code: modelId, value: name, description })),
+      operatingModes: this.metadata.modes?.availableModes.map(({ id, name, description }) => ({ code: id, value: name, description }))
+        ?? [{ code: 'default', value: 'Default' }],
+    };
+  }
+
   private async configure(): Promise<void> {
     const connection = this.connection!;
     const sessionId = this.sessionId!;
     if (this.model) {
       const requested = resolveAgyModelName(this.model, this.effort);
-      const selected = this.metadata.models?.availableModels.find((model) => model.modelId === requested || model.name === requested);
-      if (!selected) throw new Error(`Antigravity ACP model is unavailable: ${requested}`);
-      if (selected.modelId !== this.appliedModel) {
-        await this.control(Promise.race([connection.unstable_setSessionModel({ sessionId, modelId: selected.modelId }), this.lifetime]));
-        this.appliedModel = selected.modelId;
+      const models = this.getSessionOptions().models ?? [];
+      // Old chats may pin an exact native ID or display name, including its effort.
+      let selected = models.find(model => model.code === this.model)?.code
+        ?? models.find(model => model.value === this.model)?.code;
+      if (!selected) {
+        const group = groupAgyModels(models).find(model => model.key === this.model);
+        const levels = AGY_EFFORT_LEVELS.filter(level => group?.variants.has(level));
+        const effort = selectAgyEffort(levels, this.effort);
+        selected = effort ? group?.variants.get(effort) : undefined;
+      }
+      if (!selected) throw new Error(`Antigravity ACP model is unavailable: ${requested}. Choose an available model for this session.`);
+      if (selected !== this.appliedModel) {
+        await this.control(Promise.race([connection.unstable_setSessionModel({ sessionId, modelId: selected }), this.lifetime]));
+        this.appliedModel = selected;
       }
     }
     const modeId = this.mode === 'plan' || this.mode === 'read-only' ? 'plan'
       : this.mode === 'acceptEdits' ? 'accept-edits' : 'default';
+    // Servers without optional ACP session modes run in their native default.
+    if (!this.metadata.modes && modeId === 'default') return;
     if (modeId !== this.appliedMode) {
       if (!this.metadata.modes?.availableModes.some((mode) => mode.id === modeId)) throw new Error(`Antigravity ACP mode is unavailable: ${modeId}`);
       await this.control(Promise.race([connection.setSessionMode({ sessionId, modeId }), this.lifetime]));

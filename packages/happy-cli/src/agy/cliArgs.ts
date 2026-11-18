@@ -9,16 +9,14 @@ import type { PermissionMode } from '@/api/types';
 
 /**
  * Happy permission modes that map to agy's `--dangerously-skip-permissions`
- * (auto-approve every tool). Everything else falls back to `--sandbox`, letting
- * agy's own settings.json govern. Note: agy `--print` is one-shot and cannot
+ * (auto-approve every tool). Other selections keep the sandbox. Plan and
+ * Edits also select the native execution mode. agy `--print` is one-shot and cannot
  * surface an interactive approval prompt, so non-skip modes auto-proceed under
  * agy's policy rather than gating per-tool in Happy.
  */
 const SKIP_PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
   'yolo',
-  'safe-yolo',
   'bypassPermissions',
-  'acceptEdits',
 ]);
 
 export interface BuildAgyArgsOptions {
@@ -53,6 +51,8 @@ export function buildAgyArgs(opts: BuildAgyArgsOptions): string[] {
     args.push('--dangerously-skip-permissions');
   } else {
     args.push('--sandbox');
+    if (opts.permissionMode === 'plan' || opts.permissionMode === 'read-only') args.push('--mode', 'plan');
+    if (opts.permissionMode === 'acceptEdits') args.push('--mode', 'accept-edits');
   }
   for (const dir of opts.addDirs ?? []) {
     args.push('--add-dir', dir);

@@ -92,11 +92,12 @@ describe('setupOfflineReconnection', () => {
         const second = vi.fn();
 
         result.session.onUserMessage(first);
-        result.session.onUserMessage(second);
+        const file = vi.fn();
+        result.session.onUserMessage(second, file);
         await capturedOnReconnected!();
 
         expect(realSession.onUserMessage).toHaveBeenCalledTimes(1);
-        expect(realSession.onUserMessage).toHaveBeenCalledWith(second);
+        expect(realSession.onUserMessage).toHaveBeenCalledWith(second, file);
     });
 
     it('accepts the real kill/idle registration offline and arms the watchdog after reconnecting', async () => {

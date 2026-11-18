@@ -12,6 +12,13 @@ describe('resolveMessageDeliveryMeta', () => {
         agentState: null,
     };
 
+    it('sends an advertised AGY effort and honors an exact saved variant', () => {
+        const session = { modelMode: 'Gemini 4 Argon', effortLevel: 'xhigh', metadata: { flavor: 'agy',
+            models: [{ code: 'native-low', value: 'Gemini 4 Argon (Low)' }] } } as any;
+        expect(resolveMessageModeMeta(session)).toMatchObject({ model: 'Gemini 4 Argon', effort: 'low' });
+        expect(resolveMessageModeMeta({ ...session, modelMode: 'native-low' })).toMatchObject({ model: 'native-low', effort: null });
+    });
+
     it('tracks acceptance without showing a queue status for an idle agent', () => {
         expect(resolveMessageDeliveryMeta(idle)).toEqual({ expectsAcceptance: true, queuedWhileBusy: false });
     });

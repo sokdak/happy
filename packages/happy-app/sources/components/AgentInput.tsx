@@ -6,6 +6,7 @@ import { Image } from 'expo-image';
 import { AgentInputAttachmentStrip } from './AgentInputAttachmentStrip';
 import type { AttachmentPreview } from '@/sync/attachmentTypes';
 import { generateThumbhash } from '@/utils/thumbhash';
+import { getImagesFromClipboard, getImagesFromDrop, fileToAttachmentPreview } from '@/utils/pasteImages.web';
 import { layout } from './layout';
 import { MultiTextInput, KeyPressEvent } from './MultiTextInput';
 import { Typography } from '@/constants/Typography';
@@ -1023,7 +1024,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             // would steal images intended for somewhere else.
             if (!ownsFocus()) return;
 
-            const { getImagesFromClipboard, fileToAttachmentPreview } = await import('@/utils/pasteImages.web');
+            // The browser only grants access to clipboard files during dispatch.
             const files = getImagesFromClipboard(e);
             if (!files.length) return;
             e.preventDefault();
@@ -1088,7 +1089,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                         && visibleComposers[0] === currentNode));
             if (!takesDrop || claimedDropEvents.has(e)) return;
             claimedDropEvents.add(e);
-            const { getImagesFromDrop, fileToAttachmentPreview } = await import('@/utils/pasteImages.web');
+            // Capture File objects before the drag data store becomes protected.
             const files = getImagesFromDrop(e);
             if (!files.length) return;
             const previews = (await Promise.all(
