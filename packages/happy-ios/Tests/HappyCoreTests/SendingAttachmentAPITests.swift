@@ -40,6 +40,28 @@ final class SendingAttachmentAPITests: XCTestCase {
         XCTAssertEqual(data, Data([1, 2, 3]))
     }
 
+    func testSameHostProtocolUpgradesToServerSchemeAndAuthenticates() async throws {
+        let http = FakeHTTP()
+        http.onRaw("POST /v1/sessions/s/attachments/request-upload", #"{"ref":"ref","uploadUrl":"http://api.example.test/blob","method":"PUT"}"#)
+        http.onRaw("POST /v1/sessions/s/attachments/request-download", #"{"downloadUrl":"http://api.example.test/blob"}"#)
+        http.on("PUT /blob") { request in
+            XCTAssertEqual(request.url.absoluteString, "https://api.example.test/blob")
+            XCTAssertEqual(request.headers["Authorization"], "Bearer token-1")
+            return (200, Data())
+        }
+        http.on("GET /blob") { request in
+            XCTAssertEqual(request.url.absoluteString, "https://api.example.test/blob")
+            XCTAssertEqual(request.headers["Authorization"], "Bearer token-1")
+            return (200, Data([4, 5, 6]))
+        }
+        let api = testAPI(http)
+        let upload = try await api.requestAttachmentUpload(sessionId: "s", filename: "f", size: 3)
+        XCTAssertEqual(upload.uploadUrl, "https://api.example.test/blob")
+        try await api.uploadEncryptedBlob(Data([4, 5, 6]), upload: upload)
+        let data = try await api.downloadEncryptedAttachment(sessionId: "s", ref: "ref")
+        XCTAssertEqual(data, Data([4, 5, 6]))
+    }
+
     func testHostPrefixCannotReceiveBearerToken() async throws {
         let http = FakeHTTP()
         http.onRaw("POST /v1/sessions/s/attachments/request-upload", #"{"ref":"ref","uploadUrl":"https://api.example.test.evil/blob","method":"PUT"}"#)

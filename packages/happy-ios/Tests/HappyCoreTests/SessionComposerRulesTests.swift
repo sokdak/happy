@@ -76,6 +76,7 @@ final class SessionComposerRulesTests: XCTestCase {
         XCTAssertTrue(SessionComposerRules.canUseAttachments(sessionRecord()))
         XCTAssertTrue(SessionComposerRules.canUseAttachments(sessionRecord(metadata: "{}")))
         XCTAssertTrue(SessionComposerRules.canUseAttachments(sessionRecord(metadata: #"{ "flavor": "codex" }"#)))
+        XCTAssertTrue(SessionComposerRules.canUseAttachments(sessionRecord(metadata: #"{ "flavor": "agy" }"#)))
         XCTAssertFalse(SessionComposerRules.canUseAttachments(sessionRecord(metadata: #"{ "flavor": "gemini" }"#)))
         XCTAssertTrue(SessionComposerRules.canUseAttachments(rig()))
         XCTAssertFalse(SessionComposerRules.canUseAttachments(rig(capabilities: #"{ "attachments": { "enabled": false } }"#)))

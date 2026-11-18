@@ -61,14 +61,20 @@ extension HappyAPI {
     }
 
     private func rewriteLoopbackHost(_ raw: String) -> String {
-        guard var components = URLComponents(string: raw),
-              ["localhost", "127.0.0.1", "::1", "[::1]"].contains(components.host ?? "") else {
+        guard var components = URLComponents(string: raw) else {
             return raw
         }
-        components.scheme = serverURL.scheme
-        components.host = serverURL.host
-        components.port = serverURL.port
-        return components.string ?? raw
+        if ["localhost", "127.0.0.1", "::1", "[::1]"].contains(components.host ?? "") {
+            components.scheme = serverURL.scheme
+            components.host = serverURL.host
+            components.port = serverURL.port
+            return components.string ?? raw
+        }
+        if components.host == serverURL.host, components.scheme != serverURL.scheme {
+            components.scheme = serverURL.scheme
+            return components.string ?? raw
+        }
+        return raw
     }
 
     public func downloadEncryptedAttachment(sessionId: String, ref: String) async throws -> Data {
