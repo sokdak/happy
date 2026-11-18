@@ -28,8 +28,11 @@ function parseThinkingPayload(payload: unknown): { text: string; streaming: bool
   return { text, streaming };
 }
 
+const MAX_SESSION_CALL_IDS = 4_096;
+
 export class AcpSessionManager {
   private currentTurnId: string | null = null;
+  private lastTurnId: string | null = null;
   private readonly acpCallToSessionCall = new Map<string, string>();
 
   /** Monotonic clock: max(lastTime + 1, Date.now()) */
@@ -39,7 +42,20 @@ export class AcpSessionManager {
   private pendingText = '';
   private pendingType: 'thinking' | 'output' | null = null;
 
-  constructor(private readonly options: { preserveTextWhitespace?: boolean; forwardToolResults?: boolean } = {}) {}
+  constructor(private readonly options: {
+    preserveTextWhitespace?: boolean;
+    forwardToolResults?: boolean;
+    allowPostTurnFollowups?: boolean;
+  } = {}) {}
+
+  private effectiveTurnId(): string | null {
+    return this.currentTurnId ?? (this.options.allowPostTurnFollowups ? this.lastTurnId : null);
+  }
+
+  resetSessionCallIds(): void {
+    this.acpCallToSessionCall.clear();
+    this.lastTurnId = this.currentTurnId;
+  }
 
   private nextTime(): number {
     this.lastTime = Math.max(this.lastTime + 1, Date.now());
@@ -61,6 +77,12 @@ export class AcpSessionManager {
     }
 
     const created = createId();
+    if (this.options.allowPostTurnFollowups && this.acpCallToSessionCall.size >= MAX_SESSION_CALL_IDS) {
+      const oldest = this.acpCallToSessionCall.keys().next().value;
+      if (oldest !== undefined) {
+        this.acpCallToSessionCall.delete(oldest);
+      }
+    }
     this.acpCallToSessionCall.set(acpCallId, created);
     return created;
   }
@@ -79,10 +101,11 @@ export class AcpSessionManager {
     if (!text) {
       return [];
     }
+    const turnId = this.effectiveTurnId();
     if (type === 'thinking') {
-      return [createEnvelope('agent', { t: 'text', text, thinking: true }, turnOptions(this.currentTurnId, this.nextTime()))];
+      return [createEnvelope('agent', { t: 'text', text, thinking: true }, turnOptions(turnId, this.nextTime()))];
     }
-    return [createEnvelope('agent', { t: 'text', text }, turnOptions(this.currentTurnId, this.nextTime()))];
+    return [createEnvelope('agent', { t: 'text', text }, turnOptions(turnId, this.nextTime()))];
   }
 
   /** Opt-in bounded-latency delivery for runners that receive continuous ACP deltas. */
@@ -97,9 +120,14 @@ export class AcpSessionManager {
       return [];
     }
 
+    const flushed = this.options.allowPostTurnFollowups ? this.flush() : [];
     this.currentTurnId = createId();
-    this.acpCallToSessionCall.clear();
+    this.lastTurnId = this.currentTurnId;
+    if (!this.options.allowPostTurnFollowups) {
+      this.acpCallToSessionCall.clear();
+    }
     return [
+      ...flushed,
       createEnvelope('agent', { t: 'turn-start' }, { turn: this.currentTurnId, time: this.nextTime() }),
     ];
   }
@@ -112,7 +140,9 @@ export class AcpSessionManager {
 
     const turnId = this.currentTurnId;
     this.currentTurnId = null;
-    this.acpCallToSessionCall.clear();
+    if (!this.options.allowPostTurnFollowups) {
+      this.acpCallToSessionCall.clear();
+    }
     return [
       ...flushed,
       createEnvelope('agent', { t: 'turn-end', status }, { turn: turnId, time: this.nextTime() }),
@@ -120,6 +150,10 @@ export class AcpSessionManager {
   }
 
   mapMessage(msg: AgentMessage): SessionEnvelope[] {
+    if (msg.type === 'event' && msg.name === 'agy_step_complete') {
+      return this.flush();
+    }
+
     if (msg.type === 'event' && msg.name === 'thinking') {
       const { text, streaming } = parseThinkingPayload(msg.payload);
       if (!text) {
@@ -141,19 +175,20 @@ export class AcpSessionManager {
       }
       return [
         ...this.flush(),
-        createEnvelope('agent', { t: 'text', text: trimmed, thinking: true }, turnOptions(this.currentTurnId, this.nextTime())),
+        createEnvelope('agent', { t: 'text', text: trimmed, thinking: true }, turnOptions(this.effectiveTurnId(), this.nextTime())),
       ];
     }
 
     if (msg.type === 'status') {
-      if (msg.status === 'error' && this.currentTurnId) {
+      const turnId = this.effectiveTurnId();
+      if (msg.status === 'error' && turnId) {
         const detail = msg.detail?.trim() || 'The agent stopped because of an unknown error.';
         return [
           ...this.flush(),
           createEnvelope(
             'agent',
             { t: 'service', text: `Error: ${detail}` },
-            { turn: this.currentTurnId, time: this.nextTime() },
+            { turn: turnId, time: this.nextTime() },
           ),
         ];
       }
@@ -184,7 +219,7 @@ export class AcpSessionManager {
           title: buildToolTitle(msg.toolName),
           description: buildToolDescription(msg.toolName),
           args: msg.args,
-        }, turnOptions(this.currentTurnId, this.nextTime())),
+        }, turnOptions(this.effectiveTurnId(), this.nextTime())),
       ];
     }
 
@@ -197,7 +232,7 @@ export class AcpSessionManager {
           t: 'tool-call-end', call,
           ...(this.options.forwardToolResults && typeof msg.result === 'string' ? { result: msg.result } : {}),
           ...(this.options.forwardToolResults && msg.isError !== undefined ? { isError: msg.isError } : {}),
-        }, turnOptions(this.currentTurnId, this.nextTime())),
+        }, turnOptions(this.effectiveTurnId(), this.nextTime())),
       ];
     }
 

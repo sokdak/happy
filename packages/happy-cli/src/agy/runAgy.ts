@@ -136,7 +136,11 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     }
   }
 
-  const sessionManager = new AcpSessionManager({ preserveTextWhitespace: true, forwardToolResults: true });
+  const sessionManager = new AcpSessionManager({
+    preserveTextWhitespace: true,
+    forwardToolResults: true,
+    allowPostTurnFollowups: true,
+  });
   type TurnSettings = { model: string; effort: string; permissionMode: PermissionMode };
   const messageQueue = new MessageQueue2<TurnSettings>(JSON.stringify);
   let incomingPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
@@ -144,6 +148,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   let shouldExit = false;
   let abortController = new AbortController();
   let thinking = false;
+  let foregroundTurnRunning = false;
   let errorReportedForCurrentTurn = false;
 
   let selectedModel = opts.model ?? DEFAULT_AGY_MODEL;
@@ -193,8 +198,16 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
 
     if (msg.type === 'event' && msg.name === 'agy_session_id' && typeof msg.payload === 'string') {
       const agySessionId = msg.payload;
+      if (nativeSessionId && nativeSessionId !== agySessionId) {
+        sessionManager.resetSessionCallIds();
+      }
       nativeSessionId = agySessionId;
       session.updateMetadata(current => ({ ...current, agySessionId }));
+    }
+
+    if (msg.type === 'event' && msg.name === 'agy_step_complete' && !foregroundTurnRunning && thinking) {
+      thinking = false;
+      session.keepAlive(false, 'remote');
     }
 
     if (msg.type === 'model-output' && msg.textDelta) {
@@ -336,6 +349,9 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     } catch (error) {
       logger.debug('[agy] Abort failed:', error);
     }
+    if (!foregroundTurnRunning) {
+      sendEnvelopes(sessionManager.flushPendingText());
+    }
     thinking = false;
     session.keepAlive(false, 'remote');
     abortController.abort();
@@ -380,6 +396,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
       displayedModel = resolveAgyModelName(batch.mode.model, batch.mode.effort);
       if (hasTTY) messageBuffer.addMessage(`[MODEL:${displayedModel}]`, 'system');
       errorReportedForCurrentTurn = false;
+      foregroundTurnRunning = true;
       sendEnvelopes(sessionManager.startTurn());
       try {
         if (backend instanceof AgyAcpBackend) {
@@ -401,6 +418,8 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
           log(`Turn ended: ${msg}`);
           sendEnvelopes(sessionManager.endTurn('failed'));
         }
+      } finally {
+        foregroundTurnRunning = false;
       }
       thinking = false;
       session.keepAlive(false, 'remote');
@@ -411,6 +430,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     process.off('SIGINT', onSignal);
     shouldExit = true;
     messageQueue.close();
+    sendEnvelopes(sessionManager.flushPendingText());
     permissionHandler?.reset();
     clearInterval(keepAliveInterval);
     reconnectionHandle?.cancel();
