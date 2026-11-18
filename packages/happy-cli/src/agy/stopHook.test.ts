@@ -128,6 +128,12 @@ describe('AGY Stop policy', () => {
     const p = policy(); p.decide({}); p.decide(payload(1, { fullyIdle: true }));
     expect(p.finish()).toContain('invalid');
   });
+  it('invalidates idle when a hook cannot identify its conversation', () => {
+    const p = policy();
+    p.decide(payload(0, { fullyIdle: true }));
+    expect(p.decide(payload(1, { conversationId: '' }))).toEqual({});
+    expect(p.finish()).toContain('invalid hook input');
+  });
 });
 
 describe.skipIf(process.platform === 'win32')('packaged command hook and private controller', () => {

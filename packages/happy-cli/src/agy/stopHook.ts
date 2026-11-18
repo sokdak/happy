@@ -71,7 +71,7 @@ export class AgyStopPolicy {
     const fail = (issue: string): Decision => { t.issue = issue; this.notify(); return {}; };
     if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('invalid hook input');
     const d = input as Record<string, unknown>;
-    if (typeof d.conversationId !== 'string') return fail('invalid hook input');
+    if (typeof d.conversationId !== 'string' || !d.conversationId.trim()) return fail('invalid hook input');
     if (d.conversationId !== t.sessionId) return {};
     if (d.hookEventName !== 'Stop' || typeof d.terminationReason !== 'string'
       || typeof d.fullyIdle !== 'boolean' || typeof d.continuationActive !== 'boolean'
