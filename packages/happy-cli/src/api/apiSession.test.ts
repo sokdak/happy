@@ -980,6 +980,67 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(decryptBlob(new Uint8Array(uploadBody), blobKey)).toEqual(pngBytes);
     });
 
+    it('upgrades same-host http attachment URLs to https and guards Bearer token against host-prefix spoofing', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const pngBytes = new Uint8Array([1, 2, 3, 4]);
+
+        mockAxiosPost.mockResolvedValueOnce({
+            data: {
+                ref: 'sessions/test-session-id/attachments/proxy.enc',
+                uploadUrl: 'http://server.test/v1/sessions/test-session-id/attachments/proxy.enc',
+                method: 'PUT',
+            },
+        });
+        mockAxiosPut.mockResolvedValueOnce({ data: { ok: true } });
+
+        await client.uploadLocalImageAttachmentEnvelope({
+            data: pngBytes,
+            mimeType: 'image/png',
+            name: 'proxy.png',
+        });
+
+        expect(mockAxiosPut).toHaveBeenCalledWith(
+            'https://server.test/v1/sessions/test-session-id/attachments/proxy.enc',
+            expect.any(Buffer),
+            expect.objectContaining({
+                headers: expect.objectContaining({
+                    Authorization: 'Bearer fake-token',
+                }),
+            }),
+        );
+
+        mockAxiosPost.mockResolvedValueOnce({
+            data: {
+                downloadUrl: 'http://server.test/v1/sessions/test-session-id/attachments/proxy.enc',
+            },
+        });
+        mockAxiosGet.mockResolvedValueOnce({ data: new Uint8Array([9, 8, 7]).buffer });
+
+        const downloaded = await client.downloadAttachment('sessions/test-session-id/attachments/proxy.enc');
+        expect(downloaded).toEqual(new Uint8Array([9, 8, 7]));
+        expect(mockAxiosGet).toHaveBeenCalledWith(
+            'https://server.test/v1/sessions/test-session-id/attachments/proxy.enc',
+            expect.objectContaining({
+                headers: { Authorization: 'Bearer fake-token' },
+            }),
+        );
+
+        mockAxiosPost.mockResolvedValueOnce({
+            data: {
+                downloadUrl: 'https://server.test.evil/v1/sessions/test-session-id/attachments/proxy.enc',
+            },
+        });
+        mockAxiosGet.mockResolvedValueOnce({ data: new Uint8Array([5]).buffer });
+
+        await client.downloadAttachment('sessions/test-session-id/attachments/proxy.enc');
+        expect(mockAxiosGet).toHaveBeenLastCalledWith(
+            'https://server.test.evil/v1/sessions/test-session-id/attachments/proxy.enc',
+            expect.objectContaining({
+                headers: {},
+            }),
+        );
+    });
+
     it('sends session protocol messages through enqueueMessage with session envelope', async () => {
         const client = new ApiSessionClient('fake-token', session);
         mockAxiosPost.mockResolvedValueOnce({
@@ -1411,6 +1472,20 @@ describe('ApiSessionClient v3 messages API migration', () => {
         client.onUserMessage(message => turns.push([message.content.text, ...files.splice(0)]),
             message => files.push(message.content.data.ev.ref));
         expect(turns).toEqual([['first', 'image-a'], ['without image'], ['last', 'image-b']]);
+
+        const separateClient = new ApiSessionClient('fake-token', session);
+        mockAxiosGet.mockResolvedValueOnce({ data: {
+            messages: input.map((message, index) => ({ id: String(index), seq: index + 1,
+                content: { t: 'encrypted', c: encryptContent(session, message) },
+                localId: null, createdAt: 1000 + index, updatedAt: 1000 + index })),
+            hasMore: false,
+        } });
+        await (separateClient as any).fetchMessages();
+        const separateTurns: string[][] = [];
+        const separateFiles: string[] = [];
+        separateClient.onFileEvent(message => separateFiles.push(message.content.data.ev.ref));
+        separateClient.onUserMessage(message => separateTurns.push([message.content.text, ...separateFiles.splice(0)]));
+        expect(separateTurns).toEqual([['first', 'image-a'], ['without image'], ['last', 'image-b']]);
     });
 
     it('does not replay a live image when HTTP catch-up also contains the image pair and its prompt', async () => {

@@ -4,7 +4,14 @@ import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { projectPath } from '@/projectPath';
 import { afterEach, describe, expect, it } from 'vitest';
-import { agyStopHookEnabled, AgyStopHook, AgyStopPolicy, STOP_HOOK_LIMITS, type StopHookLimits } from './stopHook';
+import {
+  agyStopHookEnabled,
+  AgyStopHook,
+  AgyStopPolicy,
+  resolveAgyStopHookSetting,
+  STOP_HOOK_LIMITS,
+  type StopHookLimits,
+} from './stopHook';
 
 const payload = (executionNum = 0, extra = {}) => ({ conversationId: 'session', hookEventName: 'Stop',
   terminationReason: 'NO_TOOL_CALL', fullyIdle: false, continuationActive: false, executionNum, ...extra });
@@ -169,25 +176,40 @@ describe.skipIf(process.platform === 'win32')('packaged command hook and private
     expect(res.decision).toBe('continue');
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
   });
+function whenObserved(h: AgyStopHook): Promise<void> {
+  if ((h.policy.snapshot()?.observations ?? 0) >= 1) return Promise.resolve();
+  return new Promise(resolve => {
+    const unsub = h.policy.subscribe(() => {
+      if ((h.policy.snapshot()?.observations ?? 0) >= 1) {
+        unsub();
+        queueMicrotask(resolve);
+      }
+    });
+  });
+}
+
   it('wakes an in-flight backoff immediately on command progress, cancellation, or poisoned sibling socket', async () => {
     const progressing = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
-    const t1 = Date.now();
     const pendingProgress = invokeHook(progressing, payload(0));
-    setTimeout(() => progressing.policy.progress(), 40);
+    await whenObserved(progressing);
+    const t1 = Date.now();
+    progressing.policy.progress();
     expect((await pendingProgress).decision).toBe('continue');
     expect(Date.now() - t1).toBeLessThan(800);
 
     const cancelling = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
-    const t2 = Date.now();
     const pendingCancel = invokeHook(cancelling, payload(0));
-    setTimeout(() => cancelling.policy.cancel(), 40);
+    await whenObserved(cancelling);
+    const t2 = Date.now();
+    cancelling.policy.cancel();
     expect(await pendingCancel).toEqual({});
     expect(Date.now() - t2).toBeLessThan(800);
 
     const poisoned = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
-    const t3 = Date.now();
     const pendingPoisoned = invokeHook(poisoned, payload(0));
-    setTimeout(() => { void invokeHook(poisoned, '{bad json'); }, 40);
+    await whenObserved(poisoned);
+    const t3 = Date.now();
+    void invokeHook(poisoned, '{bad json');
     expect(await pendingPoisoned).toEqual({});
     expect(Date.now() - t3).toBeLessThan(800);
     expect(poisoned.policy.finish()).toContain('invalid');
@@ -201,5 +223,74 @@ describe.skipIf(process.platform === 'win32')('packaged command hook and private
     socket.destroy();
     await new Promise(resolve => setTimeout(resolve, 40));
     expect(h.policy.finish()).toContain('invalid');
+  });
+
+  it('observes multiple executionNum=0 reactive wakeups without forcing continuation or holding backoff', async () => {
+    expect(resolveAgyStopHookSetting(undefined, undefined)).toBe('auto');
+    expect(resolveAgyStopHookSetting(undefined, '0')).toBe('off');
+    expect(resolveAgyStopHookSetting(undefined, '1')).toBe('enabled');
+    expect(resolveAgyStopHookSetting(undefined, 'observe')).toBe('observe');
+    expect(resolveAgyStopHookSetting(undefined, 'continue')).toBe('continue');
+    expect(resolveAgyStopHookSetting(false, '1')).toBe('off');
+    expect(resolveAgyStopHookSetting(true, '0')).toBe('enabled');
+    expect(() => resolveAgyStopHookSetting(undefined, 'yes')).toThrow('0 or 1');
+
+    const h = await AgyStopHook.create({ initialBackoffMs: 5_000, maxBackoffMs: 10_000 }, 'observe');
+    hooks.push(h);
+    h.policy.begin('session');
+
+    const startedAt = Date.now();
+    // Initial foreground stop (executionNum = 0, fullyIdle = false) -> returns {} immediately!
+    expect(await invokeHook(h, payload(0, { fullyIdle: false }))).toEqual({});
+    expect(Date.now() - startedAt).toBeLessThan(800);
+    expect(h.policy.snapshot()).toMatchObject({ count: 0, observations: 1, fullyIdle: false });
+
+    // First reactive wakeup stop (executionNum = 0 again, fullyIdle = false) -> returns {}!
+    expect(await invokeHook(h, payload(0, { fullyIdle: false }))).toEqual({});
+    expect(h.policy.snapshot()).toMatchObject({ count: 0, observations: 2, fullyIdle: false });
+
+    // Final reactive wakeup stop (executionNum = 0 again, fullyIdle = true) -> returns {} and finishes!
+    expect(await invokeHook(h, payload(0, { fullyIdle: true }))).toEqual({});
+    expect(h.policy.snapshot()).toMatchObject({ count: 0, observations: 3, fullyIdle: true });
+    expect(h.policy.finish()).toBeUndefined();
+  });
+
+  it('still rejects native error stops, empty conversation IDs, and failWith timeouts in observe mode, while isolating child conversations', () => {
+    const p = new AgyStopPolicy(STOP_HOOK_LIMITS, Date.now, 'observe');
+    p.begin('session');
+    expect(p.decide(payload(0, { terminationReason: 'ERROR', fullyIdle: true }))).toEqual({});
+    expect(p.finish()).toContain('native stop: ERROR');
+
+    p.begin('session');
+    expect(p.decide(payload(0, { fullyIdle: false }))).toEqual({});
+    const beforeChild = p.snapshot();
+    // Foreign child subagent conversationId is ignored without poisoning the parent turn.
+    expect(p.decide(payload(3, { conversationId: 'subagent-child', fullyIdle: true }))).toEqual({});
+    expect(p.snapshot()).toEqual(beforeChild);
+    // Empty conversationId is still malformed input.
+    expect(p.decide(payload(0, { conversationId: '   ', fullyIdle: true }))).toEqual({});
+    expect(p.finish()).toContain('invalid hook input');
+
+    p.begin('session');
+    expect(p.decide(payload(0, { fullyIdle: false }))).toEqual({});
+    p.failWith('continuation time limit reached');
+    expect(p.decide(payload(0, { fullyIdle: true }))).toEqual({});
+    expect(p.finish()).toContain('time limit');
+  });
+
+  it.each([true, false])('retires a pending continue backoff reply when a newer Stop reports fullyIdle=%s', async (fullyIdle) => {
+    const h = await hook({ initialBackoffMs: 10_000, maxBackoffMs: 10_000 });
+    const first = invokeHook(h, payload(0));
+    await whenObserved(h);
+    const next = invokeHook(h, payload(1, { fullyIdle }));
+    expect(await first).toEqual({});
+    if (fullyIdle) {
+      expect(await next).toEqual({});
+    } else {
+      h.policy.progress();
+      expect((await next).decision).toBe('continue');
+      await invokeHook(h, payload(2, { fullyIdle: true }));
+    }
+    expect(h.policy.finish()).toBeUndefined();
   });
 });

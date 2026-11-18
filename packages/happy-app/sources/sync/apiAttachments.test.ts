@@ -217,6 +217,29 @@ describe('uploadEncryptedBlob', () => {
         });
         expectNoAttachmentLeaks(error);
     });
+
+    it('does not attach Bearer token to prefix-spoofed external hosts on PUT upload', async () => {
+        fetchMock.mockResolvedValueOnce(response({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+        }));
+
+        await uploadEncryptedBlob({
+            uploadUrl: 'https://api.cluster-fluster.com.evil/v1/sessions/session-1/attachments/blob.enc',
+            method: 'PUT',
+        }, new Uint8Array([1, 2, 3]), credentials);
+
+        expect(fetchMock).toHaveBeenCalledWith(
+            'https://api.cluster-fluster.com.evil/v1/sessions/session-1/attachments/blob.enc',
+            expect.objectContaining({
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                },
+            }),
+        );
+    });
 });
 
 describe('downloadEncryptedAttachment', () => {

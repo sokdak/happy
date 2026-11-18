@@ -428,25 +428,32 @@ export class ApiSessionClient extends EventEmitter {
         this.flushPendingInput();
     }
 
+    private canDeliverInput(input: UserMessage | FileEventMessage): boolean {
+        return input.role === 'user'
+            ? Boolean(this.pendingMessageCallback)
+            : Boolean(this.pendingFileEventCallback);
+    }
+
     private deliverInput(input: UserMessage | FileEventMessage) {
-        if (input.role === 'user' && this.pendingMessageCallback) {
-            this.pendingMessageCallback(input);
-        } else if (input.role === 'session' && this.pendingFileEventCallback) {
-            this.pendingFileEventCallback(input);
-        } else {
-            this.pendingInput.push(input);
+        if (this.pendingInput.length === 0 && this.canDeliverInput(input)) {
+            if (input.role === 'user') {
+                this.pendingMessageCallback!(input);
+            } else {
+                this.pendingFileEventCallback!(input);
+            }
+            return;
         }
+        this.pendingInput.push(input);
+        this.flushPendingInput();
     }
 
     private flushPendingInput() {
-        const pending = this.pendingInput;
-        this.pendingInput = [];
-        for (const [index, input] of pending.entries()) {
-            try {
-                this.deliverInput(input);
-            } catch (error) {
-                this.pendingInput = this.pendingInput.concat(pending.slice(index + 1));
-                throw error;
+        while (this.pendingInput.length > 0 && this.canDeliverInput(this.pendingInput[0])) {
+            const input = this.pendingInput.shift()!;
+            if (input.role === 'user') {
+                this.pendingMessageCallback!(input);
+            } else {
+                this.pendingFileEventCallback!(input);
             }
         }
     }
@@ -486,14 +493,50 @@ export class ApiSessionClient extends EventEmitter {
 
         return {
             ...upload,
+            uploadUrl: this.rewriteAttachmentUrl(upload.uploadUrl),
             method: upload.method ?? 'PUT',
         };
     }
 
+    private rewriteAttachmentUrl(url: string): string {
+        try {
+            const target = new URL(url);
+            const reachable = new URL(configuration.serverUrl);
+            if (target.hostname === 'localhost' || target.hostname === '127.0.0.1' || target.hostname === '::1' || target.hostname === '[::1]') {
+                target.protocol = reachable.protocol;
+                target.hostname = reachable.hostname;
+                target.port = reachable.port;
+                return target.toString();
+            }
+            if (target.hostname === reachable.hostname && target.protocol !== reachable.protocol) {
+                target.protocol = reachable.protocol;
+                return target.toString();
+            }
+            return url;
+        } catch {
+            return url;
+        }
+    }
+
+    private isAttachmentServerUrl(url: string): boolean {
+        try {
+            const target = new URL(url);
+            const server = new URL(configuration.serverUrl);
+            if (target.origin !== server.origin) {
+                return false;
+            }
+            const basePath = server.pathname.replace(/\/+$/, '');
+            return basePath === '' || target.pathname === basePath || target.pathname.startsWith(`${basePath}/`);
+        } catch {
+            return false;
+        }
+    }
+
     private async uploadEncryptedAttachmentBlob(upload: AttachmentUploadResult, encrypted: Uint8Array): Promise<void> {
+        const uploadUrl = this.rewriteAttachmentUrl(upload.uploadUrl);
         if (upload.method === 'POST') {
             const { body, boundary } = buildMultipartUploadBody(upload.formFields, encrypted);
-            await axios.post(upload.uploadUrl, body, {
+            await axios.post(uploadUrl, body, {
                 headers: {
                     'Content-Type': `multipart/form-data; boundary=${boundary}`,
                 },
@@ -506,11 +549,11 @@ export class ApiSessionClient extends EventEmitter {
         const headers: Record<string, string> = {
             'Content-Type': 'application/octet-stream',
         };
-        if (upload.uploadUrl.startsWith(configuration.serverUrl)) {
+        if (this.isAttachmentServerUrl(uploadUrl)) {
             headers.Authorization = `Bearer ${this.token}`;
         }
 
-        await axios.put(upload.uploadUrl, Buffer.from(encrypted), {
+        await axios.put(uploadUrl, Buffer.from(encrypted), {
             headers,
             timeout: 60000,
             maxBodyLength: 10 * 1024 * 1024,
@@ -551,21 +594,14 @@ export class ApiSessionClient extends EventEmitter {
                 timeout: 30000,
             },
         );
-        const downloadUrl = requestRes.data?.downloadUrl;
-        if (typeof downloadUrl !== 'string') {
+        const rawDownloadUrl = requestRes.data?.downloadUrl;
+        if (typeof rawDownloadUrl !== 'string') {
             throw new Error('request-download returned no downloadUrl');
         }
 
-        const isServerUrl = downloadUrl.startsWith(configuration.serverUrl)
-            || (() => {
-                try {
-                    return new URL(downloadUrl).origin === new URL(configuration.serverUrl).origin;
-                } catch {
-                    return false;
-                }
-            })();
+        const downloadUrl = this.rewriteAttachmentUrl(rawDownloadUrl);
         const headers: Record<string, string> = {};
-        if (isServerUrl) {
+        if (this.isAttachmentServerUrl(downloadUrl)) {
             headers['Authorization'] = `Bearer ${this.token}`;
         }
         const response = await axios.get(downloadUrl, {

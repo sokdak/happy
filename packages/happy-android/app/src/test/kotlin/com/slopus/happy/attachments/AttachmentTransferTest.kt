@@ -116,7 +116,10 @@ class AttachmentTransferTest {
         assertTrue(upload.uploadUrl, upload.uploadUrl.startsWith(server.url))
         assertEquals("http://localhost:4000/x?y=1", rewriteLoopbackHost("http://localhost:4000/x?y=1", "not a url"))
         assertEquals("https://happy.example:8443/v1/x", rewriteLoopbackHost("http://127.0.0.1:3005/v1/x", "https://happy.example:8443"))
+        assertEquals("https://happy.example/v1/x", rewriteLoopbackHost("http://happy.example/v1/x", "https://happy.example"))
         assertEquals("https://files.example/x", rewriteLoopbackHost("https://files.example/x", "https://happy.example"))
+        assertTrue(isAttachmentServerUrl("https://happy.example/v1/x", "https://happy.example"))
+        assertFalse(isAttachmentServerUrl("https://happy.example.evil/v1/x", "https://happy.example"))
     }
 
     @Test

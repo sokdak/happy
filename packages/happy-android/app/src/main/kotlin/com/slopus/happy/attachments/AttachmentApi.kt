@@ -108,7 +108,7 @@ class AttachmentApi(
             } else {
                 Request.Builder()
                     .url(upload.uploadUrl)
-                    .apply { if (upload.uploadUrl.startsWith(server)) header("Authorization", "Bearer $token") }
+                    .apply { if (isAttachmentServerUrl(upload.uploadUrl, server)) header("Authorization", "Bearer $token") }
                     .put(encrypted.toRequestBody(OCTET_STREAM))
                     .build()
             }
@@ -156,7 +156,7 @@ class AttachmentApi(
         val get = try {
             Request.Builder()
                 .url(downloadUrl)
-                .apply { if (downloadUrl.startsWith(server)) header("Authorization", "Bearer $token") }
+                .apply { if (isAttachmentServerUrl(downloadUrl, server)) header("Authorization", "Bearer $token") }
                 .get()
                 .build()
         } catch (e: IllegalArgumentException) {
@@ -238,9 +238,22 @@ class AttachmentApi(
  */
 fun rewriteLoopbackHost(url: String, serverUrl: String): String {
     val target = url.toHttpUrlOrNull() ?: return url
-    if (target.host != "localhost" && target.host != "127.0.0.1" && target.host != "::1") return url
     val reachable = serverUrl.toHttpUrlOrNull() ?: return url
-    return target.newBuilder().scheme(reachable.scheme).host(reachable.host).port(reachable.port).build().toString()
+    if (target.host == "localhost" || target.host == "127.0.0.1" || target.host == "::1") {
+        return target.newBuilder().scheme(reachable.scheme).host(reachable.host).port(reachable.port).build().toString()
+    }
+    if (target.host == reachable.host && target.scheme != reachable.scheme) {
+        return target.newBuilder().scheme(reachable.scheme).port(reachable.port).build().toString()
+    }
+    return url
+}
+
+internal fun isAttachmentServerUrl(url: String, serverUrl: String): Boolean {
+    val target = url.toHttpUrlOrNull() ?: return false
+    val server = serverUrl.toHttpUrlOrNull() ?: return false
+    if (target.scheme != server.scheme || target.host != server.host || target.port != server.port) return false
+    val basePath = server.encodedPath.trimEnd('/')
+    return basePath.isEmpty() || target.encodedPath == basePath || target.encodedPath.startsWith("$basePath/")
 }
 
 private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->

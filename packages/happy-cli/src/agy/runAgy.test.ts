@@ -217,4 +217,47 @@ describe('Antigravity Happy runner integration', () => {
     await vi.waitFor(() => expect(fixture.calls).toHaveLength(1));
   });
 
+  it('delivers post-turn background tools and step-flushed text with valid turn IDs, resets keepAlive, and forwards post-turn abort', async () => {
+    await begin();
+    fixture.backend.sendPrompt.mockImplementationOnce(async () => {
+      for (const fn of fixture.listeners) {
+        fn({ type: 'tool-call', callId: 'bg-1', toolName: 'Bash', args: { command: 'python3 bg.py' } });
+        fn({ type: 'model-output', textDelta: 'WAITING_INITIAL' });
+        fn({ type: 'event', name: 'agy_step_complete', payload: null });
+        fn({ type: 'status', status: 'error', detail: 'Background work may still be running; completion is unconfirmed.' });
+      }
+      throw new Error('Background work may still be running; completion is unconfirmed.');
+    });
+
+    user('run background');
+    await vi.waitFor(() => expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+    const envelopes = (): any[] => fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e);
+    const firstTurnId = envelopes()[0].turn;
+    const bgStartCallId = envelopes().find(e => e.ev.t === 'tool-call-start').ev.call;
+
+    // Simulate post-turn reactive wakeup events arriving after sendPrompt settled
+    for (const fn of fixture.listeners) {
+      fn({ type: 'status', status: 'running' });
+      fn({ type: 'tool-result', callId: 'bg-1', toolName: 'Bash', result: null, isError: false });
+      fn({ type: 'tool-call', callId: 'followup-1', toolName: 'Bash', args: { command: 'python3 followup.py' } });
+      fn({ type: 'tool-result', callId: 'followup-1', toolName: 'Bash', result: null, isError: false });
+      fn({ type: 'model-output', textDelta: '\n\nFINAL_VISIBLE' });
+      fn({ type: 'event', name: 'agy_step_complete', payload: null });
+    }
+
+    const lateEnd = envelopes().find(e => e.ev.t === 'tool-call-end' && e.ev.call === bgStartCallId);
+    expect(lateEnd).toBeDefined();
+    expect(lateEnd.turn).toBe(firstTurnId);
+
+    const finalText = envelopes().find(e => e.ev.t === 'text' && e.ev.text === '\n\nFINAL_VISIBLE');
+    expect(finalText).toBeDefined();
+    expect(finalText.turn).toBe(firstTurnId);
+    expect(fixture.session.keepAlive).toHaveBeenLastCalledWith(false, 'remote');
+
+    // Post-turn abort RPC still calls backend.cancel()
+    await fixture.rpc.get('abort')?.();
+    expect(fixture.backend.cancel).toHaveBeenCalledTimes(1);
+  });
+
 });

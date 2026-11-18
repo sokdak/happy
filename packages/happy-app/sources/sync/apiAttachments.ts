@@ -28,6 +28,20 @@ export type RequestUploadResult = {
     formFields?: Record<string, string>;
 };
 
+function isAttachmentServerUrl(targetUrl: string, serverUrl: string): boolean {
+    try {
+        const target = new URL(targetUrl);
+        const server = new URL(serverUrl);
+        if (target.origin !== server.origin) {
+            return false;
+        }
+        const basePath = server.pathname.replace(/\/+$/, '');
+        return basePath === '' || target.pathname === basePath || target.pathname.startsWith(`${basePath}/`);
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Request a presigned (or server-hosted) upload URL for an attachment.
  * Returns the ref (storage path) and uploadUrl to PUT the encrypted blob.
@@ -166,14 +180,7 @@ export async function uploadEncryptedBlob(
     }
 
     // PUT (local-storage mode): direct upload to our server.
-    const isServerUrl = upload.uploadUrl.startsWith(serverUrl)
-        || (() => {
-            try {
-                return new URL(upload.uploadUrl).origin === new URL(serverUrl).origin;
-            } catch {
-                return false;
-            }
-        })();
+    const isServerUrl = isAttachmentServerUrl(upload.uploadUrl, serverUrl);
     const headers: Record<string, string> = {
         'Content-Type': 'application/octet-stream',
     };
@@ -285,14 +292,7 @@ export async function downloadEncryptedAttachment(
     }
     const downloadUrl = rewriteLoopbackHost(rawDownloadUrl);
 
-    const isServerUrl = downloadUrl.startsWith(API_ENDPOINT)
-        || (() => {
-            try {
-                return new URL(downloadUrl).origin === new URL(API_ENDPOINT).origin;
-            } catch {
-                return false;
-            }
-        })();
+    const isServerUrl = isAttachmentServerUrl(downloadUrl, API_ENDPOINT);
     const headers: Record<string, string> = {};
     if (isServerUrl) {
         headers['Authorization'] = `Bearer ${credentials.token}`;
