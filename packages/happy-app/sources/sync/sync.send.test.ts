@@ -44,11 +44,13 @@ vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
 vi.mock('@/track', () => ({ tracking: null, trackMessageSent: vi.fn() }));
 vi.mock('@/modal', () => ({ Modal: { alert: mocks.alert } }));
 vi.mock('@/text', () => ({ t: (key: string) => key }));
-vi.mock('@/utils/readFileBytes', () => ({}));
+vi.mock('@/utils/readFileBytes', () => ({ readFileBytes: vi.fn() }));
 vi.mock('@/sync/gitStatusSync', () => ({ gitStatusSync: {} }));
 vi.mock('@/realtime/hooks/voiceHooks', () => ({ voiceHooks: { onSessionOnline: vi.fn(), onSessionOffline: vi.fn() } }));
 
 import { sync } from './sync';
+import { readFileBytes } from '@/utils/readFileBytes';
+import { requestAttachmentUpload, uploadEncryptedBlob } from './apiAttachments';
 import { Encryption } from './encryption/encryption';
 import { encodeBase64 } from '@/encryption/base64';
 import { settingsDefaults } from './settings';
@@ -178,6 +180,33 @@ describe('first message session hydration', () => {
         expect(mocks.request).not.toHaveBeenCalled();
         expect(engine.pendingOutbox.size).toBe(0);
         expect(accepted).not.toHaveBeenCalled();
+    });
+
+    it.each(['describe both', ''])('keeps an incomplete AGY image batch in the composer and sends both on retry (%j)', async (text) => {
+        const id = 'agy-images';
+        const target = await sessionRecord(id, false, { path: '/test', host: 'test', flavor: 'agy', agyImageInput: true });
+        fetchMock.mockResolvedValue({ ok: true, json: async () => ({ sessions: [target] }) });
+        await engine.fetchSessions();
+        const attachments = ['first', 'second'].map(name => ({
+            id: name, uri: name, name, size: 1, width: 1, height: 1, mimeType: 'image/png',
+        }));
+        vi.mocked(readFileBytes).mockResolvedValue(Uint8Array.of(42));
+        vi.mocked(requestAttachmentUpload).mockImplementation(async (_auth, _session, name) => ({
+            ref: name, uploadUrl: 'https://example.invalid/' + name, method: 'PUT',
+        }));
+        vi.mocked(uploadEncryptedBlob).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined);
+        const onAccepted = vi.fn();
+        const options = { attachments, onAccepted, awaitDelivery: true };
+        await expect(engine.sendMessage(id, text, options)).resolves.toBe(false);
+        expect(onAccepted).not.toHaveBeenCalled();
+        expect(engine.enqueueMessages).not.toHaveBeenCalled();
+        expect(mocks.request).not.toHaveBeenCalled();
+
+        await expect(engine.sendMessage(id, text, options)).resolves.toBe(true);
+        expect(onAccepted).toHaveBeenCalledOnce();
+        const batch = JSON.parse(mocks.request.mock.calls[0][1].body).messages;
+        const records = await Promise.all(batch.map((message: { content: string }) => writer.getSessionEncryption(id)!.decryptRaw(message.content))) as any[];
+        expect(records.map(record => record.role === 'session' ? record.content.data.ev.ref : record.content.text)).toEqual(['first', 'second', text]);
     });
 
     it('does not queue file events or text after Stop during attachment upload', async () => {

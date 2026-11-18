@@ -673,7 +673,8 @@ export class ApiSessionClient extends EventEmitter {
                     maxSeq = message.seq;
                 }
 
-                if (skipRouting) continue;
+                // Socket delivery can advance the cursor while this GET is in flight.
+                if (skipRouting || message.seq <= this.lastReceivedSeq) continue;
 
                 if (message.content?.t !== 'encrypted') {
                     continue;

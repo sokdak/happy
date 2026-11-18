@@ -1413,6 +1413,26 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(turns).toEqual([['first', 'image-a'], ['without image'], ['last', 'image-b']]);
     });
 
+    it('does not replay a live image when HTTP catch-up also contains the image pair and its prompt', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const files: string[] = [];
+        const turns: string[][] = [];
+        client.onUserMessage(message => turns.push([message.content.text, ...files.splice(0)]),
+            message => files.push(message.content.data.ev.ref));
+        const file = (name: string) => ({ role: 'session', content: { type: 'session', data: {
+            id: name, time: 1, role: 'user', ev: { t: 'file', ref: name, name, size: 8 },
+        } } });
+        const encrypted = [file('left'), file('right'), { role: 'user', content: { type: 'text', text: 'compare' } }]
+            .map(record => encryptContent(session, record));
+        mockAxiosGet.mockResolvedValueOnce({ data: { messages: encrypted.map((c, i) => ({
+            seq: i + 1, content: { t: 'encrypted', c },
+        })), hasMore: false } });
+        const catchUp = (client as any).fetchMessages();
+        emitSocketEvent('update', createNewMessageUpdate(1, encrypted[0]));
+        await catchUp;
+        expect(turns).toEqual([['compare', 'left', 'right']]);
+    });
+
     it('applies file event socket updates directly without logging sensitive names or refs', () => {
         const client = new ApiSessionClient('fake-token', session);
         const onFileEvent = vi.fn();

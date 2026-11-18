@@ -826,6 +826,7 @@ class Sync {
         const stagedAttachments: { pending: OutboxMessage; normalized: NormalizedMessage | null }[] = [];
         if (effectiveAttachments && effectiveAttachments.length > 0) {
             const { uploaded, failed } = await this.uploadAttachmentsForSession(sessionId, effectiveAttachments);
+            if (!canSend()) return false;
 
             if (failed > 0) {
                 Modal.alert(
@@ -833,6 +834,9 @@ class Sync {
                     t('imageUpload.uploadFailedMessage', { count: failed }),
                     [{ text: t('common.ok'), style: 'cancel' }],
                 );
+                // AGY receives the images and prompt as a single model request.
+                // Leave the entire selection in the composer for a retry.
+                if (flavor === 'agy') return false;
             }
 
             if (uploaded.length > 0) {

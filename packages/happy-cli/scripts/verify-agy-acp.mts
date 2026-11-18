@@ -61,12 +61,15 @@ try {
   assert.match(texts.get(3) ?? '', /ACP_CONTEXT_PINE_731/);
 
   turn = 4; emitEnvelopes(manager.startTurn());
-  await backend.sendPrompt(sessionId, 'What is the dominant color of this image? Reply only the color in English. Do not use tools.', [{
+  await backend.sendPrompt(sessionId, 'What are the dominant colors of the two images in attachment order? Reply only with the two colors in English. Do not use tools.', [{
     type: 'image', mimeType: 'image/png',
     data: 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=',
+  }, {
+    type: 'image', mimeType: 'image/png',
+    data: 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR4nGNgYPhPIhrVMKph2GoAAJLb/wFh5Z4RAAAAAElFTkSuQmCC',
   }]);
   emitEnvelopes(manager.endTurn('completed'));
-  assert.match(texts.get(4) ?? '', /red/i);
+  assert.match(texts.get(4) ?? '', /red[\s\S]*blue/i);
 
   turn = 5; emitEnvelopes(manager.startTurn());
   const tool = new Promise<void>(resolve => { toolStarted = resolve; });
@@ -86,7 +89,7 @@ try {
   await backend.sendPrompt(sessionId, 'Reply only ACP_RECOVERY_OK. Do not use tools.');
   emitEnvelopes(manager.endTurn('completed'));
   assert.match(texts.get(6) ?? '', /ACP_RECOVERY_OK/);
-  console.log(JSON.stringify({ passed: true, server: 'agy acp', scenarios: ['streaming', 'native tools', 'multi-turn context', 'explicit resume', 'model switch', 'image', 'cancel', 'post-cancel recovery'], events, envelopes }, null, 2));
+  console.log(JSON.stringify({ passed: true, server: 'agy acp', scenarios: ['streaming', 'native tools', 'multi-turn context', 'explicit resume', 'model switch', 'ordered image pair', 'cancel', 'post-cancel recovery'], events, envelopes }, null, 2));
 } finally {
   clearTimeout(deadline);
   await backend.dispose(); await rm(cwd, { recursive: true, force: true });

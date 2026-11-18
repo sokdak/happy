@@ -127,12 +127,14 @@ describe('Antigravity Happy runner integration', () => {
     let complete!: (data: Uint8Array) => void;
     fixture.session.downloadAndDecryptAttachment.mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
     fixture.session.file({ content: { data: { ev: { ref: 'blob', name: 'image', size: 8, mimeType: 'image/jpeg' } } } });
+    fixture.session.downloadAndDecryptAttachment.mockResolvedValueOnce(Buffer.from([255, 216, 255]));
+    fixture.session.file({ content: { data: { ev: { ref: 'other-blob', name: 'second.jpg', size: 3 } } } });
     user('first with image', { model: 'Gemini 4 Argon', effort: 'high', permissionMode: 'acceptEdits' });
     user('second without image', { model: 'Gemini 4 Carbon', effort: 'low', permissionMode: 'default' });
     expect(fixture.calls).toHaveLength(0);
     complete(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
     await vi.waitFor(() => expect(fixture.calls).toHaveLength(2));
-    expect(fixture.calls[0]).toMatchObject({ text: 'first with image', mode: 'acceptEdits', model: 'Gemini 4 Argon', effort: 'high', images: [{ type: 'image', mimeType: 'image/png' }] });
+    expect(fixture.calls[0]).toMatchObject({ text: 'first with image', mode: 'acceptEdits', model: 'Gemini 4 Argon', effort: 'high', images: [{ type: 'image', mimeType: 'image/png' }, { type: 'image', mimeType: 'image/jpeg' }] });
     expect(fixture.calls[1]).toMatchObject({ text: 'second without image', mode: 'default', model: 'Gemini 4 Carbon', effort: 'low', images: [] });
     expect(fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e.ev.t).filter((t: string) => t === 'turn-end')).toHaveLength(2);
   });
