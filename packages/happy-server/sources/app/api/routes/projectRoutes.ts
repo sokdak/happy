@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as privacyKit from 'privacy-kit';
 import { Fastify } from '../types';
+import { resolveBaseUrl } from '../utils/resolveBaseUrl';
 import { db } from '@/storage/db';
 import {
     s3client,
@@ -74,19 +75,6 @@ type ProjectRecord = {
     createdAt: Date;
     updatedAt: Date;
 };
-
-function resolveBaseUrl(request: { headers: Record<string, string | string[] | undefined> }): string {
-    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/+$/, '');
-    const forwardedHost = request.headers['x-forwarded-host'];
-    const forwardedProto = request.headers['x-forwarded-proto'];
-    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers.host;
-    let proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? 'http';
-    if (proto === 'http' && request.headers['x-forwarded-ssl'] === 'on') {
-        proto = 'https';
-    }
-    if (typeof host === 'string' && host.length > 0) return `${proto}://${host}`;
-    return `http://localhost:${process.env.PORT || '3005'}`;
-}
 
 function serializeProject(project: ProjectRecord) {
     return {
