@@ -52,9 +52,9 @@ export class AgyStopPolicy {
   epoch(): unknown { return this.turn; }
   cancel(): void { if (this.turn?.active) { this.turn.active = false; this.notify(); } }
   progress(): void { if (this.turn?.active) { this.turn.progress++; this.notify(); } }
-  canContinue(epoch = this.epoch()): boolean {
+  canContinue(epoch: unknown, execution: number): boolean {
     const t = this.turn;
-    return Boolean(t && t === epoch && t.active && !t.issue);
+    return Boolean(t && t === epoch && t.active && !t.issue && t.fullyIdle === false && t.lastExecution === execution);
   }
   hasProgressSince(epoch: unknown, baseline: number): boolean {
     const t = this.turn;
@@ -67,27 +67,31 @@ export class AgyStopPolicy {
   snapshot() { return this.turn ? { ...this.turn } : undefined; }
   decide(input: unknown, epoch = this.epoch()): Decision {
     const t = this.turn;
-    if (!t?.active || epoch !== t) return {};
-    t.delayMs = 0;
+    if (!t?.active || epoch !== t || t.issue) return {};
     const fail = (issue: string): Decision => { t.issue = issue; this.notify(); return {}; };
     if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('invalid hook input');
     const d = input as Record<string, unknown>;
     if (typeof d.conversationId !== 'string') return fail('invalid hook input');
-    if (d.conversationId !== t.sessionId) return fail('hook session mismatch');
+    if (d.conversationId !== t.sessionId) return {};
     if (d.hookEventName !== 'Stop' || typeof d.terminationReason !== 'string'
       || typeof d.fullyIdle !== 'boolean' || typeof d.continuationActive !== 'boolean'
       || !Number.isSafeInteger(d.executionNum) || (d.executionNum as number) < 0) {
       return fail('invalid hook input');
     }
     t.seen = true;
-    t.fullyIdle = d.fullyIdle;
     // Preserve cancellation, errors and all native invocation/token limits.
     if (d.terminationReason !== 'NO_TOOL_CALL') return fail('native stop: ' + d.terminationReason.slice(0, 80));
-    if (d.fullyIdle) return {};
-    // Once a limit/invalid input is seen, later hooks cannot reopen this turn.
-    if (t.issue) return {};
-    if ((d.executionNum as number) <= t.lastExecution) return fail('repeated hook execution');
-    t.lastExecution = d.executionNum as number;
+    const execution = d.executionNum as number;
+    if (execution < t.lastExecution || (execution === t.lastExecution && t.fullyIdle)) return {};
+    if (!d.fullyIdle && execution === t.lastExecution) return fail('repeated hook execution');
+    t.lastExecution = execution;
+    t.fullyIdle = d.fullyIdle;
+    // Retire any reply still in backoff for an earlier execution.
+    this.notify();
+    if (d.fullyIdle) {
+      t.delayMs = 0;
+      return {};
+    }
     if (t.count >= this.limits.maxContinuations) return fail('continuation limit reached');
     const now = this.now();
     if (t.progress !== t.lastProgress) {
@@ -113,8 +117,8 @@ export class AgyStopPolicy {
     const t = this.turn;
     if (!t) return 'Stop hook was not initialized';
     if (t.active) { t.active = false; this.notify(); }
-    if (!t.seen) return 'Stop hook did not report a valid result';
     if (t.issue) return 'Stop hook stopped: ' + t.issue;
+    if (!t.seen) return 'Stop hook did not report a valid result';
     if (t.fullyIdle !== true) return 'Background completion was not confirmed';
     return undefined;
   }
@@ -161,7 +165,6 @@ export class AgyStopHook {
         socket.setTimeout(0);
         let input: unknown;
         try { input = JSON.parse(buffer.slice(0, buffer.indexOf('\n'))); } catch { input = null; }
-        const progressBefore = this.policy.snapshot()?.progress ?? 0;
         const decision = this.policy.decide(input, epoch);
         const delayMs = decision.decision === 'continue' ? this.policy.plannedDelayMs(epoch) : 0;
         if (decision.decision !== 'continue' || delayMs <= 0) {
@@ -169,6 +172,7 @@ export class AgyStopHook {
           socket.end(JSON.stringify(decision) + '\n');
           return;
         }
+        const { lastExecution, progress } = this.policy.snapshot()!;
         let settled = false;
         const finishWait = () => {
           if (settled) return;
@@ -177,13 +181,13 @@ export class AgyStopHook {
           unsubscribe();
           if (this.closed || socket.destroyed || !socket.writable) return;
           responded = true;
-          const payload = this.policy.canContinue(epoch) ? decision : {};
+          const payload = this.policy.canContinue(epoch, lastExecution) ? decision : {};
           socket.end(JSON.stringify(payload) + '\n');
         };
         cleanupWait = finishWait;
         const timer = setTimeout(finishWait, delayMs);
         const unsubscribe = this.policy.subscribe(() => {
-          if (!this.policy.canContinue(epoch) || this.policy.hasProgressSince(epoch, progressBefore)) {
+          if (!this.policy.canContinue(epoch, lastExecution) || this.policy.hasProgressSince(epoch, progress)) {
             finishWait();
           }
         });

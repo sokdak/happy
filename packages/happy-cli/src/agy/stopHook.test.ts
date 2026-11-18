@@ -3,7 +3,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { projectPath } from '@/projectPath';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { agyStopHookEnabled, AgyStopHook, AgyStopPolicy, STOP_HOOK_LIMITS, type StopHookLimits } from './stopHook';
 
 const payload = (executionNum = 0, extra = {}) => ({ conversationId: 'session', hookEventName: 'Stop',
@@ -42,8 +42,34 @@ describe('AGY Stop policy', () => {
     expect(p.finish()).toContain('native stop');
   });
   it.each([null, [], {}, payload(0, { fullyIdle: 'false' }), payload(-1), payload(NaN),
-    payload(0, { continuationActive: undefined }), payload(0, { hookEventName: 'PreInvocation' }), payload(0, { conversationId: 'other' })])('does not continue malformed/mismatched input %j', value => {
+    payload(0, { continuationActive: undefined }), payload(0, { hookEventName: 'PreInvocation' })])('does not continue malformed input %j', value => {
     const p = policy(); expect(p.decide(value)).toEqual({}); expect(p.finish()).toBeDefined();
+  });
+  it('isolates Stop observations for other conversations sharing the hook workspace', () => {
+    const p = policy();
+    const foreignStop = payload(7, { conversationId: 'child', fullyIdle: true });
+    expect(p.decide(foreignStop)).toEqual({});
+    expect(p.finish()).toContain('did not report');
+    p.begin('session');
+    expect(p.decide(payload(0)).decision).toBe('continue');
+    const waiting = p.snapshot();
+    expect(p.decide(foreignStop)).toEqual({});
+    expect(p.snapshot()).toEqual(waiting);
+    expect(p.decide(payload(1, { fullyIdle: true }))).toEqual({});
+    expect(p.finish()).toBeUndefined();
+  });
+  it('requires an idle observation at least as recent as the pending execution', () => {
+    const p = policy();
+    expect(p.decide(payload(2)).decision).toBe('continue');
+    expect(p.decide(payload(1, { fullyIdle: true }))).toEqual({});
+    expect(p.finish()).toContain('not confirmed');
+  });
+  it('keeps a confirmed idle observation when an earlier busy report arrives late', () => {
+    const p = policy();
+    expect(p.decide(payload(2, { fullyIdle: true }))).toEqual({});
+    expect(p.decide(payload(1))).toEqual({});
+    expect(p.decide(payload(2))).toEqual({});
+    expect(p.finish()).toBeUndefined();
   });
   it('bounds repeated waiting for servers/watchers without claiming they completed', () => {
     const p = policy();
@@ -170,26 +196,25 @@ describe.skipIf(process.platform === 'win32')('packaged command hook and private
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
   });
   it('wakes an in-flight backoff immediately on command progress, cancellation, or poisoned sibling socket', async () => {
-    const progressing = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
-    const t1 = Date.now();
+    // Longer than invokeHook's client deadline, so a reply must come from a wakeup.
+    const limits = { initialBackoffMs: 10_000, maxBackoffMs: 10_000 };
+    const progressing = await hook(limits);
     const pendingProgress = invokeHook(progressing, payload(0));
-    setTimeout(() => progressing.policy.progress(), 40);
+    await vi.waitFor(() => expect(progressing.policy.snapshot()?.count).toBe(1));
+    progressing.policy.progress();
     expect((await pendingProgress).decision).toBe('continue');
-    expect(Date.now() - t1).toBeLessThan(800);
 
-    const cancelling = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
-    const t2 = Date.now();
+    const cancelling = await hook(limits);
     const pendingCancel = invokeHook(cancelling, payload(0));
-    setTimeout(() => cancelling.policy.cancel(), 40);
+    await vi.waitFor(() => expect(cancelling.policy.snapshot()?.count).toBe(1));
+    cancelling.policy.cancel();
     expect(await pendingCancel).toEqual({});
-    expect(Date.now() - t2).toBeLessThan(800);
 
-    const poisoned = await hook({ initialBackoffMs: 2_000, maxBackoffMs: 2_000 });
-    const t3 = Date.now();
+    const poisoned = await hook(limits);
     const pendingPoisoned = invokeHook(poisoned, payload(0));
-    setTimeout(() => { void invokeHook(poisoned, '{bad json'); }, 40);
+    await vi.waitFor(() => expect(poisoned.policy.snapshot()?.count).toBe(1));
+    await invokeHook(poisoned, '{bad json');
     expect(await pendingPoisoned).toEqual({});
-    expect(Date.now() - t3).toBeLessThan(800);
     expect(poisoned.policy.finish()).toContain('invalid');
   });
   it('records unconfirmed issue if the hook client disconnects during backoff wait', async () => {
@@ -201,5 +226,20 @@ describe.skipIf(process.platform === 'win32')('packaged command hook and private
     socket.destroy();
     await new Promise(resolve => setTimeout(resolve, 40));
     expect(h.policy.finish()).toContain('invalid');
+  });
+  it.each([true, false])('retires a pending reply when a newer Stop reports fullyIdle=%s', async fullyIdle => {
+    const h = await hook({ initialBackoffMs: 10_000, maxBackoffMs: 10_000 });
+    const first = invokeHook(h, payload(0));
+    await vi.waitFor(() => expect(h.policy.snapshot()?.count).toBe(1));
+    const next = invokeHook(h, payload(1, { fullyIdle }));
+    expect(await first).toEqual({});
+    if (fullyIdle) {
+      expect(await next).toEqual({});
+    } else {
+      h.policy.progress();
+      expect((await next).decision).toBe('continue');
+      await invokeHook(h, payload(2, { fullyIdle: true }));
+    }
+    expect(h.policy.finish()).toBeUndefined();
   });
 });

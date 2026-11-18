@@ -108,7 +108,6 @@ export class AgyAcpBackend implements AgentBackend {
     toolName: string;
     nativeName: string;
     args: Record<string, unknown>;
-    commandExecution: boolean;
   }>();
   private completedTools = new Set<string>();
   private terminating = new Set<Promise<void>>();
@@ -362,7 +361,6 @@ export class AgyAcpBackend implements AgentBackend {
           toolName: display.toolName,
           nativeName,
           args: { ...display.args },
-          commandExecution: PROGRESS_NATIVE_TOOLS.has(nativeName.toLowerCase()),
         });
         this.emit({ type: 'tool-call', callId, ...display });
       } else {
@@ -394,7 +392,9 @@ export class AgyAcpBackend implements AgentBackend {
         this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
         // Status/wait tools completing do not prove the background command made
         // progress. They must not indefinitely reset the no-progress allowance.
-        if (tool.commandExecution) this.stopHook?.policy.progress();
+        if (update.status === 'completed' && PROGRESS_NATIVE_TOOLS.has(tool.nativeName.toLowerCase())) {
+          this.stopHook?.policy.progress();
+        }
         this.tools.delete(callId);
         this.completedTools.add(callId);
       }

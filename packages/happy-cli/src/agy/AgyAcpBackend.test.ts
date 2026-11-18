@@ -102,6 +102,19 @@ describe('persistent Antigravity ACP', () => {
       expect(messages.filter(m => m.type === 'tool-call').every(m => m.type === 'tool-call' && m.toolName === 'Bash')).toBe(true);
       agent.respond(request.id!, { stopReason: 'end_turn' }); await rejected;
     });
+    it('keeps the stalled continuation budget after a failed action', async () => {
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: true, stopHookLimits: { maxBackoffMs: 0, maxStalledContinuations: 1 } });
+      agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });
+      const pending = backend.sendPrompt('', 'background');
+      const request = await promptRequest(agent);
+      expect((await invokeStop(spawnFn, 0, false)).decision).toBe('continue');
+      agent.notify({ sessionUpdate: 'tool_call', toolCallId: 'edit', title: 'Edit file', kind: 'edit', status: 'failed' });
+      await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({ type: 'tool-result', isError: true })));
+      const decision = await invokeStop(spawnFn, 1, false);
+      agent.respond(request.id!, { stopReason: 'end_turn' });
+      await expect(pending).rejects.toThrow('no completed tool progress');
+      expect(decision).toEqual({});
+    });
     it.each(['printf DONE', 'Run read_file', 'Run schedule'])('resets the stalled allowance after a real command finishes despite its title: %s', async (title) => {
       const { backend, agent, spawnFn, messages } = setup({ stopHook: true, stopHookLimits: { maxBackoffMs: 0, maxStalledContinuations: 4 } });
       agent.setHandler((rpc, fallback) => { if (rpc.method !== 'session/prompt') fallback(rpc); });

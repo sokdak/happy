@@ -40,11 +40,15 @@ by this implementation.
   and `fullyIdle === false`. Cancellation, errors and native budget limits
   are never overridden. `continuationActive` is validated but is not a loop
   counter: AGY 1.5.9 reports false even during forced continuations.
+- Each turn tracks Stop observations for its own conversation. A newer
+  execution or a current idle observation withdraws an earlier continuation
+  still waiting in backoff. An older idle report cannot confirm newer work.
 - This compatibility hook requests at most **60** continuations per user request; at most **24** without newly
   completed work; at most **15 minutes** per stalled continuation streak (resetting when real work completes), checked
   at each Stop decision. Stalled continuations apply progressive backoff (**5s → 10s → … → 30s**) on the private control socket before returning `continue`, waking early as soon as an action tool (`run_command`, file edit/write, subagent delegation) completes over ACP or the turn is cancelled. These are continuation budgets, not a prompt timeout
   or a guaranteed token-cost ceiling. Completed status/wait tools (`manage_task`, `manage_subagents`, `schedule`) do not reset
-  the no-progress allowance or wake an in-flight backoff early. The native model can still use tokens
+  the no-progress allowance or wake an in-flight backoff early. An action
+  reported as `failed` over ACP also leaves that allowance intact. The native model can still use tokens
   or wait within an invocation.
 - No automatic new user prompt is sent. A hook `continue` still invokes the
   model again and may consume additional tokens. A single status check per wakeup is requested without creating redundant `schedule` timers; existing commands must not be rerun.
