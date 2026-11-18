@@ -10,7 +10,14 @@ import type { PermissionMode } from '@/api/types';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import { resolveAgyBin, resolveAgyModelName } from './constants';
 import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
-import { agyStopHookEnabled, AgyStopHook, type StopHookLimits } from './stopHook';
+import {
+  AgyStopHook,
+  resolveAgyStopHookSetting,
+  STOP_HOOK_LIMITS,
+  type StopHookLimits,
+  type StopHookOption,
+  type StopHookSetting,
+} from './stopHook';
 
 // AGY 1.5.9 omits rawInput.name on native calls. Only its exact "Run <id>"
 // labels for known native tools may override a broad ACP category such as other.
@@ -37,7 +44,9 @@ const PROGRESS_NATIVE_TOOLS = new Set([
   'swarm', 'run_workflow',
 ]);
 
-const VERIFIED_STOP_HOOK_VERSIONS = new Set(['1.5.9', '1.5.10']);
+const VERIFIED_STOP_HOOK_VERSIONS = new Set(['1.5.9', '1.5.10', '1.5.11']);
+const VERIFIED_POST_TURN_VERSIONS = new Set(['1.5.10', '1.5.11']);
+const MAX_COMPLETED_TOOLS = 4_096;
 
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
@@ -60,9 +69,19 @@ export interface AgyAcpOptions {
   spawnFn?: typeof spawn;
   requestTimeoutMs?: number;
   cancelGraceMs?: number;
-  /** Experimental AGY 1.5.9 workaround. Unset reads HAPPY_AGY_STOP_HOOK (default off). */
-  stopHook?: boolean;
+  /**
+   * Stop-hook mode:
+   * - unset: reads HAPPY_AGY_STOP_HOOK (auto-selects observer mode on verified AGY 1.5.10/1.5.11 Unix
+   *   and legacy continue mode on AGY 1.5.9 Unix; 0 disables all hooks).
+   * - true / '1': observer mode on AGY 1.5.10/1.5.11, legacy forced continuation on AGY 1.5.9.
+   * - 'observe': observer-only mode (`{}` response, verified AGY 1.5.10/1.5.11).
+   * - 'continue': explicit legacy forced continuation rollback.
+   * - false / '0': disables all Stop hooks.
+   */
+  stopHook?: StopHookOption;
   stopHookLimits?: Partial<StopHookLimits>;
+  permissionDenialSettleMs?: number;
+  observerSettleMs?: number;
 }
 
 function mergeDefinedArgs(
@@ -104,11 +123,21 @@ export class AgyAcpBackend implements AgentBackend {
   private cancelled = false;
   private disposed = false;
   private replaying = false;
+  private serverVersion: string | null = null;
+  private sessionAcceptingEvents = false;
+  private backgroundRunning = false;
+  private backgroundStepDirty = false;
+  private workEpoch = 0;
+  private pendingPermissions = 0;
+  private drainingCancelTools: (() => void) | null = null;
+  private observerWake: (() => void) | null = null;
   private tools = new Map<string, {
     toolName: string;
     nativeName: string;
     args: Record<string, unknown>;
     commandExecution: boolean;
+    isDaemon: boolean;
+    ownerEpoch: number;
   }>();
   private completedTools = new Set<string>();
   private terminating = new Set<Promise<void>>();
@@ -152,7 +181,72 @@ export class AgyAcpBackend implements AgentBackend {
     } finally { clearTimeout(timer); }
   }
 
+  private postTurnFollowupSupported(): boolean {
+    return this.serverVersion !== null && VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion);
+  }
+
+  private trackCompletedTool(callId: string): void {
+    this.completedTools.add(callId);
+    if (this.completedTools.size > MAX_COMPLETED_TOOLS) {
+      const oldest = this.completedTools.values().next().value;
+      if (oldest !== undefined) this.completedTools.delete(oldest);
+    }
+  }
+
+  private hasOpenForegroundTools(epoch: number): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.ownerEpoch === epoch && !tool.isDaemon) return true;
+    }
+    return false;
+  }
+
+  private hasAnyOpenNonDaemonTools(): boolean {
+    for (const tool of this.tools.values()) {
+      if (!tool.isDaemon) return true;
+    }
+    return false;
+  }
+
+  private settleDaemonTools(): void {
+    for (const [callId, tool] of this.tools) {
+      if (!tool.isDaemon) continue;
+      this.emit({
+        type: 'tool-result',
+        callId,
+        toolName: tool.toolName,
+        result: 'Background daemon continues running.',
+        isError: false,
+      });
+      this.tools.delete(callId);
+      this.trackCompletedTool(callId);
+    }
+  }
+
+  private closeUnresolvedTools(): void {
+    for (const [callId, tool] of this.tools) {
+      this.emit({
+        type: 'tool-result',
+        callId,
+        toolName: tool.toolName,
+        result: 'Completion was not reported. Background work may still be running.',
+        isError: true,
+      });
+      this.tools.delete(callId);
+      this.trackCompletedTool(callId);
+    }
+  }
+
   private stopProcess(): void {
+    this.workEpoch++;
+    this.sessionAcceptingEvents = false;
+    this.backgroundRunning = false;
+    this.backgroundStepDirty = false;
+    this.serverVersion = null;
+    this.drainingCancelTools?.();
+    this.drainingCancelTools = null;
+    if (!this.active && !this.cancelling && this.tools.size > 0) {
+      this.closeUnresolvedTools();
+    }
     this.rejectLifetime?.(new Error('Antigravity ACP process stopped'));
     this.rejectLifetime = undefined;
     this.stopHook?.close();
@@ -183,11 +277,15 @@ export class AgyAcpBackend implements AgentBackend {
     try { await this.starting; } finally { this.starting = null; }
   }
 
-  private async open(): Promise<void> {
+  private async open(hookSetting: StopHookSetting = resolveAgyStopHookSetting(this.options.stopHook)): Promise<void> {
     this.stopProcess();
     this.permissionAbort = new AbortController();
-    if (this.options.stopHook ?? agyStopHookEnabled()) {
-      this.stopHook = await AgyStopHook.create(this.options.stopHookLimits);
+    if (hookSetting === 'enabled' || hookSetting === 'observe' || hookSetting === 'continue'
+      || (hookSetting === 'auto' && process.platform !== 'win32')) {
+      this.stopHook = await AgyStopHook.create(
+        this.options.stopHookLimits,
+        hookSetting === 'observe' ? 'observe' : 'continue',
+      );
       if (this.disposed || this.cancelled) { this.stopProcess(); throw new AgyCancelledError(); }
     }
     let child: ChildProcess;
@@ -206,6 +304,19 @@ export class AgyAcpBackend implements AgentBackend {
       child.once('exit', () => {
         reject(new Error('Antigravity ACP process exited'));
         if (this.child === child) {
+          const hadPostTurnWork = !this.active && !this.cancelling && (this.backgroundRunning || this.tools.size > 0);
+          this.sessionAcceptingEvents = false;
+          this.backgroundRunning = false;
+          this.backgroundStepDirty = false;
+          this.serverVersion = null;
+          this.drainingCancelTools?.();
+          this.drainingCancelTools = null;
+          if (!this.active && !this.cancelling && this.tools.size > 0) {
+            this.closeUnresolvedTools();
+          }
+          if (hadPostTurnWork) {
+            this.emit({ type: 'status', status: 'error', detail: 'Antigravity ACP process exited' });
+          }
           this.stopHook?.close(); this.stopHook = null;
           this.connection = null;
           this.permissionAbort.abort();
@@ -233,8 +344,33 @@ export class AgyAcpBackend implements AgentBackend {
         protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'happy', version: '1' },
       }), this.lifetime]));
       this.capabilities = initialized.agentCapabilities ?? {};
-      if (this.stopHook && (!initialized.agentInfo?.version || !VERIFIED_STOP_HOOK_VERSIONS.has(initialized.agentInfo.version))) {
-        throw new Error('The experimental Stop hook is verified only with AGY 1.5.9 and 1.5.10. Set HAPPY_AGY_STOP_HOOK=0 for this version.');
+      this.serverVersion = initialized.agentInfo?.version ?? null;
+      if (this.stopHook) {
+        if (hookSetting === 'auto') {
+          if (!this.serverVersion || !VERIFIED_STOP_HOOK_VERSIONS.has(this.serverVersion)) {
+            // AGY reads hook workspaces at startup. Discard the hook-enabled process before
+            // creating/loading any conversation so an unrecognized version never executes it.
+            this.options.log?.('Antigravity ACP version has no verified Stop hook. Using native turn completion.');
+            return this.open('off');
+          }
+          this.stopHook.policy.setMode(
+            VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion) ? 'observe' : 'continue',
+          );
+        } else if (hookSetting === 'observe') {
+          if (!this.serverVersion || !VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion)) {
+            throw new Error(`The observer Stop hook is verified only with AGY ${[...VERIFIED_POST_TURN_VERSIONS].join(', ')}. Set HAPPY_AGY_STOP_HOOK=0 for this version.`);
+          }
+          this.stopHook.policy.setMode('observe');
+        } else {
+          if (!this.serverVersion || !VERIFIED_STOP_HOOK_VERSIONS.has(this.serverVersion)) {
+            throw new Error(`The experimental Stop hook is verified only with AGY ${[...VERIFIED_STOP_HOOK_VERSIONS].join(', ')}. Set HAPPY_AGY_STOP_HOOK=0 for this version.`);
+          }
+          this.stopHook.policy.setMode(
+            hookSetting === 'enabled' && VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion)
+              ? 'observe'
+              : 'continue',
+          );
+        }
       }
       if (this.sessionId) {
         if (!this.capabilities.loadSession) throw new Error('Antigravity does not support loading the requested ACP session');
@@ -248,6 +384,8 @@ export class AgyAcpBackend implements AgentBackend {
         const created = await this.control(Promise.race([connection.newSession({ cwd: this.options.cwd, mcpServers: this.options.mcpServers ?? [] }), this.lifetime]));
         this.sessionId = created.sessionId;
         this.metadata = created;
+        this.tools.clear();
+        this.completedTools.clear();
       }
       if (this.disposed || this.child !== child) throw new Error('Antigravity ACP connection closed');
       this.emit({ type: 'event', name: 'agy_session_id', payload: this.sessionId });
@@ -289,25 +427,36 @@ export class AgyAcpBackend implements AgentBackend {
     if (this.active) throw new Error('An Antigravity turn is already running');
     this.cancelled = false;
     this.permissionDenied = false;
-    this.tools.clear();
-    this.completedTools.clear();
+    this.backgroundRunning = false;
+    this.backgroundStepDirty = false;
     const active = this.runPrompt(prompt, images).finally(() => {
       if (this.active === active) this.active = null;
-      this.options.resetPermissions?.();
     });
     this.active = active;
     await active;
   }
 
   private async runPrompt(prompt: string, images: ContentBlock[]): Promise<void> {
+    let preserveBackgroundSession = false;
+    let hookBegan = false;
     this.emit({ type: 'status', status: 'running' });
     try {
       await this.connect();
+      const epoch = ++this.workEpoch;
+      if (!this.postTurnFollowupSupported()) {
+        this.tools.clear();
+        this.completedTools.clear();
+      } else {
+        this.sessionAcceptingEvents = true;
+      }
       if (images.length && !this.capabilities.promptCapabilities?.image) throw new Error('Antigravity ACP does not support image input');
       await this.configure();
       if (this.cancelled) throw new AgyCancelledError();
       const hook = this.stopHook;
-      hook?.policy.begin(this.sessionId!);
+      if (hook) {
+        hook.policy.begin(this.sessionId!);
+        hookBegan = true;
+      }
       const response = await Promise.race([this.connection!.prompt({
         sessionId: this.sessionId!, prompt: [{ type: 'text', text: this.options.initialPrompt && !this.initialPromptDelivered
           ? `${this.options.initialPrompt}\n\n${prompt}` : prompt }, ...images],
@@ -315,23 +464,73 @@ export class AgyAcpBackend implements AgentBackend {
       if (this.cancelled || response.stopReason === 'cancelled') throw new AgyCancelledError();
       if (response.stopReason !== 'end_turn') throw new Error(`Antigravity stopped: ${response.stopReason}`);
       this.initialPromptDelivered = true;
+      const isObserverHook = hook?.policy.getMode() === 'observe';
+      if (hook && isObserverHook) {
+        const initialSnap = hook.policy.snapshot();
+        if (!initialSnap?.seen && this.permissionDenied) {
+          throw new Error('Antigravity stopped after a tool permission was denied. The denied action was not approved.'
+            + (this.hasAnyOpenNonDaemonTools() ? ' Other background work may still be running; completion is unconfirmed.' : ''));
+        }
+        if (initialSnap?.seen && !initialSnap.issue && initialSnap.fullyIdle === false) {
+          this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
+          this.permissionDenied = false;
+          await Promise.race([this.waitForObservedIdle(hook, epoch), this.lifetime]);
+          if (this.cancelled) throw new AgyCancelledError();
+        } else if (initialSnap?.seen && !initialSnap.issue && initialSnap.fullyIdle === true && this.hasOpenForegroundTools(epoch)) {
+          // Cross-FD sync: give stdout pipe a brief settle if Stop arrived just ahead of tool_call_update(completed).
+          await Promise.race([this.waitForPipeToolSync(epoch), this.lifetime]);
+          if (this.cancelled) throw new AgyCancelledError();
+        }
+      }
       const hookIssue = hook?.policy.finish();
       const state = hook?.policy.snapshot();
       if (hook) {
-        this.options.log?.(`Antigravity Stop hook: ${state?.count ?? 0} continuations, idle=${state?.fullyIdle ?? 'unknown'}`);
+        if (isObserverHook) {
+          this.options.log?.(`Antigravity Stop hook: 0 continuations, mode=observe, observations=${state?.observations ?? 0}, idle=${state?.fullyIdle ?? 'unknown'}`);
+        } else {
+          this.options.log?.(`Antigravity Stop hook: ${state?.count ?? 0} continuations, idle=${state?.fullyIdle ?? 'unknown'}`);
+        }
       }
       // Rejection sometimes skips Stop entirely. A valid final idle observation
       // still permits a graceful agent response explaining the denied action.
       if (hook && this.permissionDenied && !state?.seen) {
         throw new Error('Antigravity stopped after a tool permission was denied. The denied action was not approved.'
-          + (this.tools.size ? ' Other background work may still be running; completion is unconfirmed.' : ''));
+          + (this.hasAnyOpenNonDaemonTools() ? ' Other background work may still be running; completion is unconfirmed.' : ''));
       }
       if (hookIssue) throw new Error(`${hookIssue}. Completion is unconfirmed; background work may still be running.`);
-      if (this.tools.size) throw new Error('Antigravity ended its response before all tool results arrived. Work may still be running; completion is unconfirmed.');
+      const hasOpenTools = this.postTurnFollowupSupported()
+        ? this.hasOpenForegroundTools(epoch)
+        : this.tools.size > 0;
+      if (hasOpenTools) {
+        if (this.postTurnFollowupSupported() && !hook) {
+          preserveBackgroundSession = true;
+          this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
+        }
+        throw new Error('Antigravity ended its response before all tool results arrived. Work may still be running; completion is unconfirmed.');
+      }
+      this.settleDaemonTools();
+      if (this.postTurnFollowupSupported()) {
+        preserveBackgroundSession = true;
+      }
       this.emit({ type: 'status', status: 'idle' });
     } catch (error) {
-      if (this.stopHook) this.stopProcess();
-      if (this.cancelled || error instanceof AgyCancelledError) throw new AgyCancelledError();
+      const isCancel = this.cancelled || error instanceof AgyCancelledError;
+      if (this.stopHook) {
+        const snap = this.stopHook.policy.snapshot();
+        const dirtyObserverTurn = (hookBegan && (!snap?.seen || snap.fullyIdle !== true || Boolean(snap.issue)))
+          || this.hasAnyOpenNonDaemonTools();
+        if (this.stopHook.policy.getMode() === 'continue' || (!isCancel && dirtyObserverTurn)) {
+          preserveBackgroundSession = false;
+          this.stopProcess();
+        }
+      }
+      if (isCancel) {
+        preserveBackgroundSession = false;
+        throw new AgyCancelledError();
+      }
+      if (!this.connection || this.connection.signal.aborted) {
+        preserveBackgroundSession = false;
+      }
       const message = error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
         ? error.message : 'Antigravity ACP failed';
       const detail = sanitizeDiagnosticText(message, 2_000);
@@ -339,30 +538,244 @@ export class AgyAcpBackend implements AgentBackend {
       throw new Error(detail);
     } finally {
       this.stopHook?.policy.cancel();
-      // ACP ending (or acknowledging cancellation) does not prove that native
-      // background commands were stopped. Close the UI card without inventing
-      // a command outcome; the error flag describes missing confirmation.
-      for (const [callId, tool] of this.tools) this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: 'Completion was not reported. Background work may still be running.', isError: true });
-      this.tools.clear();
+      if (!preserveBackgroundSession) {
+        this.sessionAcceptingEvents = false;
+        // When cancelActive() is running, let cancelActive() drain cooperative
+        // tool_call_update(failed) notifications before closing leftover cards.
+        if (!this.cancelling) {
+          this.closeUnresolvedTools();
+          if (this.pendingPermissions === 0) {
+            this.options.resetPermissions?.();
+          }
+        }
+      }
     }
   }
 
+  private waitForPipeToolSync(epoch: number): Promise<void> {
+    const syncMs = Math.max(20, (this.options.observerSettleMs ?? 25) * 4);
+    return new Promise<void>((resolve) => {
+      if (!this.hasOpenForegroundTools(epoch)) { resolve(); return; }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = () => {
+        if (timer) clearTimeout(timer);
+        if (this.observerWake === wake) this.observerWake = null;
+        resolve();
+      };
+      const wake = () => {
+        if (this.cancelled || this.disposed || !this.hasOpenForegroundTools(epoch)) done();
+      };
+      this.observerWake = wake;
+      timer = setTimeout(done, syncMs);
+    });
+  }
+
+  private waitForObservedIdle(hook: AgyStopHook, epoch: number): Promise<void> {
+    const maxWaitMs = Math.max(50, this.options.stopHookLimits?.maxContinuationMs ?? STOP_HOOK_LIMITS.maxContinuationMs);
+    const denialSettleMs = Math.max(20, this.options.permissionDenialSettleMs ?? 1_500);
+    const settleMs = Math.max(0, this.options.observerSettleMs ?? 25);
+    const pipeSyncMs = Math.max(80, settleMs * 4);
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let lastObservations = hook.policy.snapshot()?.observations ?? 1;
+      let lastProgress = hook.policy.snapshot()?.progress ?? 0;
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      let denialTimer: ReturnType<typeof setTimeout> | undefined;
+      let settleTimer: ReturnType<typeof setTimeout> | undefined;
+      let pipeSyncTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        clearTimeout(denialTimer);
+        clearTimeout(settleTimer);
+        clearTimeout(pipeSyncTimer);
+        unsubscribe();
+        if (this.observerWake === evaluate) this.observerWake = null;
+      };
+
+      const resetDeadline = () => {
+        clearTimeout(deadlineTimer);
+        deadlineTimer = setTimeout(() => {
+          hook.policy.failWith('continuation time limit reached');
+        }, maxWaitMs);
+      };
+
+      const evaluate = () => {
+        if (settled) return;
+        if (this.cancelled || this.disposed) {
+          cleanup();
+          reject(new AgyCancelledError());
+          return;
+        }
+        const state = hook.policy.snapshot();
+        if (!state || !state.active || state.issue) {
+          cleanup();
+          resolve();
+          return;
+        }
+        if (state.progress !== lastProgress) {
+          lastProgress = state.progress;
+          resetDeadline();
+        }
+        if (state.observations > lastObservations) {
+          lastObservations = state.observations;
+          this.permissionDenied = false;
+          clearTimeout(denialTimer);
+          denialTimer = undefined;
+          if (state.fullyIdle === false) {
+            this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
+          }
+        }
+        // AGY 1.5.10 skips Stop when a reactive-wakeup permission request is rejected.
+        if (!this.permissionDenied || this.pendingPermissions > 0) {
+          clearTimeout(denialTimer);
+          denialTimer = undefined;
+        } else if (state.fullyIdle !== true && !denialTimer) {
+          denialTimer = setTimeout(() => {
+            denialTimer = undefined;
+            if (settled || !this.permissionDenied || this.pendingPermissions > 0) return;
+            cleanup();
+            reject(new Error('Antigravity stopped after a tool permission was denied. The denied action was not approved.'
+              + (this.hasAnyOpenNonDaemonTools() ? ' Other background work may still be running; completion is unconfirmed.' : '')));
+          }, denialSettleMs);
+        }
+        if (state.fullyIdle === true) {
+          clearTimeout(denialTimer);
+          denialTimer = undefined;
+          if (this.pendingPermissions === 0 && !this.hasOpenForegroundTools(epoch) && !this.hasAnyOpenNonDaemonTools()) {
+            clearTimeout(pipeSyncTimer);
+            pipeSyncTimer = undefined;
+            if (!settleTimer) {
+              settleTimer = setTimeout(() => {
+                settleTimer = undefined;
+                if (settled) return;
+                if (this.cancelled || this.disposed) {
+                  cleanup();
+                  reject(new AgyCancelledError());
+                  return;
+                }
+                const latest = hook.policy.snapshot();
+                if (!latest || !latest.active || latest.issue
+                  || (latest.fullyIdle === true && this.pendingPermissions === 0 && !this.hasAnyOpenNonDaemonTools())) {
+                  cleanup();
+                  resolve();
+                }
+              }, settleMs);
+            }
+          } else {
+            clearTimeout(settleTimer);
+            settleTimer = undefined;
+            if (this.pendingPermissions === 0 && !pipeSyncTimer) {
+              pipeSyncTimer = setTimeout(() => {
+                pipeSyncTimer = undefined;
+                if (settled) return;
+                const latest = hook.policy.snapshot();
+                if (latest?.fullyIdle === true && this.pendingPermissions === 0) {
+                  cleanup();
+                  resolve();
+                }
+              }, pipeSyncMs);
+            }
+          }
+        } else {
+          clearTimeout(settleTimer);
+          settleTimer = undefined;
+          clearTimeout(pipeSyncTimer);
+          pipeSyncTimer = undefined;
+        }
+      };
+
+      this.observerWake = evaluate;
+      const unsubscribe = hook.policy.subscribe(evaluate);
+      resetDeadline();
+      evaluate();
+    });
+  }
+
   private update({ sessionId, update }: SessionNotification): void {
-    if (this.replaying || this.cancelled || sessionId !== this.sessionId || !this.active) return;
+    if (this.cancelling) {
+      if (
+        sessionId === this.sessionId
+        && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
+        && (update.status === 'completed' || update.status === 'failed')
+      ) {
+        const callId = update.toolCallId;
+        const tool = this.tools.get(callId);
+        if (tool) {
+          this.emit({
+            type: 'tool-result',
+            callId,
+            toolName: tool.toolName,
+            result: update.status === 'failed' ? 'Antigravity tool failed.' : null,
+            isError: update.status === 'failed',
+          });
+          this.tools.delete(callId);
+          this.trackCompletedTool(callId);
+          if (!this.hasAnyOpenNonDaemonTools()) {
+            this.drainingCancelTools?.();
+          }
+        }
+      }
+      return;
+    }
+    if (this.replaying || this.cancelled || this.disposed || sessionId !== this.sessionId || (!this.active && !this.sessionAcceptingEvents)) return;
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
+      if (update.content.text && this.permissionDenied) {
+        this.permissionDenied = false;
+        this.observerWake?.();
+      }
+      if (!this.active && update.content.text) {
+        if (!this.backgroundRunning) {
+          this.backgroundRunning = true;
+          this.emit({ type: 'status', status: 'running' });
+        }
+        this.backgroundStepDirty = true;
+      }
       this.emit({ type: 'model-output', textDelta: update.content.text });
     } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {
+      if (update.content.text && this.permissionDenied) {
+        this.permissionDenied = false;
+        this.observerWake?.();
+      }
+      if (!this.active && update.content.text) {
+        if (!this.backgroundRunning) {
+          this.backgroundRunning = true;
+          this.emit({ type: 'status', status: 'running' });
+        }
+        this.backgroundStepDirty = true;
+      }
       this.emit({ type: 'event', name: 'thinking', payload: { text: update.content.text, streaming: true } });
+    } else if (update.sessionUpdate === 'usage_update') {
+      if (!this.active) {
+        if (this.backgroundStepDirty) {
+          this.backgroundStepDirty = false;
+          this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
+        }
+        if (this.backgroundRunning && !this.hasAnyOpenNonDaemonTools() && this.pendingPermissions === 0) {
+          this.backgroundRunning = false;
+        }
+      }
     } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
       const callId = update.toolCallId;
       if (this.completedTools.has(callId)) return;
+      if (!this.active) {
+        this.backgroundStepDirty = false;
+        if (!this.backgroundRunning && update.status !== 'completed' && update.status !== 'failed') {
+          this.backgroundRunning = true;
+          this.emit({ type: 'status', status: 'running' });
+        }
+      }
       if (!this.tools.has(callId)) {
-        const { nativeName, display } = this.describeTool(update);
+        const { nativeName, isDaemon, display } = this.describeTool(update);
         this.tools.set(callId, {
           toolName: display.toolName,
           nativeName,
           args: { ...display.args },
           commandExecution: PROGRESS_NATIVE_TOOLS.has(nativeName.toLowerCase()),
+          isDaemon,
+          ownerEpoch: this.workEpoch,
         });
         this.emit({ type: 'tool-call', callId, ...display });
       } else {
@@ -392,11 +805,12 @@ export class AgyAcpBackend implements AgentBackend {
         // Raw outputs may contain entire files/secrets. Happy currently renders lifecycle only.
         const tool = this.tools.get(callId)!;
         this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
-        // Status/wait tools completing do not prove the background command made
-        // progress. They must not indefinitely reset the no-progress allowance.
-        if (tool.commandExecution) this.stopHook?.policy.progress();
+        // Status/wait tools and failed actions do not prove the background command
+        // made progress. They must not indefinitely reset the no-progress allowance.
+        if (update.status === 'completed' && tool.commandExecution) this.stopHook?.policy.progress();
         this.tools.delete(callId);
-        this.completedTools.add(callId);
+        this.trackCompletedTool(callId);
+        this.observerWake?.();
       }
     }
   }
@@ -451,6 +865,7 @@ export class AgyAcpBackend implements AgentBackend {
       : update.kind === 'search' ? searchTool
       : update.kind === 'edit' ? editTool
       : update.kind ? kindTool[update.kind] ?? update.kind : 'agy_tool';
+    const isDaemon = (name === 'run_command' || name === 'schedule') && parameters.IsDaemon === true;
     const diffFallback: Record<string, unknown> = diffBlock
       ? {
           Path: diffBlock.path,
@@ -463,14 +878,20 @@ export class AgyAcpBackend implements AgentBackend {
       Object.entries(parameters).filter(([, value]) => value !== undefined && value !== null),
     );
     const mergedParameters = diffBlock ? { ...diffFallback, ...definedParameters } : parameters;
-    return { nativeName: name, display: mapAgyToolToDisplay(name, mergedParameters) };
+    return { nativeName: name, isDaemon, display: mapAgyToolToDisplay(name, mergedParameters) };
   }
 
   private async permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const cancelled: RequestPermissionResponse = { outcome: { outcome: 'cancelled' } };
-    if (request.sessionId !== this.sessionId || this.cancelled || this.disposed || !this.active) return cancelled;
+    if (request.sessionId !== this.sessionId || this.cancelled || this.disposed || this.cancelling || (!this.active && !this.sessionAcceptingEvents)) return cancelled;
     const signal = this.permissionAbort.signal;
     if (signal.aborted) return cancelled;
+    if (!this.active && !this.backgroundRunning) {
+      this.backgroundRunning = true;
+      this.emit({ type: 'status', status: 'running' });
+    }
+    this.pendingPermissions++;
+    this.observerWake?.();
     let abort: (() => void) | undefined;
     const aborted = new Promise<null>((resolve) => {
       abort = () => resolve(null);
@@ -482,45 +903,80 @@ export class AgyAcpBackend implements AgentBackend {
       const result = bypass ? { decision: 'approved' as const } : this.options.requestPermission
         ? await Promise.race([this.options.requestPermission(request.toolCall.toolCallId, display.toolName, display.args), aborted])
         : { decision: 'denied' as const };
-      if (!result || this.cancelled || signal.aborted || result.decision === 'abort') return cancelled;
+      if (!result || this.cancelled || this.disposed || signal.aborted || (!this.active && !this.sessionAcceptingEvents) || result.decision === 'abort') return cancelled;
       const approved = result.decision === 'approved' || result.decision === 'approved_for_session';
-      if (!approved) this.permissionDenied = true;
+      this.permissionDenied = !approved;
       const option = request.options.find((option) => option.kind === (approved ? 'allow_once' : 'reject_once'));
       return option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : cancelled;
     } catch { return cancelled; }
-    finally { if (abort) signal.removeEventListener('abort', abort); }
+    finally {
+      this.pendingPermissions = Math.max(0, this.pendingPermissions - 1);
+      if (abort) signal.removeEventListener('abort', abort);
+      this.observerWake?.();
+    }
   }
 
   async cancel(): Promise<void> {
     if (this.cancelling) return this.cancelling;
-    if (!this.active) return;
+    if (!this.active && !this.sessionAcceptingEvents) return;
     this.cancelling = this.cancelActive();
     try { await this.cancelling; } finally { this.cancelling = null; }
   }
 
   private async cancelActive(): Promise<void> {
-    if (!this.active) return;
+    const active = this.active;
+    const hadPostTurnSession = !active && this.sessionAcceptingEvents;
+    if (!active && !hadPostTurnSession) return;
+    const hookSnapBeforeCancel = this.stopHook?.policy.snapshot();
+    const hadToollessBackgroundWait = Boolean(
+      hookSnapBeforeCancel?.seen
+      && hookSnapBeforeCancel.fullyIdle === false
+      && !this.hasAnyOpenNonDaemonTools(),
+    );
+    this.workEpoch++;
     this.cancelled = true;
+    this.sessionAcceptingEvents = false;
+    this.backgroundRunning = false;
+    this.backgroundStepDirty = false;
     this.stopHook?.policy.cancel();
+    this.observerWake?.();
     this.permissionAbort.abort();
     this.options.resetPermissions?.();
-    const active = this.active;
     try {
-      if (this.connection && this.sessionId) void this.connection.cancel({ sessionId: this.sessionId }).catch(() => {});
+      if (this.connection && this.sessionId) await this.connection.cancel({ sessionId: this.sessionId }).catch(() => {});
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([active.catch(() => {}), new Promise<void>((resolve) => {
-          timer = setTimeout(() => { this.stopProcess(); resolve(); }, this.options.cancelGraceMs ?? 5_000);
-        })]);
-        // stopProcess rejects the logical connection immediately, independently
-        // of a slow child exit. Drain the turn's finally before accepting a new one.
-        await active.catch(() => {});
+        if (active) {
+          await Promise.race([active.catch(() => {}), new Promise<void>((resolve) => {
+            timer = setTimeout(() => { this.stopProcess(); resolve(); }, this.options.cancelGraceMs ?? 5_000);
+          })]);
+          // stopProcess rejects the logical connection immediately, independently
+          // of a slow child exit. Drain the turn's finally before accepting a new one.
+          await active.catch(() => {});
+        }
+        if (this.postTurnFollowupSupported() && this.hasAnyOpenNonDaemonTools() && this.connection && !this.connection.signal.aborted) {
+          clearTimeout(timer);
+          await Promise.race([
+            new Promise<void>((resolve) => {
+              this.drainingCancelTools = resolve;
+              if (!this.hasAnyOpenNonDaemonTools()) resolve();
+            }),
+            this.lifetime.catch(() => {}),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(() => { this.stopProcess(); resolve(); }, this.options.cancelGraceMs ?? 5_000);
+            }),
+          ]);
+        }
       } finally { clearTimeout(timer); }
     } finally {
-      // Cancelled hook invocations must not see a subsequent turn's state.
-      // Reconnect/load the exact session with a fresh socket on the next request.
-      // This stops the ACP process, not independently running native commands.
-      if (this.stopHook) this.stopProcess();
+      this.drainingCancelTools = null;
+      this.closeUnresolvedTools();
+      // Legacy forced-continuation hooks can have an in-flight shell script, and
+      // toolless background waits (subagents/timers/reactive streams) emit no
+      // tool_call_update(failed) barrier on session/cancel; retire and reload cleanly.
+      if (this.stopHook && (this.stopHook.policy.getMode() === 'continue' || hadToollessBackgroundWait)) {
+        this.stopProcess();
+      }
       this.permissionAbort = new AbortController();
     }
   }

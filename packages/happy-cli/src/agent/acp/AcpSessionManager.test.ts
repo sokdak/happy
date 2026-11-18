@@ -473,3 +473,75 @@ describe('opt-in tool completion status', () => {
     expect((end.ev as any).call).toBe(permCallId);
   });
 });
+
+describe('opt-in post-turn followups for AGY', () => {
+  it('attaches late tool completions, late permissions, and step-flushed text to the originating turn without affecting default runners', () => {
+    const defaultMapper = new AcpSessionManager({ forwardToolResults: true });
+    defaultMapper.startTurn();
+    const [defaultStart] = defaultMapper.mapMessage({ type: 'tool-call', callId: 'bg-1', toolName: 'Bash', args: {} });
+    defaultMapper.endTurn('failed');
+    const [defaultLateEnd] = defaultMapper.mapMessage({ type: 'tool-result', callId: 'bg-1', toolName: 'Bash', result: null, isError: false });
+    expect(defaultLateEnd.turn).toBeUndefined();
+    expect((defaultLateEnd.ev as any).call).not.toBe((defaultStart.ev as any).call);
+
+    const agyMapper = new AcpSessionManager({
+      preserveTextWhitespace: true,
+      forwardToolResults: true,
+      allowPostTurnFollowups: true,
+    });
+    const [turnStart] = agyMapper.startTurn();
+    const [bgStart] = agyMapper.mapMessage({ type: 'tool-call', callId: 'bg-1', toolName: 'Bash', args: { command: 'python3 bg.py' } });
+    agyMapper.mapMessage({ type: 'model-output', textDelta: 'WAITING_INITIAL' });
+    const ended = agyMapper.endTurn('failed');
+    expect(ended.map(e => e.ev.t)).toEqual(['text', 'turn-end']);
+
+    // Post-turn background completion + late permission + followup tool + final text
+    const [bgEnd] = agyMapper.mapMessage({ type: 'tool-result', callId: 'bg-1', toolName: 'Bash', result: null, isError: false });
+    expect(bgEnd.turn).toBe(turnStart.turn);
+    expect((bgEnd.ev as any).call).toBe((bgStart.ev as any).call);
+
+    const latePermCallId = agyMapper.resolveSessionCallId('followup-1');
+    const [followupStart] = agyMapper.mapMessage({ type: 'tool-call', callId: 'followup-1', toolName: 'Bash', args: { command: 'python3 followup.py' } });
+    const [followupEnd] = agyMapper.mapMessage({ type: 'tool-result', callId: 'followup-1', toolName: 'Bash', result: null, isError: false });
+    expect(followupStart.turn).toBe(turnStart.turn);
+    expect((followupStart.ev as any).call).toBe(latePermCallId);
+    expect((followupEnd.ev as any).call).toBe(latePermCallId);
+
+    expect(agyMapper.mapMessage({ type: 'model-output', textDelta: '\n\nFINAL_VISIBLE' })).toEqual([]);
+    const [flushedFinal] = agyMapper.mapMessage({ type: 'event', name: 'agy_step_complete', payload: null });
+    expect(flushedFinal.turn).toBe(turnStart.turn);
+    expect(flushedFinal.ev).toEqual({ t: 'text', text: '\n\nFINAL_VISIBLE' });
+  });
+
+  it('flushes buffered post-turn text onto the previous turn before starting a new turn and preserves call IDs across overlap', () => {
+    const mapper = new AcpSessionManager({
+      preserveTextWhitespace: true,
+      forwardToolResults: true,
+      allowPostTurnFollowups: true,
+    });
+    const [turn1] = mapper.startTurn();
+    const [bgStart] = mapper.mapMessage({ type: 'tool-call', callId: 'bg-overlap', toolName: 'Bash', args: {} });
+    mapper.endTurn('failed');
+
+    // Unflushed late text before turn 2 begins
+    mapper.mapMessage({ type: 'model-output', textDelta: 'LATE_FROM_TURN_1' });
+    const turn2StartEnvelopes = mapper.startTurn();
+    expect(turn2StartEnvelopes).toHaveLength(2);
+    expect(turn2StartEnvelopes[0].turn).toBe(turn1.turn);
+    expect(turn2StartEnvelopes[0].ev).toEqual({ t: 'text', text: 'LATE_FROM_TURN_1' });
+    expect(turn2StartEnvelopes[1].ev.t).toBe('turn-start');
+    const turn2Id = turn2StartEnvelopes[1].turn!;
+    expect(turn2Id).not.toBe(turn1.turn);
+
+    // Background tool from turn 1 finishes during turn 2: keeps exact CUID2 call ID!
+    const [bgEnd] = mapper.mapMessage({ type: 'tool-result', callId: 'bg-overlap', toolName: 'Bash', result: null, isError: false });
+    expect((bgEnd.ev as any).call).toBe((bgStart.ev as any).call);
+    expect(bgEnd.turn).toBe(turn2Id);
+
+    mapper.endTurn('completed');
+    mapper.resetSessionCallIds();
+    mapper.startTurn();
+    const [freshCall] = mapper.mapMessage({ type: 'tool-call', callId: 'bg-overlap', toolName: 'Bash', args: {} });
+    expect((freshCall.ev as any).call).not.toBe((bgStart.ev as any).call);
+  });
+});

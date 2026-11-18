@@ -122,7 +122,10 @@ try {
       for (const command of expectedCommands) {
         assert.equal(calls.filter(m => m.type === 'tool-call' && m.args.command === command).length, 1, 'missing/duplicated command');
       }
-      assert(logs.some(l => /[1-9]\d* continuations/.test(l)), 'fixture did not exercise Stop continuation');
+      assert(
+        logs.some(l => /[1-9]\d* continuations|mode=observe, observations=[2-9]\d*|mode=observe, observations=\d{2,}/.test(l)),
+        'fixture did not exercise Stop hook across background wakeup',
+      );
       if (scenario === 'single') {
         const offset = messages.length;
         await run('Reply with the exact context marker from the previous request. No tools.');
