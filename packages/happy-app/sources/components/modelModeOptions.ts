@@ -172,11 +172,12 @@ export function getGeminiPermissionModes(translate: Translate): PermissionMode[]
 // mapped onto these rows by retireModelMode.
 //
 // Sonnet 5.5 and Haiku 5.5 are in that table from Claude Code 2.1.287 and
-// 2.1.293. happy-cli now requires Agent SDK 0.3.295 (2.1.295), but an older
-// install can still carry 0.3.283 (2.1.283), which runs them as unknown
-// models: at 200K, compacting early.
+// 2.1.293; Fable 5.2 is in the table from 2.1.328. happy-cli requires Agent
+// SDK 0.3.328 (2.1.328) so all of these models use their native context window.
+// Older installs can treat newer models as unknown and compact at 200K.
 export function getClaudeModelModes(): ModelMode[] {
     return [
+        { key: 'claude-fable-5-2', name: 'Fable 5.2', description: '1M context', providerId: 'anthropic', providerName: 'Anthropic' },
         { key: 'claude-fable-5-1', name: 'Fable 5.1', description: '1M context', providerId: 'anthropic', providerName: 'Anthropic' },
         { key: 'claude-fable-5', name: 'Fable 5', description: null, providerId: 'anthropic', providerName: 'Anthropic' },
         { key: 'claude-opus-5-5', name: 'Opus 5.5', description: null, providerId: 'anthropic', providerName: 'Anthropic' },
@@ -464,6 +465,18 @@ export function getAvailableModels(
     }
     const metadataModels = mapMetadataOptions(metadata?.models);
     if (metadataModels.length > 0) {
+        if (flavor === 'claude' || flavor == null) {
+            // Legacy Claude metadata can outlive the catalog it was published
+            // with. Keep newly supported models selectable while preserving
+            // advertised labels and workspace-specific model IDs. Rig owns
+            // its catalog and already returned above.
+            const modelsByKey = new Map<string, ModelMode>(getClaudeModelModes().map((model) => [model.key, model]));
+            for (const model of metadataModels) {
+                const key = retireModelMode(flavor, model.key);
+                modelsByKey.set(key, { ...modelsByKey.get(key), ...model, key });
+            }
+            return includeConfiguredModel(flavor, [...modelsByKey.values()], selectedKey);
+        }
         if (flavor === 'codex' && !metadataModels.some((model) => model.key === 'default')) {
             return [{ key: 'default', name: 'default model', description: null }, ...metadataModels];
         }

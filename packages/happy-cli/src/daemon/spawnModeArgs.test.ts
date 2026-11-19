@@ -28,6 +28,16 @@ describe('daemon spawn mode arguments', () => {
     expect(args).toEqual([]);
   });
 
+  it.each(['claude-fable-5-2', 'claude-fable-5-2[1m]', 'claude-fable-5-1', 'fable5'])(
+    'forwards the explicit Claude model %s unchanged', (modelMode) => {
+      const args: string[] = [];
+
+      appendDaemonSpawnModeArgs(args, { directory: '/repo', modelMode }, 'claude');
+
+      expect(args).toEqual(['--model', modelMode]);
+    },
+  );
+
   it('forwards explicit Codex permission, model, and effort selections', () => {
     const args: string[] = [];
 
