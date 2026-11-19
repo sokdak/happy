@@ -137,6 +137,7 @@ export function retirePermissionMode<T extends string | null | undefined>(mode: 
  * it as a saved row instead (includeConfiguredModel).
  */
 const RETIRED_CLAUDE_MODEL_MODES: Record<string, string> = {
+    'claude-fable-5-2[1m]': 'claude-fable-5-2',
     'claude-fable-5-1[1m]': 'claude-fable-5-1',
     'claude-opus-5-5[1m]': 'claude-opus-5-5',
     'claude-opus-5[1m]': 'claude-opus-5',

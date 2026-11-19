@@ -71,6 +71,7 @@ describe('agent defaults', () => {
     });
 
     it.each([
+        ['claude-fable-5-2[1m]', 'claude-fable-5-2'],
         ['claude-fable-5-1[1m]', 'claude-fable-5-1'],
         ['claude-opus-5-5[1m]', 'claude-opus-5-5'],
         ['claude-opus-5[1m]', 'claude-opus-5'],

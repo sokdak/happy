@@ -338,6 +338,35 @@ describe('runClaude remote JSONL scanner', () => {
         await harness.finish();
     });
 
+    it.each(['claude-fable-5-2', 'claude-fable-5-2[1m]', 'claude-fable-5-1', 'fable5'])(
+        'preserves an explicit startup model %s for turns without an override', async (model) => {
+            const harness = await startRemoteRunClaudeHarness({ startOptions: { model } });
+            const onUserMessage = harness.sessionClient.onUserMessage.mock.calls[0][0];
+
+            expect(harness.loopOptions.model).toBe(model);
+            await onUserMessage({ content: { text: 'first turn' }, meta: {} });
+            expect(harness.loopOptions.messageQueue.queue[0].mode.model).toBe(model);
+
+            await harness.finish();
+        },
+    );
+
+    it('switches an existing Fable session to 5.2 and restores the ambient model on reset', async () => {
+        const harness = await startRemoteRunClaudeHarness({ startOptions: { model: 'fable5' } });
+        const onUserMessage = harness.sessionClient.onUserMessage.mock.calls[0][0];
+
+        await onUserMessage({ content: { text: 'use Fable 5.2' }, meta: { model: 'claude-fable-5-2' } });
+        await onUserMessage({ content: { text: 'keep using it' }, meta: {} });
+        await onUserMessage({ content: { text: 'use configured model' }, meta: { model: null } });
+        await onUserMessage({ content: { text: 'keep configured model' }, meta: {} });
+
+        expect(harness.loopOptions.messageQueue.queue.map((entry: any) => entry.mode.model)).toEqual([
+            'claude-fable-5-2', 'claude-fable-5-2', undefined, undefined,
+        ]);
+
+        await harness.finish();
+    });
+
     it.each([
         [{ permissionMode: 'default' }, 'default'],
         [{ claudeArgs: ['--permission-mode', 'plan'] }, 'plan'],

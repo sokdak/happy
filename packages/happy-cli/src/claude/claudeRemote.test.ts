@@ -32,7 +32,7 @@ describe('claudeRemote', () => {
         message: { role: 'assistant', content: [{ type: 'text', text: expired }] },
     };
 
-    async function runMessages(sdkMessages: unknown[]) {
+    async function runMessages(sdkMessages: unknown[], messageMode: EnhancedMode = mode) {
         vi.mocked(query).mockReturnValue({
             async *[Symbol.asyncIterator]() { yield* sdkMessages; },
         } as any);
@@ -40,7 +40,7 @@ describe('claudeRemote', () => {
         const onCompletionEvent = vi.fn();
         const onMessage = vi.fn();
         const nextMessage = vi.fn()
-            .mockResolvedValueOnce({ message: 'Original prompt', mode })
+            .mockResolvedValueOnce({ message: 'Original prompt', mode: messageMode })
             .mockResolvedValue(null);
         await claudeRemote({
             sessionId: null,
@@ -54,6 +54,18 @@ describe('claudeRemote', () => {
         });
         return { onReady, onCompletionEvent, onMessage, nextMessage };
     }
+
+    it.each(['claude-fable-5-2', 'claude-fable-5-2[1m]', 'claude-fable-5-1', 'fable5'])(
+        'passes the explicit model %s to the SDK unchanged', async (model) => {
+            await runMessages([
+                { type: 'result', subtype: 'success', is_error: false, result: 'Done' },
+            ], { ...mode, model });
+
+            expect(query).toHaveBeenCalledWith(expect.objectContaining({
+                options: expect.objectContaining({ model }),
+            }));
+        },
+    );
 
     it('explains host OAuth expiry once and closes the turn as failed', async () => {
         const callbacks = await runMessages([

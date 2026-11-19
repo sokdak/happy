@@ -169,6 +169,7 @@ describe('modelModeOptions', () => {
     it('only offers the current-generation claude models', () => {
         const models = getClaudeModelModes();
         expect(models.map((model) => model.key)).toEqual([
+            'claude-fable-5-2',
             'claude-fable-5-1',
             'claude-fable-5',
             'claude-opus-5-5',
@@ -177,6 +178,7 @@ describe('modelModeOptions', () => {
             'claude-haiku-5-5',
         ]);
         expect(models.map((model) => model.name)).toEqual([
+            'Fable 5.2',
             'Fable 5.1',
             'Fable 5',
             'Opus 5.5',
@@ -213,6 +215,7 @@ describe('modelModeOptions', () => {
     });
 
     it.each([
+        ['claude-fable-5-2[1m]', 'claude-fable-5-2'],
         ['claude-fable-5-1[1m]', 'claude-fable-5-1'],
         ['claude-opus-5-5[1m]', 'claude-opus-5-5'],
         ['claude-opus-5[1m]', 'claude-opus-5'],
@@ -259,7 +262,7 @@ describe('modelModeOptions', () => {
     it('offers claude the SDK effort union for every model', () => {
         // Claude's scale belongs to the SDK, not the model: an unreachable level
         // is silently downgraded, so every model gets the same list.
-        for (const model of ['claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
+        for (const model of ['claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
             const keys = getEffortLevelsForModel('claude', model).map((level) => level.key);
             expect(keys).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
             // Claude's floor is `low`; there is no off.
@@ -289,6 +292,37 @@ describe('modelModeOptions', () => {
 
         expect(models).toEqual([
             { key: 'custom-gemini', name: 'Gemini Custom', description: 'From metadata' },
+        ]);
+    });
+
+    it.each(['claude', undefined])('keeps Fable 5.2 selectable with stale %s model metadata', (flavor) => {
+        const models = getAvailableModels(flavor, {
+            models: [
+                { code: 'claude-fable-5-1', value: 'Account Fable 5.1', description: 'From metadata' },
+                { code: 'workspace-claude', value: 'Workspace Claude' },
+            ],
+        } as any, translate, 'claude-sonnet-5');
+
+        expect(models[0]).toMatchObject({
+            key: 'claude-fable-5-2',
+            name: 'Fable 5.2',
+            description: '1M context',
+            providerId: 'anthropic',
+        });
+        expect(models.filter((model) => model.key === 'claude-fable-5-1')).toEqual([
+            expect.objectContaining({ name: 'Account Fable 5.1', description: 'From metadata' }),
+        ]);
+        expect(models).toContainEqual({ key: 'workspace-claude', name: 'Workspace Claude', description: null });
+        expect(resolveCurrentOption(models, ['claude-sonnet-5'])?.name).toBe('Sonnet 5');
+    });
+
+    it('does not duplicate Fable 5.2 when metadata already advertises it', () => {
+        const models = getAvailableModels('claude', {
+            models: [{ code: 'claude-fable-5-2', value: 'Account Fable 5.2', description: 'From metadata' }],
+        } as any, translate);
+
+        expect(models.filter((model) => model.key === 'claude-fable-5-2')).toEqual([
+            expect.objectContaining({ name: 'Account Fable 5.2', description: 'From metadata', providerId: 'anthropic' }),
         ]);
     });
 
