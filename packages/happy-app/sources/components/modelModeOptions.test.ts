@@ -316,6 +316,16 @@ describe('modelModeOptions', () => {
         expect(resolveCurrentOption(models, ['claude-sonnet-5'])?.name).toBe('Sonnet 5');
     });
 
+    it.each(['opencode', 'acp'])('preserves the model catalog advertised by %s', (flavor) => {
+        const models = getAvailableModels(flavor, {
+            models: [{ code: 'backend-model', value: 'Backend Model', description: 'From metadata' }],
+        } as any, translate);
+
+        expect(models).toEqual([
+            { key: 'backend-model', name: 'Backend Model', description: 'From metadata' },
+        ]);
+    });
+
     it('does not duplicate Fable 5.2 when metadata already advertises it', () => {
         const models = getAvailableModels('claude', {
             models: [{ code: 'claude-fable-5-2', value: 'Account Fable 5.2', description: 'From metadata' }],

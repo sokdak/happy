@@ -465,7 +465,7 @@ export function getAvailableModels(
     }
     const metadataModels = mapMetadataOptions(metadata?.models);
     if (metadataModels.length > 0) {
-        if (flavor !== 'rig' && normalizeAgentKey(flavor) === 'claude') {
+        if (flavor === 'claude' || flavor == null) {
             // Legacy Claude metadata can outlive the catalog it was published
             // with. Keep newly supported models selectable while preserving
             // advertised labels and workspace-specific model IDs. Rig owns
