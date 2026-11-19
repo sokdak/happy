@@ -326,6 +326,18 @@ describe('modelModeOptions', () => {
         ]);
     });
 
+    it.each(['claude-fable-5-2', 'claude-fable-5-1'])('merges retired %s[1m] metadata into its native context row', (key) => {
+        const models = getAvailableModels('claude', {
+            models: [{ code: `${key}[1m]`, value: 'Account Fable', description: 'From metadata' }],
+        } as any, translate, `${key}[1m]`);
+
+        expect(models).toHaveLength(getClaudeModelModes().length);
+        expect(models.some((model) => model.key === `${key}[1m]`)).toBe(false);
+        expect(models.filter((model) => model.key === key)).toEqual([
+            expect.objectContaining({ name: 'Account Fable', description: 'From metadata', providerId: 'anthropic' }),
+        ]);
+    });
+
     it('adds codex default model option when metadata models are present', () => {
         const models = getAvailableModels('codex', {
             models: [

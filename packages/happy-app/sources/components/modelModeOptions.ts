@@ -472,7 +472,8 @@ export function getAvailableModels(
             // its catalog and already returned above.
             const modelsByKey = new Map<string, ModelMode>(getClaudeModelModes().map((model) => [model.key, model]));
             for (const model of metadataModels) {
-                modelsByKey.set(model.key, { ...modelsByKey.get(model.key), ...model });
+                const key = retireModelMode(flavor, model.key);
+                modelsByKey.set(key, { ...modelsByKey.get(key), ...model, key });
             }
             return includeConfiguredModel(flavor, [...modelsByKey.values()], selectedKey);
         }
