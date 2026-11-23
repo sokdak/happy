@@ -29,6 +29,7 @@ describe('AgyBackend', () => {
     ['Gemini 4 Carbon', 'high', 'High'],
     ['Gemini 4 Hydrogen', 'high', 'High'],
     ['Gemini 4 Hydrogen', 'xhigh', 'XHigh'],
+    ['Gemini 4 Neon', 'xhigh', 'XHigh'],
   ])('passes %s with %s effort to agy --model', async (model, effort, label) => {
     const { child } = makeFakeChild();
     const spawnFn = vi.fn(() => child) as unknown as SpawnFn;

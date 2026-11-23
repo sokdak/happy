@@ -436,26 +436,29 @@ describe('persistent Antigravity ACP', () => {
     expect(agent.received.filter(r => r.method === 'session/set_mode').map(r => r.params.modeId)).toEqual(['default', 'accept-edits']);
   });
 
-  it('publishes the resumed account catalog and sends the ID of its selected effort variant', async () => {
-    const { backend, agent } = setup({ resumeSessionId: 'session-1', model: 'Claude Sonnet 5.5', effort: 'high' });
+  it.each([
+    { model: 'Claude Sonnet 5.5', effort: 'high', label: 'High', lowId: 'native-low', selectedId: 'native-high' },
+    { model: 'Gemini 4 Neon', effort: 'xhigh', label: 'XHigh', lowId: 'gemini-4-neon-low', selectedId: 'gemini-4-neon-xhigh' },
+  ])('publishes the resumed account catalog and selects the native $model effort ID', async ({ model, effort, label, lowId, selectedId }) => {
+    const { backend, agent } = setup({ resumeSessionId: 'session-1', model, effort });
     const availableModels = [
-      { modelId: 'native-low', name: 'Claude Sonnet 5.5 (Low)' },
-      { modelId: 'native-high', name: 'Claude Sonnet 5.5 (High)' },
+      { modelId: lowId, name: `${model} (Low)` },
+      { modelId: selectedId, name: `${model} (${label})` },
     ];
     agent.setHandler((rpc, fallback) => {
-      if (rpc.method === 'session/load') agent.respond(rpc.id!, { ...metadata, models: { availableModels, currentModelId: 'native-low' } });
+      if (rpc.method === 'session/load') agent.respond(rpc.id!, { ...metadata, models: { availableModels, currentModelId: lowId } });
       else fallback(rpc);
     });
     await backend.startSession();
     expect(backend.getSessionOptions()).toMatchObject({
-      models: [{ code: 'native-low' }, { code: 'native-high' }],
+      models: [{ code: lowId }, { code: selectedId }],
       operatingModes: [{ code: 'default' }, { code: 'accept-edits' }, { code: 'plan' }],
       agyImageInput: true,
     });
     await backend.sendPrompt('', 'one');
-    backend.setModel('Claude Sonnet 5.5 (Low)');
+    backend.setModel(`${model} (Low)`);
     await backend.sendPrompt('', 'two');
-    expect(agent.received.filter(r => r.method === 'session/set_model').map(r => r.params.modelId)).toEqual(['native-high', 'native-low']);
+    expect(agent.received.filter(r => r.method === 'session/set_model').map(r => r.params.modelId)).toEqual([selectedId, lowId]);
   });
 
   it('uses the native default when an ACP server omits optional modes and rejects explicit Plan', async () => {

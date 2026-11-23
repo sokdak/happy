@@ -408,6 +408,7 @@ describe('modelModeOptions', () => {
             expect(getAvailableModels('agy', metadata, translate, pinned)).toContainEqual(expect.objectContaining({ key: pinned, disabled: false }));
         }
         expect(getAvailableModels('agy', metadata, translate, 'Gemini 4 Carbon')).toContainEqual(expect.objectContaining({ key: 'Gemini 4 Carbon', disabled: true }));
+        expect(models.some(model => model.key === 'Gemini 4 Neon')).toBe(false);
         expect(getAvailableModels('agy', { models: [] } as any, translate)).toEqual([]);
     });
 
@@ -431,7 +432,7 @@ describe('modelModeOptions', () => {
         expect(keys).toContain('Gemini 3.8 Flash');
         expect(getDefaultModelKey('agy')).toBe('Gemini 3.8 Flash');
         expect(keys.filter((key) => key.startsWith('Gemini '))).toEqual([
-            'Gemini 3.8 Flash', 'Gemini 4 Argon', 'Gemini 4 Carbon', 'Gemini 4 Hydrogen',
+            'Gemini 3.8 Flash', 'Gemini 4 Argon', 'Gemini 4 Carbon', 'Gemini 4 Hydrogen', 'Gemini 4 Neon',
         ]);
         expect(getEffortLevelsForModel('agy', 'Gemini 3.8 Flash').map((level) => level.key))
             .toEqual(['low', 'medium', 'high']);
@@ -446,6 +447,7 @@ describe('modelModeOptions', () => {
         ['Gemini 4 Argon', ['low', 'medium', 'high']],
         ['Gemini 4 Carbon', ['low', 'medium', 'high']],
         ['Gemini 4 Hydrogen', ['low', 'medium', 'high', 'xhigh']],
+        ['Gemini 4 Neon', ['low', 'medium', 'high', 'xhigh']],
     ] as const)('offers %s with its supported agy thinking levels', (modelKey, efforts) => {
         const models = getAvailableModels('agy', null, translate);
 

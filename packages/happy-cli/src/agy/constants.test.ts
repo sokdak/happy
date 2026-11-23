@@ -94,6 +94,10 @@ describe('resolveAgyModelName', () => {
     ['Gemini 4 Hydrogen', 'medium', 'Gemini 4 Hydrogen (Medium)'],
     ['Gemini 4 Hydrogen', 'high', 'Gemini 4 Hydrogen (High)'],
     ['Gemini 4 Hydrogen', 'xhigh', 'Gemini 4 Hydrogen (XHigh)'],
+    ['Gemini 4 Neon', 'low', 'Gemini 4 Neon (Low)'],
+    ['Gemini 4 Neon', 'medium', 'Gemini 4 Neon (Medium)'],
+    ['Gemini 4 Neon', 'high', 'Gemini 4 Neon (High)'],
+    ['Gemini 4 Neon', 'xhigh', 'Gemini 4 Neon (XHigh)'],
   ])('maps %s with effort %s to %s', (model, effort, expected) => {
     expect(resolveAgyModelName(model, effort)).toBe(expected);
   });
@@ -110,7 +114,7 @@ describe('resolveAgyModelName', () => {
     },
   );
 
-  it.each(['Gemini 4 Carbon', 'Gemini 4 Hydrogen'])(
+  it.each(['Gemini 4 Carbon', 'Gemini 4 Hydrogen', 'Gemini 4 Neon'])(
     'uses Medium for missing or unsupported %s effort and preserves explicit variants', (model) => {
       expect(resolveAgyModelName(model, undefined)).toBe(`${model} (Medium)`);
       expect(resolveAgyModelName(model, 'ultra')).toBe(`${model} (Medium)`);

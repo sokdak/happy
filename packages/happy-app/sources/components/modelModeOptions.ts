@@ -360,6 +360,7 @@ export function getAgyModelModes(): ModelMode[] {
         { key: 'Gemini 4 Argon', name: 'Gemini 4 Argon', description: null, providerId: 'google', providerName: 'Google' },
         { key: 'Gemini 4 Carbon', name: 'Gemini 4 Carbon', description: null, providerId: 'google', providerName: 'Google' },
         { key: 'Gemini 4 Hydrogen', name: 'Gemini 4 Hydrogen', description: null, providerId: 'google', providerName: 'Google' },
+        { key: 'Gemini 4 Neon', name: 'Gemini 4 Neon', description: null, providerId: 'google', providerName: 'Google' },
         { key: 'Claude Sonnet 4.6 (Thinking)', name: 'Claude Sonnet 4.6 (Thinking)', description: null, providerId: 'anthropic', providerName: 'Anthropic' },
         { key: 'Claude Opus 4.6 (Thinking)', name: 'Claude Opus 4.6 (Thinking)', description: null, providerId: 'anthropic', providerName: 'Anthropic' },
         { key: 'GPT-OSS 120B (Medium)', name: 'GPT-OSS 120B (Medium)', description: null, providerId: 'openai', providerName: 'OpenAI' },
@@ -601,6 +602,7 @@ const AGY_EFFORTS_BY_MODEL: Record<string, readonly string[]> = {
     'Gemini 4 Argon': ['low', 'medium', 'high'],
     'Gemini 4 Carbon': ['low', 'medium', 'high'],
     'Gemini 4 Hydrogen': ['low', 'medium', 'high', 'xhigh'],
+    'Gemini 4 Neon': AGY_EFFORT_LEVELS,
 };
 
 // Exactly what each model publishes in Codex's own registry, in its order

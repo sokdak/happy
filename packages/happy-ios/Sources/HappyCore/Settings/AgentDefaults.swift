@@ -249,6 +249,7 @@ public enum AgentDefaults {
         case .agy:
             [
                 Option("Gemini 3.8 Flash", "Gemini 3.8 Flash"),
+                Option("Gemini 4 Neon", "Gemini 4 Neon"),
                 Option("Claude Sonnet 4.6 (Thinking)", "Claude Sonnet 4.6 (Thinking)"),
                 Option("Claude Opus 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)"),
                 Option("GPT-OSS 120B (Medium)", "GPT-OSS 120B (Medium)"),
@@ -291,7 +292,11 @@ public enum AgentDefaults {
             ]
             keys = byModel[model] ?? ["low", "medium", "high", "xhigh"]
         case .agy:
-            keys = model == "Gemini 3.8 Flash" ? ["low", "medium", "high"] : []
+            switch model {
+            case "Gemini 3.8 Flash": keys = ["low", "medium", "high"]
+            case "Gemini 4 Neon": keys = ["low", "medium", "high", "xhigh"]
+            default: keys = []
+            }
         case .gemini, .openclaw:
             keys = []
         }
