@@ -205,7 +205,7 @@ describe('persistent Antigravity ACP', () => {
       agent.respond(request.id!, { stopReason: 'end_turn' }); await result;
       expect(agent.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
     });
-    it.each(['1.5.9', '1.5.10', '1.5.11'])('accepts verified server version %s when Stop hook is enabled', async (version) => {
+    it.each(['1.5.9', '1.5.10', '1.5.14'])('accepts supported server version %s when Stop hook is enabled', async (version) => {
       const { backend, agent, spawnFn } = setup({ stopHook: true });
       agent.setHandler((rpc, fallback) => {
         if (rpc.method === 'initialize') agent.respond(rpc.id!, { protocolVersion: 1, agentInfo: { name: 'Antigravity ACP Server', version }, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
@@ -217,13 +217,15 @@ describe('persistent Antigravity ACP', () => {
       agent.respond(request.id!, { stopReason: 'end_turn' });
       await pending;
     });
-    it('uses native completion on an unknown server in auto mode without creating sessions or prompting twice', async () => {
+    it('uses native completion on an older server in auto mode without creating sessions or prompting twice', async () => {
       vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
       const { backend, agent, spawnFn } = setup({ stopHook: undefined, resumeSessionId: 'saved-session' });
       const clean = fakeAgent();
       vi.mocked(spawnFn).mockReturnValueOnce(agent.child).mockReturnValueOnce(clean.child);
       for (const server of [agent, clean]) server.setHandler((rpc, fallback) => {
-        if (rpc.method === 'initialize') server.respond(rpc.id!, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
+        if (rpc.method === 'initialize') server.respond(rpc.id!, {
+          protocolVersion: 1, agentInfo: { name: 'Antigravity', version: '1.5.8' }, agentCapabilities: { loadSession: true },
+        });
         else fallback(rpc);
       });
       await backend.sendPrompt('', 'only once');
@@ -233,14 +235,27 @@ describe('persistent Antigravity ACP', () => {
       expect(clean.received.filter(r => r.method === 'session/load').map(r => r.params.sessionId)).toEqual(['saved-session']);
       expect(clean.received.filter(r => r.method === 'session/prompt')).toHaveLength(1);
     });
-    it('rejects an unverified server version before sending a prompt', async () => {
-      const { backend, agent } = setup({ stopHook: true });
+    it.each([
+      [undefined, '1.6.0', '1.6.0'],
+      [true, '2.0.0', '2.0.0'],
+      [undefined, '1.5.15-rc.1', '1.5.15-rc.1'],
+      [undefined, undefined, 'unknown'],
+    ] as const)('reports incompatible AGY in mode %s for version %s before creating a session', async (stopHook, version, actual) => {
+      vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
+      const { backend, agent, spawnFn, messages } = setup({ stopHook });
       agent.setHandler((rpc, fallback) => {
-        if (rpc.method === 'initialize') agent.respond(rpc.id!, { protocolVersion: 1, agentInfo: { name: 'Antigravity', version: '9.0.0' } });
+        if (rpc.method === 'initialize') agent.respond(rpc.id!, {
+          protocolVersion: 1, agentInfo: version ? { name: 'Antigravity', version } : undefined,
+        });
         else fallback(rpc);
       });
-      await expect(backend.sendPrompt('', 'version')).rejects.toThrow('verified only');
-      expect(agent.received.some(r => r.method === 'session/prompt')).toBe(false);
+      const detail = `AGY ${actual} is incompatible with Happy's Stop hook, which supports stable AGY >=1.5.9 <1.6.0. `
+        + 'Update Happy or set HAPPY_AGY_STOP_HOOK=0 to start without the hook.';
+      await expect(backend.startSession()).rejects.toThrow(detail);
+      expect(messages).toContainEqual({ type: 'status', status: 'error', detail });
+      expect(agent.received.map(r => r.method)).toEqual(['initialize']);
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+      expect(agent.child.kill).toHaveBeenCalled();
     });
     it('retires the hook process on cancellation and loads the same session with a new private root', async () => {
       const second = fakeAgent();
@@ -1287,14 +1302,14 @@ describe('persistent Antigravity ACP', () => {
 
     it('rejects explicit stopHook="observe" on AGY 1.5.9 before prompting', async () => {
       const { backend, agent } = setup({ stopHook: 'observe' });
-      await expect(backend.sendPrompt('', 'version check')).rejects.toThrow('verified only with AGY 1.5.10');
+      await expect(backend.sendPrompt('', 'version check')).rejects.toThrow('>=1.5.10 <1.6.0');
       expect(agent.received.some(r => r.method === 'session/prompt')).toBe(false);
     });
 
-    it.each(['1.5.10', '1.5.11'])('auto-selects observer mode on AGY %s when HAPPY_AGY_STOP_HOOK is unset', async (version) => {
+    it.each(['1.5.10', '1.5.14', '1.5.15+build.1'])('auto-selects observer mode and accepts post-turn output on AGY %s', async (version) => {
       vi.stubEnv('HAPPY_AGY_STOP_HOOK', undefined);
       const logs: string[] = [];
-      const { backend, agent, spawnFn } = setup({ stopHook: undefined, observerSettleMs: 10, log: m => logs.push(m) });
+      const { backend, agent, spawnFn, messages } = setup({ stopHook: undefined, observerSettleMs: 10, log: m => logs.push(m) });
       agent.setHandler((rpc, fallback) => {
         if (rpc.method === 'initialize') {
           agent.respond(rpc.id!, {
@@ -1311,6 +1326,8 @@ describe('persistent Antigravity ACP', () => {
       expect(await invokeStop(spawnFn, 0, true)).toEqual({});
       await pending;
       expect(logs.some(l => l.includes('0 continuations, mode=observe'))).toBe(true);
+      agent.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'POST_TURN' } });
+      await vi.waitFor(() => expect(messages).toContainEqual({ type: 'model-output', textDelta: 'POST_TURN' }));
     });
   });
 

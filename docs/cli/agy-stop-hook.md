@@ -2,40 +2,42 @@
 
 ## Version behavior
 
-### AGY 1.5.10 and 1.5.11 (default: observer-only Stop hook on Unix + native post-`end_turn` ACP)
+### AGY 1.5.10 and later stable 1.5.x releases
 
 AGY 1.5.10+ fixes [#1461](https://github.com/google-antigravity/antigravity-cli/issues/1461) by delivering background task completions, reactive wakeup responses, tool updates, and `session/request_permission` requests over the existing ACP session **after** the initial `session/prompt` returns `end_turn`.
 
-However, AGY 1.5.10 and 1.5.11 still negotiate **ACP v1 (`protocolVersion: 1`)**, which has no standard session-level `running` / `idle` state notification after reactive wakeups:
+AGY 1.5.14 still negotiates **ACP v1 (`protocolVersion: 1`)**, which has no standard session-level `running` / `idle` state notification after reactive wakeups.
 
 - On ACP v1 stdout alone, `tools.size === 0` occurs mid-chain (for example, between a background command finishing and a follow-up tool or final answer, or immediately when `invoke_subagent` / `schedule` launches), and no second `end_turn` is emitted when a reactive wakeup ends.
-- Happy therefore **removes forced `decision: "continue"` continuations on AGY 1.5.10 and 1.5.11** (zero synthetic continuation prompts, zero extra polling model invocations, zero socket backoff delays) and instead attaches a lightweight **observer-only `Stop` hook** (`mode=observe`, always returning `{}`) on Unix hosts to read AGY's authoritative `fullyIdle` and `terminationReason` signals at both initial `end_turn` and each reactive wakeup termination.
+- Happy enables native post-turn events and uses an **observer-only `Stop` hook** on Unix by default. The hook returns `{}` and reads `fullyIdle` and `terminationReason` at the initial `end_turn` and after each reactive wakeup.
 
 ### AGY 1.5.9 (bounded forced continuation on Unix)
 
 AGY 1.5.9 does not deliver post-`end_turn` ACP updates unless kept inside `session/prompt`. On Unix hosts, Happy automatically selects bounded forced continuation (`mode=continue`) for AGY 1.5.9 (unless opted out with `HAPPY_AGY_STOP_HOOK=0`).
 
-### Unverified versions
+### Versions outside the supported range
 
-Unverified AGY versions (other than `1.5.9`, `1.5.10`, and `1.5.11`) discard the hook-enabled process immediately after `initialize` (before creating or loading any conversation) and reopen a clean native ACP connection in default `auto` mode. Explicit `HAPPY_AGY_STOP_HOOK=1`, `observe`, or `continue` fails closed before prompting on unverified versions.
+On Unix, automatic hook selection reports a startup error for AGY 1.6.0 and later, prereleases, and missing or unrecognized versions. The error shows the supported range and the `HAPPY_AGY_STOP_HOOK=0` override for basic ACP sessions. Extending the range to a new release line requires checking the hook and post-turn lifecycle contract.
+
+Automatic mode still uses basic ACP for stable versions older than 1.5.9. Explicit hook modes require AGY 1.5.9 or later within the stable 1.5.x line, with observer mode requiring 1.5.10 or later.
 
 ## Configuration and rollback switches
 
 ```sh
-# Default (unset): on Unix + AGY 1.5.10, automatically uses observer-only Stop hook ({}) with zero forced continuations.
+# Default on Unix with stable AGY >=1.5.10 <1.6.0: observe Stop events.
 happy agy
 
-# Disable ALL Stop hooks (pure ACP v1 only; post-end_turn updates/permissions/cancel still work on 1.5.10,
-# while unresolved foreground non-daemon tools report unconfirmed overall completion):
+# Disable the Happy Stop hook. Post-end_turn updates, permissions, and cancel still work on supported 1.5.x releases from 1.5.10 onward,
+# while unresolved foreground non-daemon tools report unconfirmed overall completion.
 HAPPY_AGY_STOP_HOOK=0 happy agy
 
-# Explicit observer-only mode (verified on AGY 1.5.10):
+# Explicit observer-only mode on stable AGY >=1.5.10 <1.6.0.
 HAPPY_AGY_STOP_HOOK=observe happy agy
 
-# Legacy flag: observer-only on AGY 1.5.10, forced continuation on AGY 1.5.9:
+# Force the version's default hook mode.
 HAPPY_AGY_STOP_HOOK=1 happy agy
 
-# Emergency rollback to legacy forced continuation on 1.5.9/1.5.10:
+# Explicit legacy forced continuation on stable AGY >=1.5.9 <1.6.0.
 HAPPY_AGY_STOP_HOOK=continue happy agy
 ```
 
