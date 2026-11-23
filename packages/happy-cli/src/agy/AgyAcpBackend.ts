@@ -45,9 +45,20 @@ const PROGRESS_NATIVE_TOOLS = new Set([
   'swarm', 'run_workflow',
 ]);
 
-const VERIFIED_STOP_HOOK_VERSIONS = new Set(['1.5.9', '1.5.10', '1.5.11']);
-const VERIFIED_POST_TURN_VERSIONS = new Set(['1.5.10', '1.5.11']);
 const MAX_COMPLETED_TOOLS = 4_096;
+
+// Share one version policy for the observer and native post-turn ACP events.
+// Recheck the lifecycle contract when AGY changes its release line.
+function getAgyLifecycleSupport(version: string | undefined): 'native' | 'legacy' | 'observer' | 'unsupported' {
+  const release = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version ?? '');
+  if (!release) return 'unsupported';
+  const [major, minor, patch] = release.slice(1).map(Number);
+  if (major > 1 || (major === 1 && minor > 5)) return 'unsupported';
+  if (major < 1 || minor < 5 || patch < 9) return 'native';
+  return patch === 9 ? 'legacy' : 'observer';
+}
+
+class AgyStopHookCompatibilityError extends Error {}
 
 export class AgyCancelledError extends Error {
   constructor() { super('Antigravity turn cancelled'); this.name = 'AgyCancelledError'; }
@@ -72,10 +83,10 @@ export interface AgyAcpOptions {
   cancelGraceMs?: number;
   /**
    * Stop-hook mode:
-   * - unset: reads HAPPY_AGY_STOP_HOOK (auto-selects observer mode on verified AGY 1.5.10/1.5.11 Unix
-   *   and legacy continue mode on AGY 1.5.9 Unix; 0 disables all hooks).
-   * - true / '1': observer mode on AGY 1.5.10/1.5.11, legacy forced continuation on AGY 1.5.9.
-   * - 'observe': observer-only mode (`{}` response, verified AGY 1.5.10/1.5.11).
+   * - unset: reads HAPPY_AGY_STOP_HOOK (on Unix, defaults to observer mode for
+   *   AGY >=1.5.10 <1.6.0 and legacy continue mode for AGY 1.5.9).
+   * - true / '1': force the default hook selection for those versions.
+   * - 'observe': observer-only mode (`{}` response, AGY >=1.5.10 <1.6.0).
    * - 'continue': explicit legacy forced continuation rollback.
    * - false / '0': disables all Stop hooks.
    */
@@ -124,7 +135,7 @@ export class AgyAcpBackend implements AgentBackend {
   private cancelled = false;
   private disposed = false;
   private replaying = false;
-  private serverVersion: string | null = null;
+  private supportsPostTurnFollowups = false;
   private sessionAcceptingEvents = false;
   private backgroundRunning = false;
   private backgroundStepDirty = false;
@@ -180,10 +191,6 @@ export class AgyAcpBackend implements AgentBackend {
       this.stopProcess();
       throw error;
     } finally { clearTimeout(timer); }
-  }
-
-  private postTurnFollowupSupported(): boolean {
-    return this.serverVersion !== null && VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion);
   }
 
   private trackCompletedTool(callId: string): void {
@@ -242,7 +249,7 @@ export class AgyAcpBackend implements AgentBackend {
     this.sessionAcceptingEvents = false;
     this.backgroundRunning = false;
     this.backgroundStepDirty = false;
-    this.serverVersion = null;
+    this.supportsPostTurnFollowups = false;
     this.drainingCancelTools?.();
     this.drainingCancelTools = null;
     if (!this.active && !this.cancelling && this.tools.size > 0) {
@@ -309,7 +316,7 @@ export class AgyAcpBackend implements AgentBackend {
           this.sessionAcceptingEvents = false;
           this.backgroundRunning = false;
           this.backgroundStepDirty = false;
-          this.serverVersion = null;
+          this.supportsPostTurnFollowups = false;
           this.drainingCancelTools?.();
           this.drainingCancelTools = null;
           if (!this.active && !this.cancelling && this.tools.size > 0) {
@@ -345,33 +352,24 @@ export class AgyAcpBackend implements AgentBackend {
         protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'happy', version: '1' },
       }), this.lifetime]));
       this.capabilities = initialized.agentCapabilities ?? {};
-      this.serverVersion = initialized.agentInfo?.version ?? null;
+      const reportedVersion = initialized.agentInfo?.version;
+      const version = typeof reportedVersion === 'string' ? reportedVersion : undefined;
+      const support = getAgyLifecycleSupport(version);
+      this.supportsPostTurnFollowups = support === 'observer';
       if (this.stopHook) {
-        if (hookSetting === 'auto') {
-          if (!this.serverVersion || !VERIFIED_STOP_HOOK_VERSIONS.has(this.serverVersion)) {
-            // AGY reads hook workspaces at startup. Discard the hook-enabled process before
-            // creating/loading any conversation so an unrecognized version never executes it.
-            this.options.log?.('Antigravity ACP version has no verified Stop hook. Using native turn completion.');
-            return this.open('off');
-          }
-          this.stopHook.policy.setMode(
-            VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion) ? 'observe' : 'continue',
-          );
-        } else if (hookSetting === 'observe') {
-          if (!this.serverVersion || !VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion)) {
-            throw new Error(`The observer Stop hook is verified only with AGY ${[...VERIFIED_POST_TURN_VERSIONS].join(', ')}. Set HAPPY_AGY_STOP_HOOK=0 for this version.`);
-          }
-          this.stopHook.policy.setMode('observe');
-        } else {
-          if (!this.serverVersion || !VERIFIED_STOP_HOOK_VERSIONS.has(this.serverVersion)) {
-            throw new Error(`The experimental Stop hook is verified only with AGY ${[...VERIFIED_STOP_HOOK_VERSIONS].join(', ')}. Set HAPPY_AGY_STOP_HOOK=0 for this version.`);
-          }
-          this.stopHook.policy.setMode(
-            hookSetting === 'enabled' && VERIFIED_POST_TURN_VERSIONS.has(this.serverVersion)
-              ? 'observe'
-              : 'continue',
+        if (hookSetting === 'auto' && support === 'native') {
+          // AGY reads hook workspaces at startup, so reopen without the hook before creating or loading a session.
+          return this.open('off');
+        }
+        if (support === 'unsupported' || support === 'native' || (hookSetting === 'observe' && support !== 'observer')) {
+          const required = hookSetting === 'observe' ? '1.5.10' : '1.5.9';
+          const actual = version && /^\d[0-9A-Za-z.+-]{0,79}$/.test(version) ? version : 'unknown';
+          throw new AgyStopHookCompatibilityError(
+            `AGY ${actual} is incompatible with Happy's Stop hook, which supports stable AGY >=${required} <1.6.0. `
+            + 'Update Happy or set HAPPY_AGY_STOP_HOOK=0 to start without the hook.',
           );
         }
+        this.stopHook.policy.setMode(support === 'observer' && hookSetting !== 'continue' ? 'observe' : 'continue');
       }
       if (this.sessionId) {
         if (!this.capabilities.loadSession) throw new Error('Antigravity does not support loading the requested ACP session');
@@ -397,7 +395,14 @@ export class AgyAcpBackend implements AgentBackend {
   async startSession(): Promise<{ sessionId: string }> {
     if (this.cancelling) await this.cancelling;
     if (!this.active) this.cancelled = false;
-    await this.connect();
+    try {
+      await this.connect();
+    } catch (error) {
+      if (error instanceof AgyStopHookCompatibilityError) {
+        this.emit({ type: 'status', status: 'error', detail: error.message });
+      }
+      throw error;
+    }
     return { sessionId: this.sessionId! };
   }
 
@@ -464,7 +469,7 @@ export class AgyAcpBackend implements AgentBackend {
     try {
       await this.connect();
       const epoch = ++this.workEpoch;
-      if (!this.postTurnFollowupSupported()) {
+      if (!this.supportsPostTurnFollowups) {
         this.tools.clear();
         this.completedTools.clear();
       } else {
@@ -519,18 +524,18 @@ export class AgyAcpBackend implements AgentBackend {
           + (this.hasAnyOpenNonDaemonTools() ? ' Other background work may still be running; completion is unconfirmed.' : ''));
       }
       if (hookIssue) throw new Error(`${hookIssue}. Completion is unconfirmed; background work may still be running.`);
-      const hasOpenTools = this.postTurnFollowupSupported()
+      const hasOpenTools = this.supportsPostTurnFollowups
         ? this.hasOpenForegroundTools(epoch)
         : this.tools.size > 0;
       if (hasOpenTools) {
-        if (this.postTurnFollowupSupported() && !hook) {
+        if (this.supportsPostTurnFollowups && !hook) {
           preserveBackgroundSession = true;
           this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
         }
         throw new Error('Antigravity ended its response before all tool results arrived. Work may still be running; completion is unconfirmed.');
       }
       this.settleDaemonTools();
-      if (this.postTurnFollowupSupported()) {
+      if (this.supportsPostTurnFollowups) {
         preserveBackgroundSession = true;
       }
       this.emit({ type: 'status', status: 'idle' });
@@ -975,7 +980,7 @@ export class AgyAcpBackend implements AgentBackend {
           // of a slow child exit. Drain the turn's finally before accepting a new one.
           await active.catch(() => {});
         }
-        if (this.postTurnFollowupSupported() && this.hasAnyOpenNonDaemonTools() && this.connection && !this.connection.signal.aborted) {
+        if (this.supportsPostTurnFollowups && this.hasAnyOpenNonDaemonTools() && this.connection && !this.connection.signal.aborted) {
           clearTimeout(timer);
           await Promise.race([
             new Promise<void>((resolve) => {
