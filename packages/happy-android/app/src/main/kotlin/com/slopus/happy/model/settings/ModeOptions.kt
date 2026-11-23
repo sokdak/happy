@@ -124,6 +124,7 @@ object ModeOptions {
 
     private val agyModelModes = listOf(
         ModeOption("Gemini 3.8 Flash", "Gemini 3.8 Flash"),
+        ModeOption("Gemini 4 Neon", "Gemini 4 Neon"),
         ModeOption("Claude Sonnet 4.6 (Thinking)", "Claude Sonnet 4.6 (Thinking)"),
         ModeOption("Claude Opus 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)"),
         ModeOption("GPT-OSS 120B (Medium)", "GPT-OSS 120B (Medium)"),
@@ -162,7 +163,10 @@ object ModeOptions {
     // The Agent SDK's EffortLevel union: one scale for every Claude model.
     private val claudeEfforts = listOf("low", "medium", "high", "xhigh", "max")
 
-    private val agyEffortsByModel = mapOf("Gemini 3.8 Flash" to listOf("low", "medium", "high"))
+    private val agyEffortsByModel = mapOf(
+        "Gemini 3.8 Flash" to listOf("low", "medium", "high"),
+        "Gemini 4 Neon" to listOf("low", "medium", "high", "xhigh"),
+    )
 
     // What each model publishes in Codex's registry, in its order.
     private val codexEffortsByModel = mapOf(

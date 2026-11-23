@@ -71,6 +71,7 @@ export const AGY_MODELS = [
   'Gemini 4 Argon',
   'Gemini 4 Carbon',
   'Gemini 4 Hydrogen',
+  'Gemini 4 Neon',
   'Claude Sonnet 4.6 (Thinking)',
   'Claude Opus 4.6 (Thinking)',
   'GPT-OSS 120B (Medium)',
@@ -80,6 +81,7 @@ export const AGY_GEMINI_3_8_FLASH_MODEL = 'Gemini 3.8 Flash';
 export const AGY_GEMINI_4_ARGON_MODEL = 'Gemini 4 Argon';
 export const AGY_GEMINI_4_CARBON_MODEL = 'Gemini 4 Carbon';
 export const AGY_GEMINI_4_HYDROGEN_MODEL = 'Gemini 4 Hydrogen';
+export const AGY_GEMINI_4_NEON_MODEL = 'Gemini 4 Neon';
 const AGY_STANDARD_EFFORTS = ['low', 'medium', 'high'] as const;
 export const AGY_EFFORTS = AGY_EFFORT_LEVELS;
 export type AgyEffort = typeof AGY_EFFORTS[number];
@@ -89,6 +91,7 @@ const AGY_EFFORTS_BY_MODEL = new Map<string, readonly AgyEffort[]>([
   [AGY_GEMINI_4_ARGON_MODEL, AGY_STANDARD_EFFORTS],
   [AGY_GEMINI_4_CARBON_MODEL, AGY_STANDARD_EFFORTS],
   [AGY_GEMINI_4_HYDROGEN_MODEL, AGY_EFFORTS],
+  [AGY_GEMINI_4_NEON_MODEL, AGY_EFFORTS],
 ]);
 
 /**

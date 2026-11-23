@@ -321,11 +321,12 @@ final class ModelModeOptionsTests: XCTestCase {
         let keys = keys(models)
         XCTAssertTrue(keys.contains("Gemini 3.8 Flash"))
         XCTAssertEqual(Options.defaultModelKey(flavor: "agy"), "Gemini 3.8 Flash")
-        XCTAssertEqual(keys.filter { $0.hasPrefix("Gemini ") }, ["Gemini 3.8 Flash"])
+        XCTAssertEqual(keys.filter { $0.hasPrefix("Gemini ") }, ["Gemini 3.8 Flash", "Gemini 4 Neon"])
         XCTAssertEqual(self.keys(Options.effortLevelsForModel(flavor: "agy", modelKey: "Gemini 3.8 Flash")), ["low", "medium", "high"])
+        XCTAssertEqual(self.keys(Options.effortLevelsForModel(flavor: "agy", modelKey: "Gemini 4 Neon")), ["low", "medium", "high", "xhigh"])
         XCTAssertFalse(keys.contains("default"))
         XCTAssertFalse(keys.contains("opus"))
-        XCTAssertEqual(models.map(\.providerId), ["google", "anthropic", "anthropic", "openai"])
+        XCTAssertEqual(models.map(\.providerId), ["google", "google", "anthropic", "anthropic", "openai"])
     }
 
     func testASavedLegacyAgyModelStaysSelectable() {

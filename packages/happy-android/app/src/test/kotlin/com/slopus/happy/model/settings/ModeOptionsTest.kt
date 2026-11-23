@@ -56,6 +56,7 @@ class ModeOptionsTest {
         assertEquals(6, ModeOptions.modelModes("gemini").size)
         assertEquals(listOf("default"), ModeOptions.modelModes("openclaw").map { it.key })
         assertEquals("Gemini 3.8 Flash", ModeOptions.modelModes("agy")[0].name)
+        assertEquals(ModeOption("Gemini 4 Neon", "Gemini 4 Neon"), ModeOptions.modelModes("agy").single { it.key == "Gemini 4 Neon" })
     }
 
     @Test
@@ -93,6 +94,7 @@ class ModeOptionsTest {
         assertEquals(listOf("low", "medium", "high", "xhigh", "max"), ModeOptions.effortLevelsForModel("codex", "gpt-6-luna").map { it.key })
         assertEquals(listOf("low", "medium", "high", "xhigh"), ModeOptions.effortLevelsForModel("codex", "my-model").map { it.key })
         assertEquals(listOf("low", "medium", "high"), ModeOptions.effortLevelsForModel("agy", "Gemini 3.8 Flash").map { it.key })
+        assertEquals(listOf("low", "medium", "high", "xhigh"), ModeOptions.effortLevelsForModel("agy", "Gemini 4 Neon").map { it.key })
         assertEquals(emptyList<ModeOption>(), ModeOptions.effortLevelsForModel("agy", "GPT-OSS 120B (Medium)"))
         assertEquals(emptyList<ModeOption>(), ModeOptions.effortLevelsForModel("gemini", "gemini-2.5-pro"))
     }
