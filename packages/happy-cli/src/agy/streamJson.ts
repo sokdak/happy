@@ -126,7 +126,7 @@ export class AgyStreamTurnParser {
     }
   }
 
-  finish(): void {
+  finish(options?: { failed?: boolean }): void {
     const trailing = this.streamBuffer.replace(/\r$/, '');
     this.streamBuffer = '';
     if (trailing.trim()) {
@@ -150,6 +150,24 @@ export class AgyStreamTurnParser {
 
     if (!this.resultSeen) {
       this.flushAllAgentResponses();
+    }
+
+    const hasUnfinishedTools = [...this.startedToolCalls].some(callId => !this.endedToolCalls.has(callId));
+    if (!this.resultSeen && hasUnfinishedTools) {
+      this.failureDetail ??= 'agy stream ended before tool completion';
+    }
+    const isError = Boolean(options?.failed || this.failureDetail || !this.resultSeen);
+    for (const callId of this.startedToolCalls) {
+      if (this.endedToolCalls.has(callId)) continue;
+      this.endedToolCalls.add(callId);
+      const resolvedDisplayName = this.toolDisplayNames.get(callId) ?? 'agy_tool';
+      this.emit({
+        type: 'tool-result',
+        toolName: resolvedDisplayName,
+        callId,
+        result: { status: isError ? 'ERROR' : 'DONE' },
+        isError,
+      });
     }
   }
 
@@ -337,6 +355,7 @@ export class AgyStreamTurnParser {
         toolName: resolvedDisplayName,
         callId,
         result: toolResult,
+        ...(update.state === 'ERROR' ? { isError: true } : {}),
       });
     }
   }

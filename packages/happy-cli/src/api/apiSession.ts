@@ -204,6 +204,7 @@ export class ApiSessionClient extends EventEmitter {
     private metadataVersion: number;
     private agentState: AgentState | null;
     private agentStateVersion: number;
+    private agentStateUnhydrated: boolean;
     private socket: Socket<ServerToClientEvents, ClientToServerEvents>;
     private idleWatchdog: IdleWatchdog | null = null;
     private pendingInput: Array<UserMessage | FileEventMessage> = [];
@@ -267,6 +268,7 @@ export class ApiSessionClient extends EventEmitter {
         this.metadataVersion = session.metadataVersion;
         this.agentState = session.agentState;
         this.agentStateVersion = session.agentStateVersion;
+        this.agentStateUnhydrated = session.agentStateUnhydrated === true;
         this.encryptionKey = session.encryptionKey;
         this.encryptionVariant = session.encryptionVariant;
         this.sendSync = new InvalidateSync(() => this.flushOutbox());
@@ -387,9 +389,19 @@ export class ApiSessionClient extends EventEmitter {
                             }
                         }
                     }
-                    if (data.body.agentState && data.body.agentState.version > this.agentStateVersion) {
-                        this.agentState = data.body.agentState.value ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(data.body.agentState.value)) : null;
-                        this.agentStateVersion = data.body.agentState.version;
+                    if (data.body.agentState && (this.agentStateUnhydrated || data.body.agentState.version > this.agentStateVersion)) {
+                        if (data.body.agentState.value === null) {
+                            this.agentStateUnhydrated = false;
+                            this.agentState = null;
+                            this.agentStateVersion = data.body.agentState.version;
+                        } else {
+                            const decrypted = this.decodeAgentStateObject(data.body.agentState.value);
+                            if (decrypted !== undefined) {
+                                this.agentStateUnhydrated = false;
+                                this.agentState = decrypted;
+                                this.agentStateVersion = data.body.agentState.version;
+                            }
+                        }
                     }
                 } else if (data.body.t === 'update-machine') {
                     // Session clients shouldn't receive machine updates - log warning
@@ -1097,13 +1109,40 @@ export class ApiSessionClient extends EventEmitter {
         });
     }
 
+    private decodeAgentStateObject(encoded: string): AgentState | undefined {
+        try {
+            const decrypted = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(encoded));
+            if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
+                return undefined;
+            }
+            const proto = Object.getPrototypeOf(decrypted);
+            if (proto !== Object.prototype && proto !== null) {
+                return undefined;
+            }
+            return decrypted as AgentState;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private redactAgentStateForLog(state: AgentState | null): unknown {
+        if (!state?.completedCommunications) return state;
+        const redactedCompleted: Record<string, unknown> = {};
+        for (const [id, comm] of Object.entries(state.completedCommunications)) {
+            redactedCompleted[id] = comm && typeof comm === 'object' && comm.answers
+                ? { ...comm, answers: '[redacted]' }
+                : comm;
+        }
+        return { ...state, completedCommunications: redactedCompleted };
+    }
+
     /**
      * Update session agent state
      * @param handler - Handler function that returns the updated agent state
      */
     updateAgentState(handler: (metadata: AgentState) => AgentState, operationSignal?: AbortSignal): Promise<void> {
         if (this.closing || this.closed) return Promise.resolve();
-        logger.debugLargeJson('Updating agent state', this.agentState);
+        logger.debugLargeJson('Updating agent state', this.redactAgentStateForLog(this.agentState));
         const controller = new AbortController();
         const abortFromClose = () => controller.abort(this.closeController.signal.reason);
         const abortFromOperation = () => controller.abort(operationSignal?.reason);
@@ -1121,12 +1160,13 @@ export class ApiSessionClient extends EventEmitter {
 
                 try {
                     const updated = handler(this.agentState || {});
+                    const expectedVersion = this.agentStateUnhydrated ? 0 : this.agentStateVersion;
                     const answer = await this.awaitAgentStateAck(
                         this.socket
                             .timeout(AGENT_STATE_ACK_TIMEOUT_MS)
                             .emitWithAck('update-state', {
                                 sid: this.sessionId,
-                                expectedVersion: this.agentStateVersion,
+                                expectedVersion,
                                 agentState: updated
                                     ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated))
                                     : null,
@@ -1134,15 +1174,35 @@ export class ApiSessionClient extends EventEmitter {
                         controller.signal,
                     );
                     if (answer.result === 'success') {
-                        this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
-                        this.agentStateVersion = answer.version;
-                        logger.debug('Agent state updated', this.agentState);
+                        if (answer.agentState === null) {
+                            this.agentState = null;
+                            this.agentStateUnhydrated = false;
+                            this.agentStateVersion = answer.version;
+                        } else {
+                            const decrypted = this.decodeAgentStateObject(answer.agentState);
+                            if (decrypted !== undefined) {
+                                this.agentState = decrypted;
+                                this.agentStateUnhydrated = false;
+                                this.agentStateVersion = answer.version;
+                            }
+                        }
+                        logger.debug('Agent state updated', this.redactAgentStateForLog(this.agentState));
                         return;
                     }
                     if (answer.result === 'version-mismatch') {
-                        if (answer.version > this.agentStateVersion) {
+                        if (this.agentStateUnhydrated || answer.version > this.agentStateVersion) {
+                            if (answer.agentState === null) {
+                                this.agentState = null;
+                            } else {
+                                const decrypted = this.decodeAgentStateObject(answer.agentState);
+                                if (decrypted === undefined) {
+                                    logger.debug('[AGENT STATE] Failed to decode authoritative agent state; aborting state update');
+                                    return;
+                                }
+                                this.agentState = decrypted;
+                            }
+                            this.agentStateUnhydrated = false;
                             this.agentStateVersion = answer.version;
-                            this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
                         }
                         throw new Error('Agent state version mismatch');
                     }

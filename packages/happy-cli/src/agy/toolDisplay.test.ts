@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { mapAgyToolToDisplay, sanitizeDiffText } from './toolDisplay';
+import {
+  formatAgyQuestionAnswers,
+  mapAgyToolToDisplay,
+  parseAgyAskQuestionInput,
+  sanitizeDiffText,
+} from './toolDisplay';
 
 describe('mapAgyToolToDisplay', () => {
   it('maps both current (read_file/edit_file/write_file) and legacy (view_file/replace_file_content/write_to_file) file tools', () => {
@@ -329,5 +334,52 @@ describe('mapAgyToolToDisplay', () => {
     const edits = multi.args.edits as Array<{ old_string: string; new_string: string }>;
     expect(edits).toHaveLength(2);
     expect(edits[1].new_string).toContain('1 more edit chunk(s) omitted');
+  });
+
+  it('parses valid ask_question schemas into interactive cards and rejects empty or credential-bearing inputs', () => {
+    const single = parseAgyAskQuestionInput({
+      questions: [{
+        question: '어느 HA를 확인하면 될까요?',
+        options: ['(Recommended) 기존 HA (10.8.0.14)', 'Simba HA', 'Simba HA'],
+        is_multi_select: false,
+      }],
+    });
+    expect(single).toEqual([{
+      id: 'q_0',
+      header: 'Question',
+      question: '어느 HA를 확인하면 될까요?',
+      options: [
+        { label: '(Recommended) 기존 HA (10.8.0.14)', description: '' },
+        { label: 'Simba HA', description: '' },
+      ],
+      isOther: true,
+      isSecret: false,
+    }]);
+    expect(formatAgyQuestionAnswers(single!, { q_0: { answers: ['(Recommended) 기존 HA (10.8.0.14)'] } }))
+      .toBe('(Recommended) 기존 HA (10.8.0.14)');
+
+    const multi = parseAgyAskQuestionInput({
+      questions: [
+        { question: 'Pick features', options: ['Auth', 'Logs'], is_multi_select: true },
+        { question: 'Pick env', options: ['Staging', 'Prod'] },
+      ],
+    });
+    expect(multi?.[0]).toMatchObject({ id: 'q_0', header: 'Question 1', multiSelect: true });
+    expect(multi?.[1]).toMatchObject({ id: 'q_1', header: 'Question 2' });
+    expect(formatAgyQuestionAnswers(multi!, {
+      q_0: { answers: ['Auth', 'Logs'] },
+      q_1: { answers: ['Staging'] },
+    })).toBe('1. Pick features\nAuth, Logs\n\n2. Pick env\nStaging');
+
+    expect(parseAgyAskQuestionInput({})).toBeNull();
+    expect(parseAgyAskQuestionInput({ questions: [{ question: 'No options', options: [] }] })).toBeNull();
+    expect(parseAgyAskQuestionInput({ questions: [{ question: 'Bearer secret_token_123', options: ['a'] }] })).toBeNull();
+    expect(parseAgyAskQuestionInput({ questions: [{ question: 'Safe?', options: ['sk-live-secret-token-value'] }] })).toBeNull();
+    expect(parseAgyAskQuestionInput({ questions: [{ question: 'Oversized?', options: ['x'.repeat(5000)] }] })).toBeNull();
+    expect(formatAgyQuestionAnswers(multi!, {
+      q_0: { answers: ['Auth', 'Auth', 'Logs'] },
+      q_1: { answers: ['Staging'] },
+    })).toBe('1. Pick features\nAuth, Logs\n\n2. Pick env\nStaging');
+    expect(formatAgyQuestionAnswers(single!, {})).toBeNull();
   });
 });

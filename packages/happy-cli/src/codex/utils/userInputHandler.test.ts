@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
+import { createOfflineSessionStub } from '@/utils/offlineSessionStub';
 import type { UserInputHandler } from '../codexAppServerClient';
 import { CodexUserInputHandler } from './userInputHandler';
 
@@ -24,7 +25,7 @@ function harness(initialState: AgentState = {}) {
         ],
     };
     const reply = (value: Record<string, unknown>) => rpcs.get('communication')!({ id: params.callId, kind: 'form', ...value });
-    return { handler, session, params, controller, reply, state: () => state, sendSessionProtocolMessage };
+    return { handler, session, params, controller, reply, rpcs, state: () => state, sendSessionProtocolMessage };
 }
 
 describe('CodexUserInputHandler', () => {
@@ -81,8 +82,16 @@ describe('CodexUserInputHandler', () => {
         expect(h.sendSessionProtocolMessage).toHaveBeenCalledTimes(2);
     });
 
-    it('cancels orphaned questions from a previous process and registers the RPC after a session swap', async () => {
-        const h = harness({ communications: { old: { kind: 'form', createdAt: 1, toolUseId: 'old', form: { questions: [] } } } });
+    it('cancels orphaned questions from a previous process on reset or direct RPC and registers the RPC after a session swap', async () => {
+        const h = harness({
+            communications: {
+                old: { kind: 'form', createdAt: 1, toolUseId: 'old', form: { questions: [] } },
+                crashOrphan: { kind: 'form', createdAt: 2, toolUseId: 'crashOrphan', form: { questions: [] } },
+            },
+        });
+        await h.rpcs.get('communication')!({ id: 'crashOrphan', kind: 'form', status: 'cancelled' });
+        expect(h.state().communications?.crashOrphan).toBeUndefined();
+        expect(h.state().completedCommunications?.crashOrphan.status).toBe('cancelled');
         h.handler.reset();
         expect(h.state().communications).toEqual({});
         expect(h.state().completedCommunications?.old.status).toBe('cancelled');
@@ -92,5 +101,98 @@ describe('CodexUserInputHandler', () => {
         await swapped.reply({ status: 'cancelled' });
         await expect(response).resolves.toEqual({ answers: {} });
         expect(swapped.state().completedCommunications?.[h.params.callId].status).toBe('cancelled');
+    });
+
+    it('supports multiSelect deduplication while rejecting multiple single-select choices, and replays tool-call-start on offline session swap', async () => {
+        let clock = 5_000;
+        const offlineStub = createOfflineSessionStub('offline-q');
+        const handler = new CodexUserInputHandler(offlineStub, () => 'turn-1', () => ++clock);
+        expect(handler.hasPending()).toBe(false);
+
+        const pending = handler.handle({
+            callId: 'call-multi',
+            signal: new AbortController().signal,
+            questions: [
+                {
+                    id: 'multi',
+                    header: 'Targets',
+                    question: 'Select targets',
+                    multiSelect: true,
+                    isOther: true,
+                    options: [{ label: 'Alpha', description: '' }, { label: 'Beta', description: '' }],
+                },
+                {
+                    id: 'single',
+                    header: 'Mode',
+                    question: 'Select mode',
+                    isOther: false,
+                    options: [{ label: 'Read', description: '' }, { label: 'Write', description: '' }],
+                },
+            ],
+        });
+        expect(handler.hasPending()).toBe(true);
+
+        // Swap from offline stub to a fresh real session while the question is pending
+        const rpcs = new Map<string, (reply: unknown) => Promise<void>>();
+        const swappedSend = vi.fn();
+        let swappedState: AgentState = {
+            completedCommunications: {
+                'call-multi': {
+                    kind: 'form',
+                    createdAt: 1,
+                    completedAt: 2,
+                    status: 'cancelled',
+                    toolUseId: 'call-multi',
+                    form: { questions: [] },
+                },
+            },
+        };
+        const swappedUpdate = vi.fn((update: (current: AgentState) => AgentState) => {
+            swappedState = update(swappedState);
+        });
+        const swappedSession = {
+            rpcHandlerManager: { registerHandler: (name: string, fn: (reply: unknown) => Promise<void>) => rpcs.set(name, fn) },
+            updateAgentState: swappedUpdate,
+            sendSessionProtocolMessage: swappedSend,
+        } as unknown as ApiSessionClient;
+        handler.updateSession(swappedSession);
+
+        expect(swappedState.communications?.['call-multi']?.form.questions[0].multiSelect).toBe(true);
+        expect(swappedState.completedCommunications?.['call-multi']).toBeUndefined();
+        expect(swappedSend).toHaveBeenCalledWith(expect.objectContaining({
+            time: 5_002,
+            turn: 'turn-1',
+            ev: expect.objectContaining({ t: 'tool-call-start', call: 'call-multi', name: 'request_user_input' }),
+        }));
+
+        // Reject multiple options on single-select
+        await expect(rpcs.get('communication')!({
+            id: 'call-multi',
+            kind: 'form',
+            status: 'answered',
+            answers: {
+                multi: { options: ['Alpha', 'Beta'] },
+                single: { options: ['Read', 'Write'] },
+            },
+        })).rejects.toThrow('Invalid choice');
+
+        // Accept duplicate options on multiSelect and deduplicate them cleanly
+        await rpcs.get('communication')!({
+            id: 'call-multi',
+            kind: 'form',
+            status: 'answered',
+            answers: {
+                multi: { options: ['Alpha', 'Beta', 'Alpha'], custom: 'Gamma' },
+                single: { options: ['Read'] },
+            },
+        });
+        await expect(pending).resolves.toEqual({
+            answers: {
+                multi: { answers: ['Alpha', 'Beta', 'Gamma'] },
+                single: { answers: ['Read'] },
+            },
+        });
+        expect(handler.hasPending()).toBe(false);
+        expect(swappedSend).toHaveBeenLastCalledWith(expect.objectContaining({ time: 5_003, turn: 'turn-1' }));
     });
 });

@@ -20,6 +20,15 @@ export function agyReconnectSession(metadata: Metadata, state: AgentState, nativ
   } catch { throw new Error('Missing or mismatched Antigravity reconnect metadata'); }
   const encryptionKey = decodeBase64(key);
   if (encryptionKey.length !== 32) throw new Error('Invalid Happy reconnect key');
-  return { id, encryptionKey, encryptionVariant: variant, seq: numbers[0], metadataVersion: numbers[1],
-    agentStateVersion: numbers[2], metadata: { ...saved, ...metadata }, agentState: state };
+  return {
+    id,
+    encryptionKey,
+    encryptionVariant: variant,
+    seq: numbers[0],
+    metadataVersion: numbers[1],
+    agentStateVersion: numbers[2],
+    metadata: { ...saved, ...metadata },
+    agentState: state,
+    ...(numbers[2] > 0 ? { agentStateUnhydrated: true } : {}),
+  };
 }

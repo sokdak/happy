@@ -58,6 +58,7 @@ export function resolveAgyStopHookSetting(
 export class AgyStopPolicy {
   private readonly limits: StopHookLimits;
   private turn?: Turn;
+  private totalStopObservations = 0;
   private listeners = new Set<() => void>();
   constructor(
     limits: Partial<StopHookLimits> = STOP_HOOK_LIMITS,
@@ -68,6 +69,7 @@ export class AgyStopPolicy {
   }
   getMode(): StopHookMode { return this.mode; }
   setMode(mode: StopHookMode): void { this.mode = mode; }
+  totalObservations(): number { return this.totalStopObservations; }
   private notify(): void { for (const listener of [...this.listeners]) listener(); }
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -105,7 +107,22 @@ export class AgyStopPolicy {
   snapshot() { return this.turn ? { ...this.turn } : undefined; }
   decide(input: unknown, epoch = this.epoch()): Decision {
     const t = this.turn;
-    if (!t?.active || epoch !== t || t.issue) return {};
+    if (!t?.active || epoch !== t || t.issue) {
+      if (
+        this.mode === 'observe'
+        && t
+        && epoch === t
+        && input
+        && typeof input === 'object'
+        && !Array.isArray(input)
+        && (input as Record<string, unknown>).conversationId === t.sessionId
+        && (input as Record<string, unknown>).hookEventName === 'Stop'
+      ) {
+        this.totalStopObservations++;
+        this.notify();
+      }
+      return {};
+    }
     const fail = (issue: string): Decision => { t.issue = issue; this.notify(); return {}; };
     if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('invalid hook input');
     const d = input as Record<string, unknown>;
@@ -122,12 +139,14 @@ export class AgyStopPolicy {
     // Preserve cancellation, errors and all native invocation/token limits.
     if (d.terminationReason !== 'NO_TOOL_CALL') {
       t.fullyIdle = d.fullyIdle;
+      this.totalStopObservations++;
       return fail('native stop: ' + d.terminationReason.slice(0, 80));
     }
     if (this.mode === 'observe') {
       // Reactive background wakeups in AGY 1.5.10+ each start a fresh executor
       // invocation (executionNum = 0). Observe state without forcing continuation.
       t.observations++;
+      this.totalStopObservations++;
       t.fullyIdle = d.fullyIdle;
       t.lastExecution = d.executionNum as number;
       t.delayMs = 0;
@@ -167,11 +186,12 @@ export class AgyStopPolicy {
     t.count++;
     return { decision: 'continue', reason: REASON };
   }
-  finish(): string | undefined {
+  finish(options?: { allowQuestionPause?: boolean }): string | undefined {
     const t = this.turn;
     if (!t) return 'Stop hook was not initialized';
     if (t.active) { t.active = false; this.notify(); }
     if (t.issue) return 'Stop hook stopped: ' + t.issue;
+    if (options?.allowQuestionPause) return undefined;
     if (!t.seen) return 'Stop hook did not report a valid result';
     if (t.fullyIdle !== true) return 'Background completion was not confirmed';
     return undefined;

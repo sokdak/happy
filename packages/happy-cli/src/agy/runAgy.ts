@@ -20,6 +20,7 @@ import { AcpSessionManager } from '@/agent/acp/AcpSessionManager';
 import type { SessionEnvelope } from '@slopus/happy-wire';
 import { logger } from '@/ui/logger';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { AgentUserInputHandler } from '@/utils/AgentUserInputHandler';
 import type { Metadata, PermissionMode, UserMessage } from '@/api/types';
 import { Credentials, readSettings } from '@/persistence';
 import { initialMachineMetadata } from '@/daemon/run';
@@ -37,6 +38,7 @@ import { AgyAcpBackend, AgyCancelledError } from './AgyAcpBackend';
 import { createAgyBackend } from './createBackend';
 import { AgyPermissionHandler } from './permissionHandler';
 import { agyPromptImages } from './promptImages';
+import { formatAgyQuestionAnswers, type AgyParsedQuestion } from './toolDisplay';
 import {
   DEFAULT_AGY_MODEL,
   normalizeAgyEffort,
@@ -107,6 +109,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
 
   let session: ApiSessionClient;
   let permissionHandler: AgyPermissionHandler | undefined;
+  let userInputHandler: AgentUserInputHandler | undefined;
   let inputReady = false;
   const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
     api,
@@ -117,6 +120,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     onSessionSwap: (newSession) => {
       session = newSession;
       permissionHandler?.updateSession(newSession);
+      userInputHandler?.updateSession(newSession);
       // The offline stub discards metadata writes. Re-publish an ACP ID that
       // arrived before the real Happy session existed so this chat can resume.
       publishNativeSession(newSession);
@@ -159,15 +163,60 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   let thinking = false;
   let foregroundTurnRunning = false;
   let errorReportedForCurrentTurn = false;
+  const queuedQuestionItems = new Set<object>();
 
   let selectedModel = metadata.modelMode ?? DEFAULT_AGY_MODEL;
   let selectedEffort = normalizeAgyEffort(metadata.effortLevel);
   let displayedModel = resolveAgyModelName(selectedModel, selectedEffort);
 
   permissionHandler = new AgyPermissionHandler(session);
+  userInputHandler = new AgentUserInputHandler(
+    session,
+    () => sessionManager.getEffectiveTurnId(),
+    () => sessionManager.nextEnvelopeTime(),
+  );
   const happyServer = transport === 'acp'
     ? await startAgyHappyMcp(() => session) : undefined;
   let backend: ReturnType<typeof createAgyBackend>;
+  const handleAgyQuestion = (acpCallId: string, questions: AgyParsedQuestion[], signal: AbortSignal) => {
+    sendEnvelopes(sessionManager.flushPendingText());
+    const sessionCallId = sessionManager.resolveSessionCallId(acpCallId);
+    const ttySummary = questions[0]?.question ? `Question: ${questions[0].question}` : 'Question';
+    messageBuffer.addMessage(ttySummary, 'tool');
+    void userInputHandler!.handle({
+      callId: sessionCallId,
+      questions: questions.map(question => ({
+        ...question,
+        options: question.options,
+        isOther: question.isOther ?? true,
+        isSecret: question.isSecret ?? false,
+      })),
+      signal,
+    }).then((result) => {
+      const formatted = formatAgyQuestionAnswers(questions, result.answers);
+      if (!formatted || shouldExit || signal.aborted) return;
+      const turnSettings: TurnSettings = {
+        model: selectedModel,
+        effort: selectedEffort,
+        permissionMode: incomingPermissionMode,
+      };
+      enqueueTail = enqueueTail.then(() => {
+        if (shouldExit || signal.aborted) return;
+        messageBuffer.addMessage(formatted, 'user');
+        messageQueue.push(formatted, turnSettings, [], signal);
+        const pushed = messageQueue.queue.at(-1);
+        if (pushed) {
+          queuedQuestionItems.add(pushed);
+          signal.addEventListener('abort', () => {
+            queuedQuestionItems.delete(pushed);
+            messageQueue.queue = messageQueue.queue.filter(item => item !== pushed);
+          }, { once: true });
+        }
+      });
+    }).catch((error) => {
+      logger.debug('[agy] Question input handler failed:', error);
+    });
+  };
   try {
     backend = createAgyBackend({
       mcpServers: happyServer?.mcpServers,
@@ -180,6 +229,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
       requestPermission: (id, tool, input) =>
         permissionHandler!.handleToolCall(sessionManager.resolveSessionCallId(id), tool, input),
       resetPermissions: () => permissionHandler?.reset(),
+      onQuestion: handleAgyQuestion,
       log,
     });
   } catch (error) {
@@ -208,6 +258,9 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     if (msg.type === 'event' && msg.name === 'agy_session_id' && typeof msg.payload === 'string') {
       const agySessionId = msg.payload;
       if (nativeSessionId && nativeSessionId !== agySessionId) {
+        messageQueue.queue = messageQueue.queue.filter(item => !queuedQuestionItems.has(item));
+        queuedQuestionItems.clear();
+        if (userInputHandler?.hasPending()) userInputHandler.reset();
         sessionManager.resetSessionCallIds();
       }
       nativeSessionId = agySessionId;
@@ -333,6 +386,9 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     }).catch(() => {
       if (shouldExit) return;
       session.sendSessionEvent({ type: 'message', message: "Antigravity could not receive this message's attachment. Please send it again." });
+      if (backend instanceof AgyAcpBackend) {
+        backend.republishPausedQuestion();
+      }
     });
   }
 
@@ -348,6 +404,9 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
 
   async function handleAbort() {
     log('Abort requested');
+    messageQueue.queue = messageQueue.queue.filter(item => !queuedQuestionItems.has(item));
+    queuedQuestionItems.clear();
+    userInputHandler?.reset();
     try {
       await backend.cancel();
     } catch (error) {
@@ -392,6 +451,9 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
         if (waitSignal.aborted) continue;
         break;
       }
+      if (batch.signal?.aborted) {
+        continue;
+      }
 
       log('Processing queued Antigravity turn');
       backend.setModel(batch.mode.model);
@@ -404,7 +466,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
       sendEnvelopes(sessionManager.startTurn());
       try {
         if (backend instanceof AgyAcpBackend) {
-          await backend.sendPrompt(process.cwd(), batch.message, agyPromptImages(batch.attachments ?? []));
+          await backend.sendPrompt(process.cwd(), batch.message, agyPromptImages(batch.attachments ?? []), batch.signal);
         } else {
           if (batch.attachments?.length) throw new Error('Image input requires the ACP transport');
           await backend.sendPrompt(process.cwd(), batch.message);
@@ -421,6 +483,9 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
           }
           log(`Turn ended: ${msg}`);
           sendEnvelopes(sessionManager.endTurn('failed'));
+          if (backend instanceof AgyAcpBackend) {
+            backend.republishPausedQuestion();
+          }
         }
       } finally {
         foregroundTurnRunning = false;
@@ -435,6 +500,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     shouldExit = true;
     messageQueue.close();
     sendEnvelopes(sessionManager.flushPendingText());
+    if (userInputHandler?.hasPending()) userInputHandler.reset();
     permissionHandler?.reset();
     clearInterval(keepAliveInterval);
     reconnectionHandle?.cancel();

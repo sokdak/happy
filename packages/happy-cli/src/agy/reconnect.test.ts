@@ -20,7 +20,7 @@ describe('AGY resume-in-place identity', () => {
   it('retains the Happy ID, encryption key and message/version cursors', () => {
     expect(agyReconnectSession({} as Metadata, {}, 'native-existing', env)).toMatchObject({
       metadata: { summary: { text: 'Existing title' } },
-      id: 'happy-existing', seq: 41, metadataVersion: 2, agentStateVersion: 3,
+      id: 'happy-existing', seq: 41, metadataVersion: 2, agentStateVersion: 3, agentStateUnhydrated: true,
       encryptionKey: new Uint8Array(32).fill(3), encryptionVariant: 'dataKey',
     });
     expect(agyReconnectSession({} as Metadata, {}, undefined, {})).toBeNull();

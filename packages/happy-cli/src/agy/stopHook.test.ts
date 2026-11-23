@@ -293,4 +293,22 @@ function whenObserved(h: AgyStopHook): Promise<void> {
     }
     expect(h.policy.finish()).toBeUndefined();
   });
+
+  it('allows ask_question pauses when unseen or after non-idle observations, while never masking hook issues', () => {
+    const p = new AgyStopPolicy(STOP_HOOK_LIMITS, Date.now, 'observe');
+    p.begin('session');
+    expect(p.finish({ allowQuestionPause: true })).toBeUndefined();
+
+    p.begin('session');
+    expect(p.decide(payload(0, { fullyIdle: false }))).toEqual({});
+    expect(p.finish({ allowQuestionPause: true })).toBeUndefined();
+
+    p.begin('session');
+    expect(p.decide(payload(0, { terminationReason: 'ERROR', fullyIdle: true }))).toEqual({});
+    expect(p.finish({ allowQuestionPause: true })).toContain('native stop: ERROR');
+
+    p.begin('session');
+    p.failWith('continuation time limit reached');
+    expect(p.finish({ allowQuestionPause: true })).toContain('continuation time limit reached');
+  });
 });

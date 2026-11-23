@@ -1332,6 +1332,417 @@ describe('persistent Antigravity ACP', () => {
       agent.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'POST_TURN' } });
       await vi.waitFor(() => expect(messages).toContainEqual({ type: 'model-output', textDelta: 'POST_TURN' }));
     });
+
+    it('completes ask_question pauses without Stop hook error, preserves server across turns, and settles daemon tools', async () => {
+      const onQuestion = vi.fn();
+      const requestPermission = vi.fn(async () => ({ decision: 'denied' as const }));
+      const { backend, agent, spawnFn, messages } = setupObserver1510({ onQuestion, requestPermission });
+
+      let turnNum = 0;
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') {
+          agent.respond(rpc.id!, {
+            protocolVersion: 1,
+            agentInfo: { name: 'Antigravity ACP Server', version: '1.5.14' },
+            agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+          });
+          return;
+        }
+        if (rpc.method !== 'session/prompt') return fallback(rpc);
+        turnNum++;
+        if (turnNum === 1) {
+          // Denied tool followed by ask_question fallback + running daemon
+          agent.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id: 910,
+            method: 'session/request_permission',
+            params: {
+              sessionId: 'session-1',
+              toolCall: { toolCallId: 'denied-1', title: 'rm', kind: 'execute', rawInput: { CommandLine: 'echo nope' } },
+              options: [{ optionId: 'deny', name: 'Deny', kind: 'reject_once' }],
+            },
+          }) + '\n');
+          setTimeout(() => {
+            agent.notify({
+              sessionUpdate: 'tool_call',
+              toolCallId: 'daemon-q',
+              title: 'dev server',
+              kind: 'execute',
+              status: 'in_progress',
+              rawInput: { CommandLine: 'npm run dev', IsDaemon: true },
+            });
+            agent.notify({
+              sessionUpdate: 'tool_call',
+              toolCallId: 'ask-1',
+              title: 'Run ask_question',
+              kind: 'other',
+              status: 'in_progress',
+              rawInput: { questions: [{ question: 'Which HA?', options: ['Main HA', 'Simba HA'] }] },
+            });
+            agent.notify({
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'ask-1',
+              title: 'Run ask_question',
+              kind: 'other',
+              status: 'pending',
+              rawInput: { questions: [{ question: 'Which HA?', options: ['Main HA', 'Simba HA'] }] },
+            });
+            agent.notify({
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: '\nWhich HA?\n- [1] Main HA\n- [2] Simba HA\n' },
+            });
+            // AGY returns end_turn WITHOUT invoking Stop!
+            agent.respond(rpc.id!, { stopReason: 'end_turn' });
+          }, 15);
+        } else {
+          // Turn 2: AGY transitions ask-1 in_progress -> completed, answers, and invokes Stop(idle=true)
+          agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'ask-1', status: 'in_progress' });
+          agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'ask-1', status: 'completed' });
+          agent.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Inspecting Main HA.' } });
+          void invokeStop(spawnFn, 0, true).then(() => {
+            agent.respond(rpc.id!, { stopReason: 'end_turn' });
+          });
+        }
+      });
+
+      await backend.sendPrompt('', 'check presence');
+      expect(agent.child.kill).not.toHaveBeenCalled();
+      expect(onQuestion).toHaveBeenCalledTimes(1);
+      expect(onQuestion).toHaveBeenCalledWith('ask-1', [expect.objectContaining({
+        id: 'q_0',
+        question: 'Which HA?',
+        options: [{ label: 'Main HA', description: '' }, { label: 'Simba HA', description: '' }],
+      })], expect.any(AbortSignal));
+      // Delegated question does not emit duplicate Bash tool-call or tool-result
+      expect(messages.some(m => m.type === 'tool-call' && m.callId === 'ask-1')).toBe(false);
+      expect(messages).toContainEqual(expect.objectContaining({ type: 'tool-result', callId: 'daemon-q', isError: false }));
+      expect(messages.at(-1)).toEqual({ type: 'status', status: 'idle' });
+
+      // Turn 2 reuses the exact same ACP process and completes without duplicate tool-result
+      await backend.sendPrompt('', 'Main HA');
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+      expect(messages.some(m => m.type === 'tool-result' && m.callId === 'ask-1')).toBe(false);
+      expect(messages).toContainEqual({ type: 'model-output', textDelta: 'Inspecting Main HA.' });
+    });
+
+    it('settles waitForObservedIdle when a reactive wakeup calls ask_question and preserves trailing markdown chunks', async () => {
+      const onQuestion = vi.fn();
+      const { backend, agent, spawnFn, messages } = setupObserver1510({ onQuestion, observerSettleMs: 15 });
+
+      const pending = backend.sendPrompt('', 'subagent then ask');
+      const req = await promptRequest(agent);
+      // Initial turn ends while a subagent is active (Stop reports fullyIdle=false)
+      expect(await invokeStop(spawnFn, 0, false)).toEqual({});
+      agent.respond(req.id!, { stopReason: 'end_turn' });
+      await vi.waitFor(() => expect(messages).toContainEqual({ type: 'event', name: 'agy_step_complete', payload: null }));
+
+      // Subagent finishes -> reactive wakeup calls ask_question without invoking Stop again
+      agent.notify({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'ask-wakeup',
+        title: 'Run ask_question',
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: { questions: [{ question: 'Deploy target?', options: ['A1', 'Simba'] }] },
+      });
+      agent.notify({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'ask-wakeup',
+        status: 'pending',
+      });
+      setTimeout(() => {
+        agent.notify({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: '\nDeploy target?\n- [1] A1\n- [2] Simba\n' },
+        });
+      }, 10);
+
+      await pending;
+      expect(agent.child.kill).not.toHaveBeenCalled();
+      expect(onQuestion).toHaveBeenCalledTimes(1);
+      // Trailing markdown chunk arrived BEFORE sendPrompt resolved (before status: idle)
+      const chunkIdx = messages.findIndex(m => m.type === 'model-output' && m.textDelta?.includes('Deploy target?'));
+      const idleIdx = messages.findIndex(m => m.type === 'status' && m.status === 'idle');
+      expect(chunkIdx).toBeGreaterThanOrEqual(0);
+      expect(idleIdx).toBeGreaterThan(chunkIdx);
+    });
+
+    it('still fails closed without delegating a ghost card when ask_question pauses while another non-daemon command remains open', async () => {
+      const onQuestion = vi.fn();
+      const { backend, agent } = setupObserver1510({ onQuestion });
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') {
+          agent.respond(rpc.id!, {
+            protocolVersion: 1,
+            agentInfo: { name: 'Antigravity ACP Server', version: '1.5.14' },
+            agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+          });
+          return;
+        }
+        if (rpc.method !== 'session/prompt') return fallback(rpc);
+        agent.notify({
+          sessionUpdate: 'tool_call',
+          toolCallId: 'open-cmd',
+          title: 'sleep 30',
+          kind: 'execute',
+          status: 'in_progress',
+          rawInput: { CommandLine: 'sleep 30' },
+        });
+        agent.notify({
+          sessionUpdate: 'tool_call',
+          toolCallId: 'ask-open',
+          title: 'Run ask_question',
+          kind: 'other',
+          status: 'pending',
+          rawInput: { questions: [{ question: 'Continue?', options: ['Yes', 'No'] }] },
+        });
+        agent.respond(rpc.id!, { stopReason: 'end_turn' });
+      });
+
+      await expect(backend.sendPrompt('', 'mixed open')).rejects.toThrow('Stop hook did not report a valid result');
+      expect(onQuestion).not.toHaveBeenCalled();
+      expect(agent.child.kill).toHaveBeenCalled();
+    });
+
+    it('supports ask_question on legacy 1.5.9 continue mode, fences post-turn permissions, drains async cancel failure, and survives pre-prompt config error', async () => {
+      const { backend, agent, spawnFn, messages } = setup({
+        stopHook: true,
+        permissionMode: 'yolo',
+        stopHookLimits: { maxBackoffMs: 0 },
+      });
+      let promptCalls = 0;
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'session/cancel') {
+          setTimeout(() => {
+            agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'ask-cancel', status: 'failed' });
+          }, 15);
+          return;
+        }
+        if (rpc.method !== 'session/prompt') return fallback(rpc);
+        promptCalls++;
+        if (promptCalls === 1) {
+          // Execution 0 hits Stop(fullyIdle=false) -> continue; Execution 1 calls ask_question without Stop
+          void invokeStop(spawnFn, 0, false).then((decision) => {
+            expect(decision.decision).toBe('continue');
+            agent.notify({
+              sessionUpdate: 'tool_call',
+              toolCallId: 'ask-legacy',
+              title: 'Run ask_question',
+              kind: 'other',
+              status: 'pending',
+              rawInput: { questions: [{ question: 'Pick?', options: ['One', 'Two'] }] },
+            });
+            agent.respond(rpc.id!, { stopReason: 'end_turn' });
+          });
+        } else if (promptCalls === 2) {
+          // Turn 2 update omits title/kind; must match preserved ask-legacy without emitting phantom agy_tool
+          agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'ask-legacy', status: 'in_progress' });
+          agent.notify({ sessionUpdate: 'tool_call_update', toolCallId: 'ask-legacy', status: 'completed' });
+          agent.notify({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'ask-cancel',
+            title: 'Run ask_question',
+            kind: 'other',
+            status: 'pending',
+            rawInput: { questions: [{ question: 'Cancel me?', options: ['A', 'B'] }] },
+          });
+          agent.respond(rpc.id!, { stopReason: 'end_turn' });
+        }
+      });
+
+      await backend.sendPrompt('', 'turn 1');
+      expect(agent.child.kill).not.toHaveBeenCalled();
+
+      // Post-turn permission RPC on 1.5.9 must remain fenced (cancelled) even in yolo mode while paused on a question
+      agent.stdout.write(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 777,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'session-1',
+          toolCall: { toolCallId: 'rogue-perm', title: 'rm', kind: 'execute', rawInput: { CommandLine: 'echo rogue' } },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      }) + '\n');
+      await vi.waitFor(() => {
+        const permReply = agent.received.find(r => r.id === 777) as any;
+        expect(permReply?.result).toEqual({ outcome: { outcome: 'cancelled' } });
+      });
+
+      // Pre-prompt model error while ask-legacy is open must NOT kill the server or clear paused state
+      backend.setModel('Nonexistent Model');
+      await expect(backend.sendPrompt('', 'bad model')).rejects.toThrow('model is unavailable');
+      expect(agent.child.kill).not.toHaveBeenCalled();
+      backend.setModel('Gemini 3.8 Flash');
+
+      await backend.sendPrompt('', 'One');
+      expect(messages.some(m => m.type === 'tool-call' && m.toolName === 'agy_tool')).toBe(false);
+      expect(messages).toContainEqual(expect.objectContaining({ type: 'tool-result', callId: 'ask-legacy', isError: false }));
+
+      // Cancel while paused between turns drains delayed failed update cleanly
+      await backend.cancel();
+      expect(agent.received.some(r => r.method === 'session/cancel')).toBe(true);
+      expect(messages).toContainEqual(expect.objectContaining({
+        type: 'tool-result',
+        callId: 'ask-cancel',
+        result: 'Antigravity tool failed.',
+        isError: true,
+      }));
+    });
+
+    it('epoch-fences unclosed prior-turn questions, handles overlapping/late-input/in-turn-failed questions, and redacts tainted question markdown', async () => {
+      const signals: AbortSignal[] = [];
+      const onQuestion = vi.fn((_id: string, _q: unknown, signal: AbortSignal) => { signals.push(signal); });
+      const requestPermission = vi.fn(async () => ({ decision: 'denied' as const }));
+      const { backend, agent, spawnFn, messages } = setupObserver1510({ onQuestion, requestPermission, observerSettleMs: 10 });
+
+      let turn = 0;
+      agent.setHandler((rpc, fallback) => {
+        if (rpc.method === 'initialize') {
+          agent.respond(rpc.id!, {
+            protocolVersion: 1,
+            agentInfo: { name: 'Antigravity ACP Server', version: '1.5.14' },
+            agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
+          });
+          return;
+        }
+        if (rpc.method !== 'session/prompt') return fallback(rpc);
+        turn++;
+        if (turn === 1) {
+          // Question A fails in-turn; Question B arrives pending with empty rawInput then receives questions
+          agent.notify({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'ask-failed-in-turn',
+            title: 'Run ask_question',
+            kind: 'other',
+            status: 'pending',
+            rawInput: { questions: [{ question: 'Blocked?', options: ['Y', 'N'] }] },
+          });
+          agent.notify({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'ask-failed-in-turn',
+            status: 'failed',
+          });
+          agent.notify({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'ask-late-input',
+            title: 'Run ask_question',
+            kind: 'other',
+            status: 'pending',
+            rawInput: {},
+          });
+          agent.notify({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'ask-late-input',
+            status: 'pending',
+            rawInput: { questions: [{ question: 'Pick target?', options: ['Alpha', 'Beta'] }] },
+          });
+          agent.respond(rpc.id!, { stopReason: 'end_turn' });
+        } else if (turn === 2) {
+          // Turn 2 bypasses ask-late-input without closing it AND immediately pauses on a second question
+          // (verifies unclosed prior-epoch question does NOT trip hasAnyOpenActiveTools)
+          agent.notify({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'ask-turn-2-direct',
+            title: 'Run ask_question',
+            kind: 'other',
+            status: 'pending',
+            rawInput: { questions: [{ question: 'Second direct?', options: ['Left', 'Right'] }] },
+          });
+          agent.respond(rpc.id!, { stopReason: 'end_turn' });
+        } else if (turn === 3) {
+          // Turn 3 bypasses ask-turn-2-direct without closing it and finishes normally -> reaps ask-turn-2-direct
+          void invokeStop(spawnFn, 0, true).then(() => {
+            agent.respond(rpc.id!, { stopReason: 'end_turn' });
+          });
+        } else if (turn === 4) {
+          // Turn 4: tainted credential arrives AFTER initial empty rawInput, split across chunks & usage_update
+          agent.notify({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'ask-secret',
+            title: 'Run ask_question',
+            kind: 'other',
+            status: 'pending',
+            rawInput: {},
+          });
+          agent.notify({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Use token?\n- [1] sk-live-' },
+          });
+          agent.notify({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'ask-secret',
+            status: 'pending',
+            rawInput: { questions: [] },
+          });
+          agent.notify({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'ask-secret',
+            status: 'pending',
+            rawInput: { questions: [{ question: 'Use token?', options: ['sk-live-secret-token-value-9999'] }] },
+          });
+          agent.notify({ sessionUpdate: 'usage_update', used: 10, size: 100 } as any);
+          agent.notify({
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', text: 'Checking sk-live-' },
+          });
+          agent.notify({
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', text: 'secret-token-value-9999\n' },
+          });
+          agent.notify({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'secret-token-value-9999\n' },
+          });
+          agent.respond(rpc.id!, { stopReason: 'end_turn' });
+        } else if (turn === 5) {
+          // Turn 5 leaves ask-secret unclosed AND denies a permission without Stop -> must fail closed!
+          agent.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id: 950,
+            method: 'session/request_permission',
+            params: {
+              sessionId: 'session-1',
+              toolCall: { toolCallId: 'denied-t5', title: 'rm', kind: 'execute', rawInput: { CommandLine: 'echo no' } },
+              options: [{ optionId: 'deny', name: 'Deny', kind: 'reject_once' }],
+            },
+          }) + '\n');
+          setTimeout(() => {
+            agent.respond(rpc.id!, { stopReason: 'end_turn' });
+          }, 15);
+        }
+      });
+
+      await backend.sendPrompt('', 'turn 1');
+      expect(onQuestion).toHaveBeenCalledTimes(1);
+      expect(onQuestion).toHaveBeenLastCalledWith('ask-late-input', expect.any(Array), expect.any(AbortSignal));
+      expect(signals[0].aborted).toBe(false);
+
+      await backend.sendPrompt('', 'turn 2 direct second question');
+      expect(signals[0].aborted).toBe(true);
+      expect(onQuestion).toHaveBeenCalledTimes(2);
+      expect(onQuestion).toHaveBeenLastCalledWith('ask-turn-2-direct', expect.any(Array), expect.any(AbortSignal));
+
+      await backend.sendPrompt('', 'bypass turn 3');
+      expect(signals[1].aborted).toBe(true);
+
+      await backend.sendPrompt('', 'turn 4 secret');
+      const combinedOutput = messages
+        .filter((m): m is Extract<typeof m, { type: 'model-output' }> => m.type === 'model-output')
+        .map(m => m.textDelta ?? '')
+        .join('');
+      const combinedThinking = messages
+        .filter((m): m is Extract<typeof m, { type: 'event' }> => m.type === 'event' && m.name === 'thinking')
+        .map(m => (m.payload as any)?.text ?? '')
+        .join('');
+      expect(combinedOutput).not.toContain('sk-live-secret-token-value-9999');
+      expect(combinedOutput).not.toContain('secret-token-value-9999');
+      expect(combinedThinking).not.toContain('sk-live-secret-token-value-9999');
+      expect(combinedThinking).not.toContain('secret-token-value-9999');
+
+      await expect(backend.sendPrompt('', 'turn 5 denied')).rejects.toThrow('permission was denied');
+      expect(agent.child.kill).toHaveBeenCalled();
+    });
   });
 
 });

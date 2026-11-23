@@ -10,7 +10,16 @@ import type { Metadata, PermissionMode } from '@/api/types';
 import { AGY_EFFORT_LEVELS, groupAgyModels, selectAgyEffort } from '@slopus/happy-wire';
 import type { AgentBackend, AgentMessage, AgentMessageHandler, SessionId } from '@/agent/core/AgentBackend';
 import { resolveAgyBin, resolveAgyModelName } from './constants';
-import { isPlainRecord, mapAgyToolToDisplay, sanitizeDiagnosticText } from './toolDisplay';
+import {
+  containsCredentialCarrier,
+  hasQuestionCredentialCarrier,
+  isPlainRecord,
+  mapAgyToolToDisplay,
+  parseAgyAskQuestionInput,
+  sanitizeDiagnosticText,
+  sanitizeDiffText,
+  type AgyParsedQuestion,
+} from './toolDisplay';
 import {
   AgyStopHook,
   resolveAgyStopHookSetting,
@@ -78,6 +87,13 @@ export interface AgyAcpOptions {
     decision: 'approved' | 'approved_for_session' | 'denied' | 'abort';
   }>;
   resetPermissions?: () => void;
+  /**
+   * Optional interactive question bridge (wired by runAgy to AgentUserInputHandler).
+   * When set and a single valid `ask_question` call pauses for user input,
+   * AgyAcpBackend delegates its card lifecycle to this callback instead of emitting
+   * a generic Bash tool-call/tool-result pair.
+   */
+  onQuestion?: (callId: string, questions: AgyParsedQuestion[], signal: AbortSignal) => void;
   spawnFn?: typeof spawn;
   requestTimeoutMs?: number;
   cancelGraceMs?: number;
@@ -136,19 +152,41 @@ export class AgyAcpBackend implements AgentBackend {
   private disposed = false;
   private replaying = false;
   private supportsPostTurnFollowups = false;
+  private promptRunning = false;
   private sessionAcceptingEvents = false;
+  private pausedQuestionSession = false;
   private backgroundRunning = false;
   private backgroundStepDirty = false;
   private workEpoch = 0;
   private pendingPermissions = 0;
+  private foregroundPermissions = new Map<number, number>();
   private drainingCancelTools: (() => void) | null = null;
   private observerWake: (() => void) | null = null;
+  private questionActivitySeq = 0;
+  private postTurnQuestionTimer: ReturnType<typeof setTimeout> | null = null;
+  private taintedStreamLatch = false;
+  private taintedOutputRedacted = false;
+  private taintedThoughtRedacted = false;
+  private taintedOutputBuffer = '';
+  private taintedThoughtBuffer = '';
   private tools = new Map<string, {
     toolName: string;
     nativeName: string;
     args: Record<string, unknown>;
+    rawParameters?: Record<string, unknown>;
+    parsedQuestions?: AgyParsedQuestion[];
     commandExecution: boolean;
     isDaemon: boolean;
+    isQuestion: boolean;
+    payloadSeen: boolean;
+    startedIncomplete: boolean;
+    taintedQuestion: boolean;
+    questionPending: boolean;
+    pendingEpoch: number | null;
+    pendingAtObservations: number;
+    deferredEmit: boolean;
+    delegatedQuestion: boolean;
+    questionAbort?: AbortController;
     ownerEpoch: number;
   }>();
   private completedTools = new Set<string>();
@@ -201,9 +239,59 @@ export class AgyAcpBackend implements AgentBackend {
     }
   }
 
-  private hasOpenForegroundTools(epoch: number): boolean {
+  private hasOpenActiveForegroundTools(epoch: number): boolean {
     for (const tool of this.tools.values()) {
-      if (tool.ownerEpoch === epoch && !tool.isDaemon) return true;
+      if (tool.ownerEpoch === epoch && !tool.isDaemon && !(tool.isQuestion && tool.questionPending)) return true;
+    }
+    return false;
+  }
+
+  private hasOpenForegroundPermissions(epoch: number): boolean {
+    return (this.foregroundPermissions.get(epoch) ?? 0) > 0;
+  }
+
+  private hasAnyOpenActiveTools(): boolean {
+    for (const tool of this.tools.values()) {
+      if (!tool.isDaemon && (!tool.isQuestion || (tool.ownerEpoch === this.workEpoch && !tool.questionPending))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private hasQuestionPayload(raw: Record<string, unknown> | undefined): boolean {
+    if (!raw) return false;
+    const list = Array.isArray(raw.questions)
+      ? raw.questions
+      : isPlainRecord(raw.question)
+        ? [raw.question]
+        : typeof raw.question === 'string'
+          ? [raw]
+          : [];
+    return list.length > 0 && list.every((item) =>
+      isPlainRecord(item)
+      && typeof item.question === 'string'
+      && item.question.trim().length > 0
+      && Array.isArray(item.options)
+      && item.options.length > 0
+      && item.options.every((opt) =>
+        (typeof opt === 'string' && opt.trim().length > 0)
+        || (isPlainRecord(opt) && typeof opt.label === 'string' && opt.label.trim().length > 0),
+      ),
+    );
+  }
+
+  private hasUnresolvedQuestionPayload(): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.isQuestion && (tool.taintedQuestion || !tool.payloadSeen)) return true;
+    }
+    return false;
+  }
+
+  private shouldBufferQuestionStream(): boolean {
+    if (this.taintedStreamLatch) return true;
+    for (const tool of this.tools.values()) {
+      if (tool.isQuestion && (tool.taintedQuestion || !tool.payloadSeen || tool.startedIncomplete)) return true;
     }
     return false;
   }
@@ -213,6 +301,214 @@ export class AgyAcpBackend implements AgentBackend {
       if (!tool.isDaemon) return true;
     }
     return false;
+  }
+
+  private hasOpenQuestionTools(): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.isQuestion) return true;
+    }
+    return false;
+  }
+
+  private hasTaintedQuestionTools(): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.isQuestion && tool.taintedQuestion) return true;
+    }
+    return false;
+  }
+
+  private hasPendingQuestionTools(): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.isQuestion && tool.questionPending) return true;
+    }
+    return false;
+  }
+
+  private hasPendingQuestionForEpoch(epoch: number, observations?: number): boolean {
+    for (const tool of this.tools.values()) {
+      if (
+        tool.isQuestion
+        && tool.questionPending
+        && tool.pendingEpoch === epoch
+        && (observations === undefined || tool.pendingAtObservations === observations)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private hasDelegatedQuestion(): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.delegatedQuestion) return true;
+    }
+    return false;
+  }
+
+  private hasUnpopulatedPendingQuestion(): boolean {
+    for (const tool of this.tools.values()) {
+      if (tool.isQuestion && tool.questionPending && !tool.payloadSeen) return true;
+    }
+    return false;
+  }
+
+  private clearPostTurnQuestionTimer(): void {
+    if (this.postTurnQuestionTimer) {
+      clearTimeout(this.postTurnQuestionTimer);
+      this.postTurnQuestionTimer = null;
+    }
+  }
+
+  private flushTaintedBuffers(): void {
+    const mustSanitize = this.taintedStreamLatch || this.hasUnresolvedQuestionPayload();
+    if (this.taintedThoughtBuffer) {
+      const rawThought = this.taintedThoughtBuffer;
+      this.taintedThoughtBuffer = '';
+      if (!mustSanitize) {
+        this.emit({ type: 'event', name: 'thinking', payload: { text: rawThought, streaming: true } });
+      } else if (!this.taintedThoughtRedacted) {
+        this.taintedThoughtRedacted = true;
+        this.emit({ type: 'event', name: 'thinking', payload: { text: '[redacted]', streaming: true } });
+      }
+    }
+    if (this.taintedOutputBuffer) {
+      const rawOutput = this.taintedOutputBuffer;
+      this.taintedOutputBuffer = '';
+      if (!mustSanitize) {
+        this.emit({ type: 'model-output', textDelta: rawOutput });
+      } else if (!this.taintedOutputRedacted) {
+        this.taintedOutputRedacted = true;
+        this.emit({ type: 'model-output', textDelta: '[redacted]' });
+      }
+    }
+  }
+
+  republishPausedQuestion(): boolean {
+    if (!this.options.onQuestion || this.active || this.cancelling || this.disposed) return false;
+    for (const [callId, tool] of this.tools) {
+      if (tool.isQuestion && tool.questionPending && tool.delegatedQuestion && tool.parsedQuestions) {
+        tool.questionAbort?.abort();
+        const controller = new AbortController();
+        tool.questionAbort = controller;
+        this.options.onQuestion(`${callId}:retry:${++this.questionActivitySeq}`, tool.parsedQuestions, controller.signal);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private schedulePostTurnQuestionSettle(): void {
+    this.clearPostTurnQuestionTimer();
+    const delayMs = Math.max(80, (this.options.observerSettleMs ?? 25) * 4);
+    this.postTurnQuestionTimer = setTimeout(() => {
+      this.postTurnQuestionTimer = null;
+      if (this.active || this.cancelling || this.disposed) return;
+      const totalObs = this.stopHook?.policy.totalObservations();
+      for (const tool of this.tools.values()) {
+        if (tool.isQuestion && tool.questionPending && totalObs !== undefined && tool.pendingAtObservations < totalObs) {
+          tool.questionPending = false;
+          tool.pendingEpoch = null;
+          tool.questionAbort?.abort();
+        }
+      }
+      if (!this.hasPendingQuestionTools() || this.hasAnyOpenActiveTools() || this.pendingPermissions > 0) return;
+      if (this.hasUnpopulatedPendingQuestion()) return;
+      this.flushTaintedBuffers();
+      this.settleDaemonTools();
+      if (this.backgroundStepDirty) {
+        this.backgroundStepDirty = false;
+        this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
+      }
+      this.promoteDeferredQuestionTools(undefined, totalObs);
+      this.pausedQuestionSession = this.hasPendingQuestionTools();
+      if (this.backgroundRunning) {
+        this.backgroundRunning = false;
+        this.emit({ type: 'status', status: 'idle' });
+      }
+    }, delayMs);
+  }
+
+  private reapStaleQuestions(epoch: number): void {
+    for (const [callId, tool] of this.tools) {
+      if (!tool.isQuestion) continue;
+      const isCurrentPending = tool.questionPending && tool.pendingEpoch === epoch;
+      if (isCurrentPending) continue;
+      if (tool.ownerEpoch >= epoch && tool.questionPending) continue;
+      if (tool.taintedQuestion || !tool.payloadSeen) {
+        this.taintedStreamLatch = true;
+      }
+      tool.questionAbort?.abort();
+      tool.rawParameters = undefined;
+      if (!tool.delegatedQuestion) {
+        if (tool.deferredEmit) {
+          tool.deferredEmit = false;
+          this.emit({ type: 'tool-call', callId, toolName: tool.toolName, args: tool.args });
+        }
+        this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: null, isError: false });
+      }
+      this.tools.delete(callId);
+      this.trackCompletedTool(callId);
+    }
+    if (!this.shouldBufferQuestionStream()) {
+      this.flushTaintedBuffers();
+    }
+  }
+
+  private promoteDeferredQuestionTools(epoch?: number, observations?: number): void {
+    if (epoch !== undefined) {
+      for (const tool of this.tools.values()) {
+        if (tool.isQuestion && (tool.taintedQuestion || !tool.payloadSeen)) {
+          this.taintedStreamLatch = true;
+        }
+      }
+      this.flushTaintedBuffers();
+      this.reapStaleQuestions(epoch);
+    } else if (!this.hasUnpopulatedPendingQuestion()) {
+      this.flushTaintedBuffers();
+    }
+    const eligibleEntries: Array<[string, NonNullable<ReturnType<typeof this.tools.get>>]> = [];
+    for (const [callId, tool] of this.tools) {
+      if (
+        tool.isQuestion
+        && tool.deferredEmit
+        && tool.questionPending
+        && (epoch === undefined || tool.pendingEpoch === epoch)
+        && (observations === undefined || tool.pendingAtObservations === observations)
+      ) {
+        eligibleEntries.push([callId, tool]);
+      }
+    }
+    const canDelegateSingle = Boolean(this.options.onQuestion)
+      && eligibleEntries.length === 1
+      && !this.hasDelegatedQuestion();
+
+    for (const [callId, tool] of this.tools) {
+      if (!tool.isQuestion || !tool.deferredEmit) continue;
+      if (epoch !== undefined && tool.pendingEpoch !== epoch) continue;
+      if (observations !== undefined && tool.pendingAtObservations !== observations) continue;
+      const rawParameters = tool.rawParameters;
+      // On post-turn reactive streams, if `pending` arrived without question fields before a
+      // follow-up `tool_call_update` carrying `rawInput.questions`, keep `deferredEmit`
+      // armed so the subsequent update can promote it.
+      if (epoch === undefined && !this.hasQuestionPayload(rawParameters)) {
+        continue;
+      }
+      tool.deferredEmit = false;
+      tool.rawParameters = undefined;
+      if (canDelegateSingle && eligibleEntries[0]?.[0] === callId && !tool.delegatedQuestion) {
+        const parsed = rawParameters ? parseAgyAskQuestionInput(rawParameters) : null;
+        if (parsed) {
+          const controller = new AbortController();
+          tool.startedIncomplete = false;
+          tool.delegatedQuestion = true;
+          tool.parsedQuestions = parsed;
+          tool.questionAbort = controller;
+          this.options.onQuestion!(callId, parsed, controller.signal);
+          continue;
+        }
+      }
+      this.emit({ type: 'tool-call', callId, toolName: tool.toolName, args: tool.args });
+    }
   }
 
   private settleDaemonTools(): void {
@@ -231,14 +527,28 @@ export class AgyAcpBackend implements AgentBackend {
   }
 
   private closeUnresolvedTools(): void {
+    for (const tool of this.tools.values()) {
+      if (tool.isQuestion && (tool.taintedQuestion || !tool.payloadSeen)) {
+        this.taintedStreamLatch = true;
+      }
+    }
+    this.flushTaintedBuffers();
     for (const [callId, tool] of this.tools) {
-      this.emit({
-        type: 'tool-result',
-        callId,
-        toolName: tool.toolName,
-        result: 'Completion was not reported. Background work may still be running.',
-        isError: true,
-      });
+      tool.questionAbort?.abort();
+      tool.rawParameters = undefined;
+      if (!tool.delegatedQuestion) {
+        if (tool.deferredEmit) {
+          tool.deferredEmit = false;
+          this.emit({ type: 'tool-call', callId, toolName: tool.toolName, args: tool.args });
+        }
+        this.emit({
+          type: 'tool-result',
+          callId,
+          toolName: tool.toolName,
+          result: 'Completion was not reported. Background work may still be running.',
+          isError: true,
+        });
+      }
       this.tools.delete(callId);
       this.trackCompletedTool(callId);
     }
@@ -246,10 +556,20 @@ export class AgyAcpBackend implements AgentBackend {
 
   private stopProcess(): void {
     this.workEpoch++;
+    this.clearPostTurnQuestionTimer();
+    this.taintedStreamLatch = false;
+    this.taintedOutputRedacted = false;
+    this.taintedThoughtRedacted = false;
+    this.taintedOutputBuffer = '';
+    this.taintedThoughtBuffer = '';
+    this.promptRunning = false;
     this.sessionAcceptingEvents = false;
+    this.pausedQuestionSession = false;
     this.backgroundRunning = false;
     this.backgroundStepDirty = false;
     this.supportsPostTurnFollowups = false;
+    this.foregroundPermissions.clear();
+    this.observerWake?.();
     this.drainingCancelTools?.();
     this.drainingCancelTools = null;
     if (!this.active && !this.cancelling && this.tools.size > 0) {
@@ -294,6 +614,17 @@ export class AgyAcpBackend implements AgentBackend {
         this.options.stopHookLimits,
         hookSetting === 'observe' ? 'observe' : 'continue',
       );
+      const createdHook = this.stopHook;
+      createdHook.policy.subscribe(() => {
+        const totalObs = createdHook.policy.totalObservations();
+        for (const tool of this.tools.values()) {
+          if (tool.isQuestion && tool.questionPending && tool.pendingAtObservations < totalObs) {
+            tool.questionPending = false;
+            tool.pendingEpoch = null;
+            tool.questionAbort?.abort();
+          }
+        }
+      });
       if (this.disposed || this.cancelled) { this.stopProcess(); throw new AgyCancelledError(); }
     }
     let child: ChildProcess;
@@ -312,11 +643,21 @@ export class AgyAcpBackend implements AgentBackend {
       child.once('exit', () => {
         reject(new Error('Antigravity ACP process exited'));
         if (this.child === child) {
+          this.clearPostTurnQuestionTimer();
+          this.taintedStreamLatch = false;
+          this.taintedOutputRedacted = false;
+          this.taintedThoughtRedacted = false;
+          this.taintedOutputBuffer = '';
+          this.taintedThoughtBuffer = '';
           const hadPostTurnWork = !this.active && !this.cancelling && (this.backgroundRunning || this.tools.size > 0);
+          this.promptRunning = false;
           this.sessionAcceptingEvents = false;
+          this.pausedQuestionSession = false;
           this.backgroundRunning = false;
           this.backgroundStepDirty = false;
           this.supportsPostTurnFollowups = false;
+          this.foregroundPermissions.clear();
+          this.observerWake?.();
           this.drainingCancelTools?.();
           this.drainingCancelTools = null;
           if (!this.active && !this.cancelling && this.tools.size > 0) {
@@ -448,41 +789,61 @@ export class AgyAcpBackend implements AgentBackend {
     // No set_config_option booleans: mode/model use their typed ACP methods.
   }
 
-  async sendPrompt(_sessionId: SessionId, prompt: string, images: ContentBlock[] = []): Promise<void> {
+  async sendPrompt(_sessionId: SessionId, prompt: string, images: ContentBlock[] = [], signal?: AbortSignal): Promise<void> {
     if (this.cancelling) await this.cancelling;
     if (this.active) throw new Error('An Antigravity turn is already running');
+    this.clearPostTurnQuestionTimer();
     this.cancelled = false;
     this.permissionDenied = false;
     this.backgroundRunning = false;
     this.backgroundStepDirty = false;
-    const active = this.runPrompt(prompt, images).finally(() => {
+    const active = this.runPrompt(prompt, images, signal).finally(() => {
       if (this.active === active) this.active = null;
     });
     this.active = active;
     await active;
   }
 
-  private async runPrompt(prompt: string, images: ContentBlock[]): Promise<void> {
+  private async runPrompt(prompt: string, images: ContentBlock[], promptSignal?: AbortSignal): Promise<void> {
     let preserveBackgroundSession = false;
     let hookBegan = false;
+    let promptStarted = false;
     this.emit({ type: 'status', status: 'running' });
     try {
       await this.connect();
-      const epoch = ++this.workEpoch;
-      if (!this.supportsPostTurnFollowups) {
-        this.tools.clear();
-        this.completedTools.clear();
-      } else {
-        this.sessionAcceptingEvents = true;
-      }
       if (images.length && !this.capabilities.promptCapabilities?.image) throw new Error('Antigravity ACP does not support image input');
       await this.configure();
-      if (this.cancelled) throw new AgyCancelledError();
+      if (this.cancelled || promptSignal?.aborted) throw new AgyCancelledError();
+      const epoch = ++this.workEpoch;
+      this.pausedQuestionSession = false;
+      for (const [callId, tool] of this.tools) {
+        if (tool.isQuestion) {
+          tool.questionPending = false;
+          tool.pendingEpoch = null;
+          tool.questionAbort?.abort();
+        } else if (!this.supportsPostTurnFollowups) {
+          this.tools.delete(callId);
+        }
+      }
+      // Drain any post-turn buffered output/thought chunks under the previous turn's
+      // taint latch BEFORE resetting the latch for a clean subsequent turn.
+      this.flushTaintedBuffers();
+      this.taintedOutputRedacted = false;
+      this.taintedThoughtRedacted = false;
+      if (!this.hasUnresolvedQuestionPayload()) {
+        this.taintedStreamLatch = false;
+      }
+      if (this.supportsPostTurnFollowups) {
+        this.sessionAcceptingEvents = true;
+      }
       const hook = this.stopHook;
+      const turnBaselineObs = hook?.policy.totalObservations() ?? 0;
       if (hook) {
         hook.policy.begin(this.sessionId!);
         hookBegan = true;
       }
+      promptStarted = true;
+      this.promptRunning = true;
       const response = await Promise.race([this.connection!.prompt({
         sessionId: this.sessionId!, prompt: [{ type: 'text', text: this.options.initialPrompt && !this.initialPromptDelivered
           ? `${this.options.initialPrompt}\n\n${prompt}` : prompt }, ...images],
@@ -493,22 +854,43 @@ export class AgyAcpBackend implements AgentBackend {
       const isObserverHook = hook?.policy.getMode() === 'observe';
       if (hook && isObserverHook) {
         const initialSnap = hook.policy.snapshot();
-        if (!initialSnap?.seen && this.permissionDenied) {
+        if (!initialSnap?.seen && this.permissionDenied && !this.hasPendingQuestionForEpoch(epoch, turnBaselineObs)) {
           throw new Error('Antigravity stopped after a tool permission was denied. The denied action was not approved.'
-            + (this.hasAnyOpenNonDaemonTools() ? ' Other background work may still be running; completion is unconfirmed.' : ''));
+            + (this.hasAnyOpenActiveTools() ? ' Other background work may still be running; completion is unconfirmed.' : ''));
         }
         if (initialSnap?.seen && !initialSnap.issue && initialSnap.fullyIdle === false) {
           this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
           this.permissionDenied = false;
           await Promise.race([this.waitForObservedIdle(hook, epoch), this.lifetime]);
           if (this.cancelled) throw new AgyCancelledError();
-        } else if (initialSnap?.seen && !initialSnap.issue && initialSnap.fullyIdle === true && this.hasOpenForegroundTools(epoch)) {
-          // Cross-FD sync: give stdout pipe a brief settle if Stop arrived just ahead of tool_call_update(completed).
+        } else if (
+          !initialSnap?.issue
+          && (initialSnap?.seen ? initialSnap.fullyIdle === true : this.hasPendingQuestionForEpoch(epoch, turnBaselineObs))
+          && this.hasOpenActiveForegroundTools(epoch)
+        ) {
+          // Cross-FD / parallel-tool sync: give stdout pipe a brief settle if Stop or
+          // ask_question end_turn arrived just ahead of a sibling tool_call_update(completed).
           await Promise.race([this.waitForPipeToolSync(epoch), this.lifetime]);
           if (this.cancelled) throw new AgyCancelledError();
         }
+      } else if (this.hasPendingQuestionForEpoch(epoch) && this.hasOpenActiveForegroundTools(epoch)) {
+        await Promise.race([this.waitForPipeToolSync(epoch), this.lifetime]);
+        if (this.cancelled) throw new AgyCancelledError();
       }
-      const hookIssue = hook?.policy.finish();
+      // AGY pauses on `ask_question` and returns `end_turn` without invoking `Stop`.
+      // Exempt missing `Stop` / prior `fullyIdle=false` only when a question entered
+      // `status: "pending"` during this turn's latest observation, no other active
+      // non-daemon tools or permission prompts remain open, and the hook reported no issue.
+      const preFinishSnap = hook?.policy.snapshot();
+      const currentTotalObs = hook?.policy.totalObservations();
+      const pausedForQuestion = this.hasPendingQuestionForEpoch(epoch, currentTotalObs)
+        && !this.hasAnyOpenActiveTools()
+        && this.pendingPermissions === 0
+        && !preFinishSnap?.issue;
+      if (pausedForQuestion) {
+        this.promoteDeferredQuestionTools(epoch, currentTotalObs);
+      }
+      const hookIssue = hook?.policy.finish({ allowQuestionPause: pausedForQuestion });
       const state = hook?.policy.snapshot();
       if (hook) {
         if (isObserverHook) {
@@ -518,44 +900,76 @@ export class AgyAcpBackend implements AgentBackend {
         }
       }
       // Rejection sometimes skips Stop entirely. A valid final idle observation
-      // still permits a graceful agent response explaining the denied action.
-      if (hook && this.permissionDenied && !state?.seen) {
+      // or subsequent ask_question fallback still permits a graceful turn pause.
+      if (hook && this.permissionDenied && !state?.seen && !pausedForQuestion) {
         throw new Error('Antigravity stopped after a tool permission was denied. The denied action was not approved.'
-          + (this.hasAnyOpenNonDaemonTools() ? ' Other background work may still be running; completion is unconfirmed.' : ''));
+          + (this.hasAnyOpenActiveTools() ? ' Other background work may still be running; completion is unconfirmed.' : ''));
       }
       if (hookIssue) throw new Error(`${hookIssue}. Completion is unconfirmed; background work may still be running.`);
-      const hasOpenTools = this.supportsPostTurnFollowups
-        ? this.hasOpenForegroundTools(epoch)
-        : this.tools.size > 0;
-      if (hasOpenTools) {
+      const hasUnfinishedForegroundWork = this.supportsPostTurnFollowups
+        ? (this.hasOpenActiveForegroundTools(epoch) || this.hasOpenForegroundPermissions(epoch))
+        : (this.hasAnyOpenActiveTools() || this.pendingPermissions > 0);
+      if (hasUnfinishedForegroundWork) {
         if (this.supportsPostTurnFollowups && !hook) {
           preserveBackgroundSession = true;
           this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
         }
         throw new Error('Antigravity ended its response before all tool results arrived. Work may still be running; completion is unconfirmed.');
       }
+      this.reapStaleQuestions(epoch);
+      this.flushTaintedBuffers();
       this.settleDaemonTools();
       if (this.supportsPostTurnFollowups) {
         preserveBackgroundSession = true;
+        this.sessionAcceptingEvents = true;
+      }
+      if (pausedForQuestion) {
+        preserveBackgroundSession = true;
+        this.pausedQuestionSession = true;
       }
       this.emit({ type: 'status', status: 'idle' });
     } catch (error) {
       const isCancel = this.cancelled || error instanceof AgyCancelledError;
       if (this.stopHook) {
         const snap = this.stopHook.policy.snapshot();
-        const dirtyObserverTurn = (hookBegan && (!snap?.seen || snap.fullyIdle !== true || Boolean(snap.issue)))
-          || this.hasAnyOpenNonDaemonTools();
-        if (this.stopHook.policy.getMode() === 'continue' || (!isCancel && dirtyObserverTurn)) {
+        const dirtyObserverTurn = promptStarted && (
+          (hookBegan && (!snap?.seen || snap.fullyIdle !== true || Boolean(snap.issue)))
+          || this.hasAnyOpenActiveTools()
+          || this.pendingPermissions > 0
+        );
+        if (!isCancel && ((hookBegan && this.stopHook.policy.getMode() === 'continue') || dirtyObserverTurn)) {
           preserveBackgroundSession = false;
           this.stopProcess();
         }
+      } else if (!isCancel && promptStarted && !preserveBackgroundSession && (this.pendingPermissions > 0 || !this.supportsPostTurnFollowups)) {
+        this.stopProcess();
       }
       if (isCancel) {
-        preserveBackgroundSession = false;
+        if (
+          !this.cancelled
+          && !promptStarted
+          && this.connection
+          && !this.connection.signal.aborted
+          && (this.supportsPostTurnFollowups || (!this.hasAnyOpenActiveTools() && this.pausedQuestionSession))
+        ) {
+          preserveBackgroundSession = true;
+          if (this.supportsPostTurnFollowups) {
+            this.sessionAcceptingEvents = true;
+          }
+        } else {
+          preserveBackgroundSession = false;
+        }
         throw new AgyCancelledError();
       }
       if (!this.connection || this.connection.signal.aborted) {
         preserveBackgroundSession = false;
+      } else if (!promptStarted && (this.supportsPostTurnFollowups || (!this.hasAnyOpenActiveTools() && this.pausedQuestionSession))) {
+        // Pre-prompt validation errors (unsupported image, unavailable model/mode)
+        // never entered a prompt; preserve the idle/paused session and open questions.
+        preserveBackgroundSession = true;
+        if (this.supportsPostTurnFollowups) {
+          this.sessionAcceptingEvents = true;
+        }
       }
       const message = error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
         ? error.message : 'Antigravity ACP failed';
@@ -563,16 +977,18 @@ export class AgyAcpBackend implements AgentBackend {
       this.emit({ type: 'status', status: 'error', detail });
       throw new Error(detail);
     } finally {
+      this.promptRunning = false;
       this.stopHook?.policy.cancel();
       if (!preserveBackgroundSession) {
         this.sessionAcceptingEvents = false;
+        this.pausedQuestionSession = false;
         // When cancelActive() is running, let cancelActive() drain cooperative
         // tool_call_update(failed) notifications before closing leftover cards.
         if (!this.cancelling) {
           this.closeUnresolvedTools();
-          if (this.pendingPermissions === 0) {
-            this.options.resetPermissions?.();
-          }
+          this.permissionAbort.abort();
+          this.permissionAbort = new AbortController();
+          this.options.resetPermissions?.();
         }
       }
     }
@@ -581,7 +997,7 @@ export class AgyAcpBackend implements AgentBackend {
   private waitForPipeToolSync(epoch: number): Promise<void> {
     const syncMs = Math.max(20, (this.options.observerSettleMs ?? 25) * 4);
     return new Promise<void>((resolve) => {
-      if (!this.hasOpenForegroundTools(epoch)) { resolve(); return; }
+      if (!this.hasOpenActiveForegroundTools(epoch)) { resolve(); return; }
       let timer: ReturnType<typeof setTimeout> | undefined;
       const done = () => {
         if (timer) clearTimeout(timer);
@@ -589,7 +1005,7 @@ export class AgyAcpBackend implements AgentBackend {
         resolve();
       };
       const wake = () => {
-        if (this.cancelled || this.disposed || !this.hasOpenForegroundTools(epoch)) done();
+        if (this.cancelled || this.disposed || !this.hasOpenActiveForegroundTools(epoch)) done();
       };
       this.observerWake = wake;
       timer = setTimeout(done, syncMs);
@@ -605,10 +1021,12 @@ export class AgyAcpBackend implements AgentBackend {
       let settled = false;
       let lastObservations = hook.policy.snapshot()?.observations ?? 1;
       let lastProgress = hook.policy.snapshot()?.progress ?? 0;
+      let lastQuestionSeq = this.questionActivitySeq;
       let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
       let denialTimer: ReturnType<typeof setTimeout> | undefined;
       let settleTimer: ReturnType<typeof setTimeout> | undefined;
       let pipeSyncTimer: ReturnType<typeof setTimeout> | undefined;
+      let questionSettleTimer: ReturnType<typeof setTimeout> | undefined;
 
       const cleanup = () => {
         if (settled) return;
@@ -617,6 +1035,7 @@ export class AgyAcpBackend implements AgentBackend {
         clearTimeout(denialTimer);
         clearTimeout(settleTimer);
         clearTimeout(pipeSyncTimer);
+        clearTimeout(questionSettleTimer);
         unsubscribe();
         if (this.observerWake === evaluate) this.observerWake = null;
       };
@@ -645,32 +1064,46 @@ export class AgyAcpBackend implements AgentBackend {
           lastProgress = state.progress;
           resetDeadline();
         }
+        if (this.questionActivitySeq !== lastQuestionSeq) {
+          lastQuestionSeq = this.questionActivitySeq;
+          clearTimeout(questionSettleTimer);
+          questionSettleTimer = undefined;
+        }
         if (state.observations > lastObservations) {
           lastObservations = state.observations;
           this.permissionDenied = false;
           clearTimeout(denialTimer);
           denialTimer = undefined;
           if (state.fullyIdle === false) {
+            for (const tool of this.tools.values()) {
+              if (tool.isQuestion && tool.pendingAtObservations < state.observations) {
+                tool.questionPending = false;
+              }
+            }
             this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
           }
         }
         // AGY 1.5.10 skips Stop when a reactive-wakeup permission request is rejected.
-        if (!this.permissionDenied || this.pendingPermissions > 0) {
+        const currentTotalObs = hook.policy.totalObservations();
+        if (!this.permissionDenied || this.pendingPermissions > 0 || this.hasPendingQuestionForEpoch(epoch, currentTotalObs)) {
           clearTimeout(denialTimer);
           denialTimer = undefined;
         } else if (state.fullyIdle !== true && !denialTimer) {
           denialTimer = setTimeout(() => {
             denialTimer = undefined;
-            if (settled || !this.permissionDenied || this.pendingPermissions > 0) return;
+            const latestTotalObs = hook.policy.totalObservations();
+            if (settled || !this.permissionDenied || this.pendingPermissions > 0 || this.hasPendingQuestionForEpoch(epoch, latestTotalObs)) return;
             cleanup();
             reject(new Error('Antigravity stopped after a tool permission was denied. The denied action was not approved.'
-              + (this.hasAnyOpenNonDaemonTools() ? ' Other background work may still be running; completion is unconfirmed.' : '')));
+              + (this.hasAnyOpenActiveTools() ? ' Other background work may still be running; completion is unconfirmed.' : '')));
           }, denialSettleMs);
         }
         if (state.fullyIdle === true) {
           clearTimeout(denialTimer);
           denialTimer = undefined;
-          if (this.pendingPermissions === 0 && !this.hasOpenForegroundTools(epoch) && !this.hasAnyOpenNonDaemonTools()) {
+          clearTimeout(questionSettleTimer);
+          questionSettleTimer = undefined;
+          if (this.pendingPermissions === 0 && !this.hasOpenActiveForegroundTools(epoch) && !this.hasAnyOpenActiveTools()) {
             clearTimeout(pipeSyncTimer);
             pipeSyncTimer = undefined;
             if (!settleTimer) {
@@ -684,7 +1117,7 @@ export class AgyAcpBackend implements AgentBackend {
                 }
                 const latest = hook.policy.snapshot();
                 if (!latest || !latest.active || latest.issue
-                  || (latest.fullyIdle === true && this.pendingPermissions === 0 && !this.hasAnyOpenNonDaemonTools())) {
+                  || (latest.fullyIdle === true && this.pendingPermissions === 0 && !this.hasAnyOpenActiveTools())) {
                   cleanup();
                   resolve();
                 }
@@ -710,6 +1143,32 @@ export class AgyAcpBackend implements AgentBackend {
           settleTimer = undefined;
           clearTimeout(pipeSyncTimer);
           pipeSyncTimer = undefined;
+          // Reactive wakeups that call `ask_question` pause on `status: "pending"`
+          // without invoking `Stop` a second time. Debounce until trailing question
+          // markdown chunks settle before concluding the turn.
+          if (this.hasPendingQuestionForEpoch(epoch, currentTotalObs) && !this.hasAnyOpenActiveTools() && this.pendingPermissions === 0) {
+            if (!questionSettleTimer) {
+              questionSettleTimer = setTimeout(() => {
+                questionSettleTimer = undefined;
+                if (settled) return;
+                if (this.cancelled || this.disposed) {
+                  cleanup();
+                  reject(new AgyCancelledError());
+                  return;
+                }
+                const latest = hook.policy.snapshot();
+                const latestTotalObs = hook.policy.totalObservations();
+                if (!latest || !latest.active || latest.issue
+                  || (this.hasPendingQuestionForEpoch(epoch, latestTotalObs) && !this.hasAnyOpenActiveTools() && this.pendingPermissions === 0)) {
+                  cleanup();
+                  resolve();
+                }
+              }, pipeSyncMs);
+            }
+          } else {
+            clearTimeout(questionSettleTimer);
+            questionSettleTimer = undefined;
+          }
         }
       };
 
@@ -730,13 +1189,24 @@ export class AgyAcpBackend implements AgentBackend {
         const callId = update.toolCallId;
         const tool = this.tools.get(callId);
         if (tool) {
-          this.emit({
-            type: 'tool-result',
-            callId,
-            toolName: tool.toolName,
-            result: update.status === 'failed' ? 'Antigravity tool failed.' : null,
-            isError: update.status === 'failed',
-          });
+          if (tool.isQuestion && (tool.taintedQuestion || !tool.payloadSeen || hasQuestionCredentialCarrier(update.rawInput))) {
+            this.taintedStreamLatch = true;
+          }
+          tool.questionAbort?.abort();
+          tool.rawParameters = undefined;
+          if (!tool.delegatedQuestion) {
+            if (tool.deferredEmit) {
+              tool.deferredEmit = false;
+              this.emit({ type: 'tool-call', callId, toolName: tool.toolName, args: tool.args });
+            }
+            this.emit({
+              type: 'tool-result',
+              callId,
+              toolName: tool.toolName,
+              result: update.status === 'failed' ? 'Antigravity tool failed.' : null,
+              isError: update.status === 'failed',
+            });
+          }
           this.tools.delete(callId);
           this.trackCompletedTool(callId);
           if (!this.hasAnyOpenNonDaemonTools()) {
@@ -746,47 +1216,81 @@ export class AgyAcpBackend implements AgentBackend {
       }
       return;
     }
-    if (this.replaying || this.cancelled || this.disposed || sessionId !== this.sessionId || (!this.active && !this.sessionAcceptingEvents)) return;
+    if (this.replaying || this.cancelled || this.disposed || sessionId !== this.sessionId || (!this.promptRunning && !this.sessionAcceptingEvents)) return;
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
       if (update.content.text && this.permissionDenied) {
         this.permissionDenied = false;
         this.observerWake?.();
       }
-      if (!this.active && update.content.text) {
+      if (!this.promptRunning && update.content.text) {
         if (!this.backgroundRunning) {
           this.backgroundRunning = true;
           this.emit({ type: 'status', status: 'running' });
         }
         this.backgroundStepDirty = true;
       }
-      this.emit({ type: 'model-output', textDelta: update.content.text });
+      if (this.shouldBufferQuestionStream()) {
+        if (update.content.text) {
+          this.taintedOutputBuffer = (this.taintedOutputBuffer + update.content.text).slice(-256 * 1024);
+        }
+      } else {
+        this.emit({ type: 'model-output', textDelta: update.content.text });
+      }
+      if (update.content.text && this.hasOpenQuestionTools()) {
+        this.questionActivitySeq++;
+        this.observerWake?.();
+        if (!this.promptRunning && this.hasPendingQuestionTools()) {
+          this.schedulePostTurnQuestionSettle();
+        }
+      }
     } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {
       if (update.content.text && this.permissionDenied) {
         this.permissionDenied = false;
         this.observerWake?.();
       }
-      if (!this.active && update.content.text) {
+      if (!this.promptRunning && update.content.text) {
         if (!this.backgroundRunning) {
           this.backgroundRunning = true;
           this.emit({ type: 'status', status: 'running' });
         }
         this.backgroundStepDirty = true;
       }
-      this.emit({ type: 'event', name: 'thinking', payload: { text: update.content.text, streaming: true } });
+      if (this.shouldBufferQuestionStream()) {
+        if (update.content.text) {
+          this.taintedThoughtBuffer = (this.taintedThoughtBuffer + update.content.text).slice(-256 * 1024);
+        }
+      } else {
+        this.emit({ type: 'event', name: 'thinking', payload: { text: update.content.text, streaming: true } });
+      }
+      if (update.content.text && this.hasOpenQuestionTools()) {
+        this.questionActivitySeq++;
+        this.observerWake?.();
+        if (!this.promptRunning && this.hasPendingQuestionTools()) {
+          this.schedulePostTurnQuestionSettle();
+        }
+      }
     } else if (update.sessionUpdate === 'usage_update') {
-      if (!this.active) {
-        if (this.backgroundStepDirty) {
+      if (!this.promptRunning) {
+        if (this.backgroundStepDirty && !this.shouldBufferQuestionStream()) {
+          this.flushTaintedBuffers();
           this.backgroundStepDirty = false;
           this.emit({ type: 'event', name: 'agy_step_complete', payload: null });
         }
-        if (this.backgroundRunning && !this.hasAnyOpenNonDaemonTools() && this.pendingPermissions === 0) {
+        if (this.backgroundRunning && !this.hasAnyOpenActiveTools() && this.pendingPermissions === 0 && !this.hasOpenQuestionTools()) {
           this.backgroundRunning = false;
+        }
+      }
+      if (this.hasOpenQuestionTools()) {
+        this.questionActivitySeq++;
+        this.observerWake?.();
+        if (!this.promptRunning && this.hasPendingQuestionTools()) {
+          this.schedulePostTurnQuestionSettle();
         }
       }
     } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
       const callId = update.toolCallId;
       if (this.completedTools.has(callId)) return;
-      if (!this.active) {
+      if (!this.promptRunning) {
         this.backgroundStepDirty = false;
         if (!this.backgroundRunning && update.status !== 'completed' && update.status !== 'failed') {
           this.backgroundRunning = true;
@@ -794,19 +1298,71 @@ export class AgyAcpBackend implements AgentBackend {
         }
       }
       if (!this.tools.has(callId)) {
-        const { nativeName, isDaemon, display } = this.describeTool(update);
+        const { nativeName, isDaemon, rawParameters, display } = this.describeTool(update);
+        const isQuestion = nativeName.toLowerCase() === 'ask_question';
+        const taintedQuestion = isQuestion && hasQuestionCredentialCarrier(rawParameters);
+        if (taintedQuestion) {
+          this.taintedStreamLatch = true;
+        }
+        const deferredEmit = isQuestion
+          && Boolean(this.options.onQuestion)
+          && update.status !== 'completed'
+          && update.status !== 'failed';
+        const payloadSeen = isQuestion && this.hasQuestionPayload(rawParameters);
         this.tools.set(callId, {
           toolName: display.toolName,
           nativeName,
           args: { ...display.args },
+          ...(deferredEmit ? { rawParameters: { ...rawParameters } } : {}),
           commandExecution: PROGRESS_NATIVE_TOOLS.has(nativeName.toLowerCase()),
           isDaemon,
+          isQuestion,
+          payloadSeen,
+          startedIncomplete: isQuestion && !payloadSeen,
+          taintedQuestion,
+          questionPending: false,
+          pendingEpoch: null,
+          pendingAtObservations: 0,
+          deferredEmit,
+          delegatedQuestion: false,
           ownerEpoch: this.workEpoch,
         });
-        this.emit({ type: 'tool-call', callId, ...display });
+        if (!deferredEmit) {
+          this.emit({ type: 'tool-call', callId, ...display });
+        }
       } else {
         const existing = this.tools.get(callId)!;
-        if (
+        if (existing.isQuestion && isPlainRecord(update.rawInput)) {
+          const fallbackRawInput = { name: existing.nativeName, ...update.rawInput };
+          const { rawParameters, display } = this.describeTool({
+            ...update,
+            kind: update.kind ?? 'other',
+            rawInput: fallbackRawInput,
+          });
+          if (this.hasQuestionPayload(rawParameters)) {
+            existing.payloadSeen = true;
+          }
+          if (hasQuestionCredentialCarrier(rawParameters)) {
+            existing.taintedQuestion = true;
+            this.taintedStreamLatch = true;
+          }
+          if (existing.deferredEmit) {
+            existing.rawParameters = mergeDefinedArgs(existing.rawParameters ?? {}, rawParameters);
+            if (this.hasQuestionPayload(existing.rawParameters)) {
+              existing.payloadSeen = true;
+            }
+          }
+          const mergedArgs = mergeDefinedArgs(existing.args, display.args);
+          if (!argsEqual(existing.args, mergedArgs)) {
+            existing.args = mergedArgs;
+            if (!existing.deferredEmit && !existing.delegatedQuestion) {
+              this.emit({ type: 'tool-call', callId, toolName: existing.toolName, args: existing.args });
+            }
+          }
+          if (!this.promptRunning && existing.questionPending) {
+            this.schedulePostTurnQuestionSettle();
+          }
+        } else if (
           (existing.toolName === 'Edit' || existing.toolName === 'MultiEdit' || existing.toolName === 'Write')
           && (Array.isArray(update.content) || isPlainRecord(update.rawInput))
         ) {
@@ -826,17 +1382,55 @@ export class AgyAcpBackend implements AgentBackend {
             this.emit({ type: 'tool-call', callId, toolName: existing.toolName, args: existing.args });
           }
         }
+        if (existing.isQuestion && update.status === 'in_progress') {
+          existing.questionPending = false;
+          existing.pendingEpoch = null;
+          existing.questionAbort?.abort();
+        }
+      }
+      const currentTool = this.tools.get(callId);
+      if (currentTool?.isQuestion && update.status === 'pending') {
+        currentTool.questionPending = true;
+        currentTool.pendingEpoch = this.workEpoch;
+        currentTool.pendingAtObservations = this.stopHook?.policy.totalObservations() ?? 0;
+        this.permissionDenied = false;
+        this.questionActivitySeq++;
+        this.observerWake?.();
+        if (!this.promptRunning) {
+          this.schedulePostTurnQuestionSettle();
+        }
       }
       if (update.status === 'completed' || update.status === 'failed') {
         // Raw outputs may contain entire files/secrets. Happy currently renders lifecycle only.
         const tool = this.tools.get(callId)!;
-        this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
+        const hadBufferedQuestion = tool.isQuestion && (tool.taintedQuestion || !tool.payloadSeen || tool.startedIncomplete);
+        if (tool.isQuestion && (tool.taintedQuestion || !tool.payloadSeen)) {
+          this.taintedStreamLatch = true;
+        }
+        tool.questionPending = false;
+        tool.pendingEpoch = null;
+        tool.rawParameters = undefined;
+        tool.parsedQuestions = undefined;
+        tool.questionAbort?.abort();
+        if (!tool.delegatedQuestion) {
+          if (tool.deferredEmit) {
+            tool.deferredEmit = false;
+            this.emit({ type: 'tool-call', callId, toolName: tool.toolName, args: tool.args });
+          }
+          this.emit({ type: 'tool-result', callId, toolName: tool.toolName, result: update.status === 'failed' ? 'Antigravity tool failed.' : null, isError: update.status === 'failed' });
+        }
         // Status/wait tools and failed actions do not prove the background command
         // made progress. They must not indefinitely reset the no-progress allowance.
         if (update.status === 'completed' && tool.commandExecution) this.stopHook?.policy.progress();
         this.tools.delete(callId);
         this.trackCompletedTool(callId);
+        if (hadBufferedQuestion && !this.shouldBufferQuestionStream()) {
+          this.flushTaintedBuffers();
+        }
         this.observerWake?.();
+        if (!this.promptRunning && this.hasPendingQuestionTools()) {
+          this.schedulePostTurnQuestionSettle();
+        }
       }
     }
   }
@@ -904,17 +1498,26 @@ export class AgyAcpBackend implements AgentBackend {
       Object.entries(parameters).filter(([, value]) => value !== undefined && value !== null),
     );
     const mergedParameters = diffBlock ? { ...diffFallback, ...definedParameters } : parameters;
-    return { nativeName: name, isDaemon, display: mapAgyToolToDisplay(name, mergedParameters) };
+    return {
+      nativeName: name,
+      isDaemon,
+      rawParameters: isPlainRecord(mergedParameters) ? mergedParameters : {},
+      display: mapAgyToolToDisplay(name, mergedParameters),
+    };
   }
 
   private async permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const cancelled: RequestPermissionResponse = { outcome: { outcome: 'cancelled' } };
-    if (request.sessionId !== this.sessionId || this.cancelled || this.disposed || this.cancelling || (!this.active && !this.sessionAcceptingEvents)) return cancelled;
+    if (request.sessionId !== this.sessionId || this.cancelled || this.disposed || this.cancelling || (!this.promptRunning && !this.sessionAcceptingEvents)) return cancelled;
     const signal = this.permissionAbort.signal;
     if (signal.aborted) return cancelled;
-    if (!this.active && !this.backgroundRunning) {
+    if (!this.promptRunning && !this.backgroundRunning) {
       this.backgroundRunning = true;
       this.emit({ type: 'status', status: 'running' });
+    }
+    const permEpoch = this.promptRunning ? this.workEpoch : -1;
+    if (permEpoch >= 0) {
+      this.foregroundPermissions.set(permEpoch, (this.foregroundPermissions.get(permEpoch) ?? 0) + 1);
     }
     this.pendingPermissions++;
     this.observerWake?.();
@@ -929,7 +1532,7 @@ export class AgyAcpBackend implements AgentBackend {
       const result = bypass ? { decision: 'approved' as const } : this.options.requestPermission
         ? await Promise.race([this.options.requestPermission(request.toolCall.toolCallId, display.toolName, display.args), aborted])
         : { decision: 'denied' as const };
-      if (!result || this.cancelled || this.disposed || signal.aborted || (!this.active && !this.sessionAcceptingEvents) || result.decision === 'abort') return cancelled;
+      if (!result || this.cancelled || this.disposed || signal.aborted || (!this.promptRunning && !this.sessionAcceptingEvents) || result.decision === 'abort') return cancelled;
       const approved = result.decision === 'approved' || result.decision === 'approved_for_session';
       this.permissionDenied = !approved;
       const option = request.options.find((option) => option.kind === (approved ? 'allow_once' : 'reject_once'));
@@ -937,14 +1540,22 @@ export class AgyAcpBackend implements AgentBackend {
     } catch { return cancelled; }
     finally {
       this.pendingPermissions = Math.max(0, this.pendingPermissions - 1);
+      if (permEpoch >= 0) {
+        const nextCount = (this.foregroundPermissions.get(permEpoch) ?? 1) - 1;
+        if (nextCount <= 0) this.foregroundPermissions.delete(permEpoch);
+        else this.foregroundPermissions.set(permEpoch, nextCount);
+      }
       if (abort) signal.removeEventListener('abort', abort);
       this.observerWake?.();
+      if (!this.promptRunning && this.hasPendingQuestionTools()) {
+        this.schedulePostTurnQuestionSettle();
+      }
     }
   }
 
   async cancel(): Promise<void> {
     if (this.cancelling) return this.cancelling;
-    if (!this.active && !this.sessionAcceptingEvents) return;
+    if (!this.active && !this.sessionAcceptingEvents && !this.pausedQuestionSession) return;
     this.cancelling = this.cancelActive();
     try { await this.cancelling; } finally { this.cancelling = null; }
   }
@@ -952,16 +1563,25 @@ export class AgyAcpBackend implements AgentBackend {
   private async cancelActive(): Promise<void> {
     const active = this.active;
     const hadPostTurnSession = !active && this.sessionAcceptingEvents;
-    if (!active && !hadPostTurnSession) return;
+    const hadPausedQuestion = !active && this.pausedQuestionSession;
+    if (!active && !hadPostTurnSession && !hadPausedQuestion) return;
     const hookSnapBeforeCancel = this.stopHook?.policy.snapshot();
     const hadToollessBackgroundWait = Boolean(
       hookSnapBeforeCancel?.seen
       && hookSnapBeforeCancel.fullyIdle === false
-      && !this.hasAnyOpenNonDaemonTools(),
+      && !this.hasAnyOpenActiveTools(),
     );
     this.workEpoch++;
+    this.clearPostTurnQuestionTimer();
+    this.taintedStreamLatch = false;
+    this.taintedOutputRedacted = false;
+    this.taintedThoughtRedacted = false;
+    this.taintedOutputBuffer = '';
+    this.taintedThoughtBuffer = '';
     this.cancelled = true;
+    this.promptRunning = false;
     this.sessionAcceptingEvents = false;
+    this.pausedQuestionSession = false;
     this.backgroundRunning = false;
     this.backgroundStepDirty = false;
     this.stopHook?.policy.cancel();
@@ -980,7 +1600,7 @@ export class AgyAcpBackend implements AgentBackend {
           // of a slow child exit. Drain the turn's finally before accepting a new one.
           await active.catch(() => {});
         }
-        if (this.supportsPostTurnFollowups && this.hasAnyOpenNonDaemonTools() && this.connection && !this.connection.signal.aborted) {
+        if (this.hasAnyOpenNonDaemonTools() && this.connection && !this.connection.signal.aborted) {
           clearTimeout(timer);
           await Promise.race([
             new Promise<void>((resolve) => {

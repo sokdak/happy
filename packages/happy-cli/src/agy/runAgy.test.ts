@@ -35,6 +35,7 @@ const fixture = vi.hoisted(() => {
     setEffort(effort: string) { this.effort = effort; }
     onMessage(fn: (m: any) => void) { listeners.add(fn); }
     offMessage(fn: (m: any) => void) { listeners.delete(fn); }
+    republishPausedQuestion = vi.fn(() => false);
     cancel = vi.fn(async () => {});
     dispose = vi.fn(async () => {});
   }
@@ -258,6 +259,133 @@ describe('Antigravity Happy runner integration', () => {
     // Post-turn abort RPC still calls backend.cancel()
     await fixture.rpc.get('abort')?.();
     expect(fixture.backend.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes interactive request_user_input cards for onQuestion, queues submitted answers, distinguishes composer dismiss vs standalone cancel, and avoids startup state clobbering', async () => {
+    let agentState: any = { completedCommunications: { historical: { kind: 'form', status: 'answered' } } };
+    fixture.session.updateAgentState.mockImplementation((fn: any) => { agentState = fn(agentState); });
+    await begin();
+    // Startup must not blindly overwrite existing agentState before any question is asked
+    expect(fixture.session.updateAgentState).not.toHaveBeenCalled();
+    const backendOpts = vi.mocked(createAgyBackend).mock.calls[0][0];
+    expect(backendOpts.onQuestion).toBeTypeOf('function');
+
+    // Turn 1 emits introductory text and pauses on ask_question
+    fixture.backend.sendPrompt.mockImplementationOnce(async (_id: string, text: string) => {
+      fixture.calls.push({ text });
+      for (const fn of fixture.listeners) {
+        fn({ type: 'model-output', textDelta: 'Before asking:\n' });
+      }
+      backendOpts.onQuestion!('acp-ask-1', [{
+        id: 'q_0',
+        header: 'Question',
+        question: '어느 HA를 확인하면 될까요?',
+        options: [
+          { label: '기존 HA (10.8.0.14)', description: '' },
+          { label: 'Simba HA', description: '' },
+        ],
+      }], new AbortController().signal);
+      for (const fn of fixture.listeners) {
+        fn({ type: 'model-output', textDelta: '\n어느 HA를 확인하면 될까요?\n' });
+      }
+    });
+
+    user('재실 오작동 확인해줘');
+    await vi.waitFor(() => expect(fixture.session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }));
+
+    const envelopes = (): any[] => fixture.session.sendSessionProtocolMessage.mock.calls.map(([e]: [any]) => e);
+    const introIdx = envelopes().findIndex(e => e.ev.t === 'text' && e.ev.text === 'Before asking:\n');
+    const cardStartIdx = envelopes().findIndex(e => e.ev.t === 'tool-call-start' && e.ev.name === 'request_user_input');
+    expect(introIdx).toBeGreaterThanOrEqual(0);
+    expect(cardStartIdx).toBeGreaterThan(introIdx);
+    const sessionCallId = envelopes()[cardStartIdx].ev.call;
+    expect(agentState.communications?.[sessionCallId]).toBeDefined();
+    expect(agentState.completedCommunications?.historical).toBeDefined();
+
+    // Submit answer via communication RPC -> triggers Turn 2 without calling backend.cancel()
+    await fixture.rpc.get('communication')!({
+      id: sessionCallId,
+      kind: 'form',
+      status: 'answered',
+      answers: { q_0: { options: ['기존 HA (10.8.0.14)'] } },
+    });
+    await vi.waitFor(() => expect(fixture.calls).toHaveLength(2));
+    expect(fixture.calls[1].text).toBe('기존 HA (10.8.0.14)');
+    expect(fixture.backend.cancel).not.toHaveBeenCalled();
+
+    // Second question answered via Composer text + automatic sessionCancelCommunication -> must NOT call backend.cancel()
+    fixture.backend.sendPrompt.mockImplementationOnce(async (_id: string, text: string) => {
+      fixture.calls.push({ text });
+      backendOpts.onQuestion!('acp-ask-2', [{
+        id: 'q_0',
+        header: 'Question',
+        question: '추가 확인?',
+        options: [{ label: '예', description: '' }, { label: '아니오', description: '' }],
+      }], new AbortController().signal);
+    });
+    user('두 번째 질문');
+    await vi.waitFor(() => expect(fixture.calls).toHaveLength(3));
+    const secondCard = envelopes().filter(e => e.ev.t === 'tool-call-start' && e.ev.name === 'request_user_input').at(-1)!;
+
+    user('직접 타이핑한 답변');
+    await fixture.rpc.get('communication')!({
+      id: secondCard.ev.call,
+      kind: 'form',
+      status: 'cancelled',
+    });
+    await vi.waitFor(() => expect(fixture.calls).toHaveLength(4));
+    expect(fixture.calls[3].text).toBe('직접 타이핑한 답변');
+    expect(fixture.backend.cancel).not.toHaveBeenCalled();
+
+    // Third question: failed attachment on Composer message leaves card live so subsequent card answer still runs,
+    // and abort RPC drops any queued signal-aborted card answer
+    const thirdController = new AbortController();
+    fixture.backend.sendPrompt.mockImplementationOnce(async (_id: string, text: string) => {
+      fixture.calls.push({ text });
+      backendOpts.onQuestion!('acp-ask-3', [{
+        id: 'q_0',
+        header: 'Question',
+        question: '재시도 질문?',
+        options: [{ label: 'Option A', description: '' }, { label: 'Option B', description: '' }],
+      }], thirdController.signal);
+    });
+    user('세 번째 질문');
+    await vi.waitFor(() => expect(fixture.calls).toHaveLength(5));
+    const thirdCard = envelopes().filter(e => e.ev.t === 'tool-call-start' && e.ev.name === 'request_user_input').at(-1)!;
+
+    // Real Composer sends message AND dismisses the pending card; when attachment fails, republishPausedQuestion restores it!
+    const republishedController = new AbortController();
+    fixture.backend.republishPausedQuestion.mockImplementationOnce(() => {
+      backendOpts.onQuestion!('acp-ask-3:retry:1', [{
+        id: 'q_0',
+        header: 'Question',
+        question: '재시도 질문?',
+        options: [{ label: 'Option A', description: '' }, { label: 'Option B', description: '' }],
+      }], republishedController.signal);
+      return true;
+    });
+    fixture.session.downloadAndDecryptAttachment.mockRejectedValueOnce(new Error('broken attachment'));
+    fixture.session.file({ content: { data: { ev: { ref: 'bad', name: 'img.png', size: 4 } } } });
+    user('failed composer reply');
+    await fixture.rpc.get('communication')!({
+      id: thirdCard.ev.call,
+      kind: 'form',
+      status: 'cancelled',
+    });
+    await vi.waitFor(() => expect(fixture.backend.republishPausedQuestion).toHaveBeenCalledTimes(1));
+    const republishedCard = envelopes().filter(e => e.ev.t === 'tool-call-start' && e.ev.name === 'request_user_input').at(-1)!;
+    expect(republishedCard.ev.call).not.toBe(thirdCard.ev.call);
+
+    // Answering the republished card afterwards queues and executes Turn 6
+    await fixture.rpc.get('communication')!({
+      id: republishedCard.ev.call,
+      kind: 'form',
+      status: 'answered',
+      answers: { q_0: { options: ['Option B'] } },
+    });
+    await vi.waitFor(() => expect(fixture.calls).toHaveLength(6));
+    expect(fixture.calls[5].text).toBe('Option B');
+    expect(fixture.backend.cancel).not.toHaveBeenCalled();
   });
 
 });

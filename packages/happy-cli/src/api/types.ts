@@ -128,6 +128,7 @@ export type Session = {
   metadataVersion: number,
   agentState: AgentState | null,
   agentStateVersion: number,
+  agentStateUnhydrated?: boolean,
 }
 
 /**
