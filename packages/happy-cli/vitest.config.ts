@@ -34,7 +34,7 @@ export default defineConfig({
                     name: 'integration-codex-local',
                     fileParallelism: false,
                     maxWorkers: 1,
-                    include: ['src/codex/turnSteering.integration.test.ts'],
+                    include: ['src/codex/turnSteering.integration.test.ts', 'src/codex/userInput.integration.test.ts'],
                     sequence: { groupOrder: 1 },
                 },
             },

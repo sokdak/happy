@@ -64,7 +64,7 @@ async function main() {
     version: '1.0.0',
   });
 
-  if (process.argv.includes('--interactions')) {
+  if (process.argv.includes('--interactions') || process.argv.includes('--request-user-input')) {
     server.registerTool('request_user_input', {
       description: 'Ask the user up to three questions using Happy question cards and wait for their answers.',
       inputSchema: { questions: z.array(agentQuestionSchema).min(1).max(3) },
@@ -73,6 +73,8 @@ async function main() {
       return await client.callTool({ name: 'request_user_input', arguments: args }, undefined,
         { signal: extra.signal, timeout: 24 * 60 * 60 * 1000 }) as any;
     });
+  }
+  if (process.argv.includes('--interactions')) {
     server.registerTool('update_plan', {
       description: 'Publish the current task plan in Happy. Update statuses as work progresses.',
       inputSchema: { plan: agentPlanSchema },

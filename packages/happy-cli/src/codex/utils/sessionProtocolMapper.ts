@@ -1278,15 +1278,18 @@ function mapCodexMcpMessageToSessionEnvelopesInner(message: Record<string, unkno
         const call = pickCallId(message);
         const envelopes: SessionEnvelope[] = [];
         maybeEmitSubagentStart(subagent, opts, startedSubagents, activeSubagents, subagentTitles, envelopes);
-        if (type === 'mcp_tool_call_begin') {
-            const invocation = message.invocation && typeof message.invocation === 'object'
-                ? message.invocation as Record<string, unknown>
-                : {};
+        const invocation = message.invocation && typeof message.invocation === 'object'
+            ? message.invocation as Record<string, unknown>
+            : {};
+        // AgentUserInputHandler owns the interactive card and its lifecycle.
+        // Publishing the MCP transport too would show a second, unanswerable card.
+        const isHappyQuestion = invocation.server === 'happy' && invocation.tool === 'request_user_input';
+        if (!isHappyQuestion && type === 'mcp_tool_call_begin') {
             const { name, title, args } = mcpToolDetails(invocation);
             envelopes.push(createEnvelope('agent', {
                 t: 'tool-call-start', call, name, title, description: title, args,
             }, opts));
-        } else {
+        } else if (!isHappyQuestion) {
             envelopes.push(createEnvelope('agent', { t: 'tool-call-end', call }, opts));
         }
         return {

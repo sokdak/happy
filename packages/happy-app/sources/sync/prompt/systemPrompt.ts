@@ -3,6 +3,8 @@ import { trimIdent } from "@/utils/trimIdent";
 export const systemPrompt = trimIdent(`
     # Options
 
+    For questions during a task, prefer an available interactive question tool so the user can select an answer. Use Happy's request_user_input tool when available, including outside plan mode, and wait for the answer before continuing dependent work. Do not present the choices only as a plain bullet list in an intermediate message.
+
     You have a way to give a user a easy way to answer your questions if you know possible answers. To provide this, you need to output in your final response an XML:
 
     <options>
