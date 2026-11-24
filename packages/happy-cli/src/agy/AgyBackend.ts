@@ -193,7 +193,7 @@ export class AgyBackend implements AgentBackend {
         if (settled) return;
         settled = true;
         cleanup();
-        parser.finish();
+        parser.finish({ failed: code !== 0 });
 
         // Prefer the deterministic `conversation_id` emitted by our child's
         // `stream-json` events; fall back to the cwd cache diff only if stdout

@@ -5,6 +5,16 @@ export interface DisplayTool {
   args: Record<string, unknown>;
 }
 
+export interface AgyParsedQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options: Array<{ label: string; description: string }>;
+  multiSelect?: boolean;
+  isOther?: boolean;
+  isSecret?: boolean;
+}
+
 const MAX_TOOL_NAME_BYTES = 128;
 const MAX_TOOL_ARG_BYTES = 4096;
 export const MAX_TOOL_DIFF_BYTES = 64 * 1024;
@@ -434,13 +444,19 @@ export function mapAgyToolToDisplay(toolName: string, parameters: unknown): Disp
     case 'ask_question': {
       const rawQuestions = Array.isArray(values.questions)
         ? values.questions
-        : (isPlainRecord(values.question) || typeof values.question === 'string' ? [values] : []);
+        : isPlainRecord(values.question)
+          ? [values.question]
+          : typeof values.question === 'string'
+            ? [values]
+            : [];
       const firstQ = isPlainRecord(rawQuestions[0]) ? rawQuestions[0] : null;
       const questionText = safeString(firstQ?.question);
       const rawOptions = Array.isArray(firstQ?.options) ? firstQ.options : [];
       const options = rawOptions
-        .map((opt) => safeString(opt))
-        .filter((opt): opt is string => Boolean(opt) && opt !== '[redacted]');
+        .map((opt) => safeString(isPlainRecord(opt) ? opt.label : opt))
+        .filter((opt): opt is string => Boolean(opt) && opt !== '[redacted]')
+        .map((opt) => opt.replace(/[\r\n]+/g, ' ').trim())
+        .filter(Boolean);
       const optionsSnippet = options.length > 0
         ? ` (${options.slice(0, 3).join(', ')}${options.length > 3 ? '...' : ''})`
         : '';
@@ -448,7 +464,7 @@ export function mapAgyToolToDisplay(toolName: string, parameters: unknown): Disp
       const questionSnippet = questionText && questionText !== '[redacted]'
         ? ` "${questionText.replace(/[\r\n]+/g, ' ').replace(/"/g, '\\"').slice(0, 80)}"`
         : questionText === '[redacted]' ? ' [redacted]' : '';
-      const command = `ask_question${questionSnippet}${optionsSnippet}${moreSnippet}`;
+      const command = truncateUtf8(`ask_question${questionSnippet}${optionsSnippet}${moreSnippet}`, MAX_TOOL_ARG_BYTES);
       return { toolName: 'Bash', args: { command } };
     }
     case 'run_workflow': {
@@ -457,4 +473,132 @@ export function mapAgyToolToDisplay(toolName: string, parameters: unknown): Disp
     default:
       return fallback;
   }
+}
+
+const MAX_PARSED_QUESTIONS = 10;
+const MAX_PARSED_QUESTION_OPTIONS = 20;
+
+export function hasQuestionCredentialCarrier(params: unknown): boolean {
+  if (!isPlainRecord(params)) return false;
+  let scannedBytes = 0;
+  let scannedNodes = 0;
+  const MAX_SCAN_BYTES = 256 * 1024;
+  const MAX_SCAN_NODES = 1_024;
+
+  const visit = (node: unknown): boolean => {
+    if (++scannedNodes > MAX_SCAN_NODES) return true;
+    if (typeof node === 'string') {
+      if (!node) return false;
+      const bytes = Buffer.byteLength(node, 'utf8');
+      scannedBytes += bytes;
+      if (scannedBytes > MAX_SCAN_BYTES) return true;
+      return containsCredentialCarrier(node);
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        if (visit(item)) return true;
+      }
+      return false;
+    }
+    if (isPlainRecord(node)) {
+      for (const value of Object.values(node)) {
+        if (visit(value)) return true;
+      }
+    }
+    return false;
+  };
+
+  return visit(params);
+}
+
+/**
+ * Normalizes Antigravity's native `ask_question` input into Happy's structured
+ * question-card schema. Returns `null` when any question/option is malformed,
+ * empty, oversized, or credential-redacted so the caller falls back to a read-only card.
+ */
+export function parseAgyAskQuestionInput(params: unknown): AgyParsedQuestion[] | null {
+  if (!isPlainRecord(params)) return null;
+  const rawQuestions = Array.isArray(params.questions)
+    ? params.questions
+    : isPlainRecord(params.question)
+      ? [params.question]
+      : typeof params.question === 'string'
+        ? [params]
+        : [];
+  if (rawQuestions.length === 0 || rawQuestions.length > MAX_PARSED_QUESTIONS) return null;
+
+  const parsed: AgyParsedQuestion[] = [];
+  for (let index = 0; index < rawQuestions.length; index++) {
+    const raw = rawQuestions[index];
+    if (!isPlainRecord(raw)) return null;
+    const question = safeString(raw.question)?.trim();
+    if (!question || question === '[redacted]') return null;
+
+    const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+    if (rawOptions.length === 0 || rawOptions.length > MAX_PARSED_QUESTION_OPTIONS) return null;
+
+    const seenLabels = new Set<string>();
+    const options: Array<{ label: string; description: string }> = [];
+    for (const rawOption of rawOptions) {
+      const labelCandidate = typeof rawOption === 'string'
+        ? rawOption
+        : isPlainRecord(rawOption)
+          ? rawOption.label
+          : undefined;
+      if (typeof labelCandidate !== 'string' || Buffer.byteLength(labelCandidate, 'utf8') > MAX_TOOL_ARG_BYTES) {
+        return null;
+      }
+      const label = safeString(labelCandidate)?.trim();
+      if (!label || label === '[redacted]') return null;
+      if (seenLabels.has(label)) continue;
+      seenLabels.add(label);
+      const rawDesc = isPlainRecord(rawOption) ? safeString(rawOption.description)?.trim() : undefined;
+      const description = rawDesc && rawDesc !== '[redacted]' ? rawDesc : '';
+      options.push({ label, description });
+    }
+    if (options.length === 0) return null;
+
+    const customHeader = safeString(raw.header)?.trim();
+    const header = customHeader && customHeader !== '[redacted]'
+      ? truncateUtf8(customHeader, 64)
+      : rawQuestions.length === 1
+        ? 'Question'
+        : `Question ${index + 1}`;
+    const multiSelect = raw.is_multi_select === true || raw.multiSelect === true;
+
+    parsed.push({
+      id: `q_${index}`,
+      header,
+      question,
+      options,
+      ...(multiSelect ? { multiSelect: true } : {}),
+      isOther: true,
+      isSecret: false,
+    });
+  }
+  return parsed;
+}
+
+export function formatAgyQuestionAnswers(
+  questions: AgyParsedQuestion[],
+  answers: Record<string, { answers: string[] }>,
+): string | null {
+  const answered = questions
+    .map((question, index) => {
+      const values = Array.from(new Set(
+        (answers[question.id]?.answers ?? [])
+          .map(v => v.trim())
+          .filter(Boolean),
+      ));
+      return values.length > 0 ? { index, question: question.question, value: values.join(', ') } : null;
+    })
+    .filter((entry): entry is { index: number; question: string; value: string } => entry !== null);
+
+  if (answered.length === 0) return null;
+  if (questions.length === 1 && answered.length === 1) {
+    return answered[0].value;
+  }
+  return answered
+    .map(entry => `${entry.index + 1}. ${entry.question}\n${entry.value}`)
+    .join('\n\n');
 }

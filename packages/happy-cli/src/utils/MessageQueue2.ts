@@ -9,6 +9,8 @@ interface QueueItem<T> {
     isolate?: boolean; // If true, this message must be processed alone
     /** Decoded image attachments owned by *this* message (per-message ownership). */
     attachments?: PendingAttachment[];
+    /** Optional cancellation fence for messages synthesized from interactive cards. */
+    signal?: AbortSignal;
 }
 
 /**
@@ -43,7 +45,7 @@ export class MessageQueue2<T> {
      * Push a message to the queue with a mode and an optional list of
      * attachments that travel with this message.
      */
-    push(message: string, mode: T, attachments?: PendingAttachment[]): void {
+    push(message: string, mode: T, attachments?: PendingAttachment[], signal?: AbortSignal): void {
         if (this.closed) {
             throw new Error('Cannot push to closed queue');
         }
@@ -57,6 +59,7 @@ export class MessageQueue2<T> {
             modeHash,
             isolate: false,
             attachments,
+            ...(signal ? { signal } : {}),
         });
 
         // Trigger message handler if set
@@ -265,7 +268,7 @@ export class MessageQueue2<T> {
      * Wait for a message and return the next one in the queue.
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, attachments?: PendingAttachment[] } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, attachments?: PendingAttachment[], signal?: AbortSignal } | null> {
         // If we have messages, return them immediately
         if (this.queue.length > 0) {
             return this.collectBatch();
@@ -291,7 +294,7 @@ export class MessageQueue2<T> {
      * that pile up while a turn is running keep their own boundaries instead of
      * being joined into a single prompt, so every question gets its own answer.
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, attachments?: PendingAttachment[] } | null {
+    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, attachments?: PendingAttachment[], signal?: AbortSignal } | null {
         const item = this.queue.shift();
         if (!item) {
             return null;
@@ -305,6 +308,7 @@ export class MessageQueue2<T> {
             hash: item.modeHash,
             isolate: item.isolate ?? false,
             attachments: item.attachments && item.attachments.length > 0 ? item.attachments : undefined,
+            ...(item.signal ? { signal: item.signal } : {}),
         };
     }
 

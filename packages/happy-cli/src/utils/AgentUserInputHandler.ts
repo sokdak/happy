@@ -18,38 +18,101 @@ const replySchema = z.object({
 type PendingInput = {
     communication: AgentCommunication;
     turnId: string | null;
+    title: string;
+    description: string;
     resolve: (response: ToolRequestUserInputResponse) => void;
     cleanup: () => void;
+};
+
+export type AgentUserInputQuestion = Parameters<UserInputHandler>[0]['questions'][number] & {
+    multiSelect?: boolean;
 };
 
 /** Bridges agent questions to the app's communication RPC and cards. */
 export class AgentUserInputHandler {
     private pending = new Map<string, PendingInput>();
+    private handledIds = new Set<string>();
 
-    constructor(private session: ApiSessionClient, private getSessionTurnId: () => string | null = () => null) {
+    constructor(
+        private session: ApiSessionClient,
+        private getSessionTurnId: () => string | null = () => null,
+        private getEnvelopeTime?: () => number,
+    ) {
         this.registerRpc();
     }
 
+    hasPending(): boolean {
+        return this.pending.size > 0;
+    }
+
     updateSession(session: ApiSessionClient): void {
+        const previousSession = this.session;
         this.session = session;
         this.registerRpc();
+        if (this.pending.size === 0 || previousSession === session) return;
+        const active: Record<string, AgentCommunication> = {};
+        for (const [id, entry] of this.pending) {
+            active[id] = entry.communication;
+            const envelopeOptions = {
+                ...(entry.turnId ? { turn: entry.turnId } : {}),
+                ...(this.getEnvelopeTime ? { time: this.getEnvelopeTime() } : {}),
+            };
+            this.session.sendSessionProtocolMessage(createEnvelope('agent', {
+                t: 'tool-call-start',
+                call: entry.communication.toolUseId,
+                name: 'request_user_input',
+                title: entry.title,
+                description: entry.description,
+                args: { questions: entry.communication.form.questions },
+            }, envelopeOptions));
+        }
+        this.session.updateAgentState(state => {
+            const completedCommunications = { ...state.completedCommunications };
+            for (const id of Object.keys(active)) {
+                delete completedCommunications[id];
+            }
+            return {
+                ...state,
+                communications: { ...state.communications, ...active },
+                completedCommunications,
+            };
+        });
     }
 
     private registerRpc(): void {
         this.session.rpcHandlerManager.registerHandler('communication', async (raw: unknown) => {
             const reply = replySchema.parse(raw);
             const pending = this.pending.get(reply.id);
-            if (!pending) return { ok: true };
+            if (!pending) {
+                if (!this.handledIds.has(reply.id)) {
+                    this.handledIds.add(reply.id);
+                    this.session.updateAgentState(state => {
+                        const orphan = state.communications?.[reply.id];
+                        if (!orphan) return state;
+                        const { [reply.id]: _removed, ...communications } = state.communications ?? {};
+                        return {
+                            ...state,
+                            communications,
+                            completedCommunications: {
+                                ...state.completedCommunications,
+                                [reply.id]: { ...orphan, completedAt: Date.now(), status: 'cancelled' },
+                            },
+                        };
+                    });
+                }
+                return { ok: true };
+            }
 
             const answers: Record<string, AgentQuestionAnswer> = {};
             if (reply.status === 'answered') {
                 for (const question of pending.communication.form.questions) {
                     const answer = reply.answers?.[question.id];
-                    const options = answer?.options ?? [];
+                    const rawOptions = answer?.options ?? [];
                     const custom = answer?.custom?.trim();
-                    if (options.length > 1 || options.some(value => !question.options.some(option => option.label === value))) {
+                    if ((!question.multiSelect && rawOptions.length > 1) || rawOptions.some(value => !question.options.some(option => option.label === value))) {
                         throw new Error(`Invalid choice for question ${question.id}`);
                     }
+                    const options = Array.from(new Set(rawOptions));
                     if (custom && question.allowCustom === false) {
                         throw new Error(`Written answers are not allowed for question ${question.id}`);
                     }
@@ -62,11 +125,17 @@ export class AgentUserInputHandler {
         });
     }
 
-    readonly handle = ({ callId, questions, signal }: Pick<Parameters<UserInputHandler>[0], 'callId' | 'questions' | 'signal'>): Promise<ToolRequestUserInputResponse> => {
+    readonly handle = ({ callId, questions, signal }: {
+        callId: string;
+        questions: AgentUserInputQuestion[];
+        signal: AbortSignal;
+    }): Promise<ToolRequestUserInputResponse> => {
         if (signal.aborted || questions.length === 0) return Promise.resolve({ answers: {} });
         // Happy creates its own turn ids; provider ids must not split the card
         // off from the rest of the foreground conversation.
         const turnId = this.getSessionTurnId();
+        const title = questions[0]?.header ?? 'Question';
+        const description = questions[0]?.question ?? 'Waiting for your answer';
         const communication: AgentCommunication = {
             kind: 'form',
             createdAt: Date.now(),
@@ -77,6 +146,7 @@ export class AgentUserInputHandler {
                     header: question.header,
                     question: question.question,
                     options: question.options ?? [],
+                    ...(question.multiSelect ? { multiSelect: true } : {}),
                     allowCustom: question.isOther !== false || !question.options?.length,
                     isSecret: question.isSecret,
                     required: true,
@@ -85,22 +155,29 @@ export class AgentUserInputHandler {
         };
 
         return new Promise(resolve => {
+            this.handledIds.add(callId);
             const cancel = () => this.complete(callId, 'cancelled');
             this.pending.set(callId, {
                 communication,
                 turnId,
+                title,
+                description,
                 resolve,
                 cleanup: () => signal.removeEventListener('abort', cancel),
             });
             signal.addEventListener('abort', cancel, { once: true });
+            const envelopeOptions = {
+                ...(turnId ? { turn: turnId } : {}),
+                ...(this.getEnvelopeTime ? { time: this.getEnvelopeTime() } : {}),
+            };
             this.session.sendSessionProtocolMessage(createEnvelope('agent', {
                 t: 'tool-call-start',
                 call: callId,
                 name: 'request_user_input',
-                title: questions[0]?.header ?? 'Question',
-                description: questions[0]?.question ?? 'Waiting for your answer',
+                title,
+                description,
                 args: { questions: communication.form.questions },
-            }, turnId ? { turn: turnId } : {}));
+            }, envelopeOptions));
             this.session.updateAgentState(state => {
                 const { [callId]: _previous, ...completedCommunications } = state.completedCommunications ?? {};
                 return {
@@ -128,9 +205,13 @@ export class AgentUserInputHandler {
                 },
             };
         });
+        const envelopeOptions = {
+            ...(pending.turnId ? { turn: pending.turnId } : {}),
+            ...(this.getEnvelopeTime ? { time: this.getEnvelopeTime() } : {}),
+        };
         this.session.sendSessionProtocolMessage(createEnvelope('agent', {
             t: 'tool-call-end', call: pending.communication.toolUseId,
-        }, pending.turnId ? { turn: pending.turnId } : {}));
+        }, envelopeOptions));
 
         const response: ToolRequestUserInputResponse = { answers: {} };
         if (status === 'answered') {
@@ -145,13 +226,31 @@ export class AgentUserInputHandler {
 
     /** Cancels pending and orphaned questions after an abort, restart, or exit. */
     reset(): void {
-        for (const id of this.pending.keys()) this.complete(id, 'cancelled');
+        const pendingEntries = [...this.pending.entries()];
+        this.pending.clear();
+        const now = Date.now();
+        for (const [, entry] of pendingEntries) {
+            entry.cleanup();
+        }
         this.session.updateAgentState(state => {
             const completedCommunications: Record<string, CompletedAgentCommunication> = { ...state.completedCommunications };
             for (const [id, communication] of Object.entries(state.communications ?? {})) {
-                completedCommunications[id] = { ...communication, completedAt: Date.now(), status: 'cancelled' };
+                completedCommunications[id] = { ...communication, completedAt: now, status: 'cancelled' };
+            }
+            for (const [id, entry] of pendingEntries) {
+                completedCommunications[id] = { ...entry.communication, completedAt: now, status: 'cancelled', answers: {} };
             }
             return { ...state, communications: {}, completedCommunications };
         });
+        for (const [, entry] of pendingEntries) {
+            const envelopeOptions = {
+                ...(entry.turnId ? { turn: entry.turnId } : {}),
+                ...(this.getEnvelopeTime ? { time: this.getEnvelopeTime() } : {}),
+            };
+            this.session.sendSessionProtocolMessage(createEnvelope('agent', {
+                t: 'tool-call-end', call: entry.communication.toolUseId,
+            }, envelopeOptions));
+            entry.resolve({ answers: {} });
+        }
     }
 }

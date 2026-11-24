@@ -1925,6 +1925,69 @@ describe('ApiSessionClient v3 messages API migration', () => {
         await client.close();
     });
 
+    it('hydrates unhydrated reconnect agentState before applying new communications so historical completedCommunications survive', async () => {
+        const authoritativeState = {
+            completedCommunications: {
+                priorQ: {
+                    kind: 'form' as const,
+                    createdAt: 10,
+                    completedAt: 20,
+                    status: 'answered' as const,
+                    toolUseId: 'priorQ',
+                    form: { questions: [] },
+                    answers: { q_0: { options: ['Main HA'] } },
+                },
+            },
+        };
+        const reconnectSession = {
+            ...session,
+            agentState: {},
+            agentStateVersion: 4,
+            agentStateUnhydrated: true,
+        };
+
+        let calls = 0;
+        mockSocket.emitWithAck.mockImplementation(async (event: string, payload: any) => {
+            if (event !== 'update-state') return { result: 'error' };
+            calls += 1;
+            if (calls === 1) {
+                expect(payload.expectedVersion).toBe(0);
+                return {
+                    result: 'version-mismatch',
+                    version: 4,
+                    agentState: encryptContent(session, authoritativeState),
+                };
+            }
+            expect(payload.expectedVersion).toBe(4);
+            return {
+                result: 'success',
+                version: 5,
+                agentState: payload.agentState,
+            };
+        });
+
+        const client = new ApiSessionClient('fake-token', reconnectSession);
+        await client.updateAgentState((current) => ({
+            ...current,
+            communications: {
+                nextQ: { kind: 'form', createdAt: 30, toolUseId: 'nextQ', form: { questions: [] } },
+            },
+        }));
+
+        expect(calls).toBe(2);
+        const finalPayload = mockSocket.emitWithAck.mock.calls[1][1];
+        const mergedState = decrypt(
+            session.encryptionKey,
+            session.encryptionVariant,
+            decodeBase64(finalPayload.agentState),
+        );
+        expect(mergedState).toMatchObject({
+            completedCommunications: { priorQ: { status: 'answered' } },
+            communications: { nextQ: { toolUseId: 'nextQ' } },
+        });
+        await client.close();
+    });
+
     it('cancels a never-resolving workflow ACK when close begins', async () => {
         vi.useFakeTimers();
         mockSocket.emitWithAck.mockImplementation((event: string) => (

@@ -115,6 +115,10 @@ export class AcpSessionManager {
 
   getTurnId(): string | null { return this.currentTurnId; }
 
+  getEffectiveTurnId(): string | null { return this.effectiveTurnId(); }
+
+  nextEnvelopeTime(): number { return this.nextTime(); }
+
   startTurn(): SessionEnvelope[] {
     if (this.currentTurnId) {
       return [];

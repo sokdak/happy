@@ -251,4 +251,63 @@ describe('AgyStreamTurnParser', () => {
     expect(log).toHaveBeenCalledWith(`ignored oversized agy stream-json record (>${MAX_STREAM_RECORD_BYTES} bytes)`);
     expect(log.mock.calls.flat().join(' ')).not.toContain('secret');
   });
+
+  it('closes unfinished ACTIVE ask_question on clean SUCCESS as DONE, and marks truncated or failed ACTIVE tools as ERROR', () => {
+    const messages: AgentMessage[] = [];
+    const parser = new AgyStreamTurnParser({
+      turnNumber: 3,
+      emit: (msg) => messages.push(msg),
+    });
+    parser.feed(`${JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        step_index: 2,
+        state: 'ACTIVE',
+        step_type: 'tool',
+        tool_name: 'ask_question',
+        tool_info: { parameters: { questions: [{ question: 'Pick?', options: ['A', 'B'] }] } },
+      },
+    })}\n${JSON.stringify({
+      event: 'result',
+      result: { status: 'SUCCESS', response: 'Pick?' },
+    })}\n`);
+    parser.finish();
+
+    expect(messages.filter(m => m.type === 'tool-call')).toHaveLength(1);
+    expect(messages.filter(m => m.type === 'tool-result')).toEqual([
+      {
+        type: 'tool-result',
+        toolName: 'Bash',
+        callId: 'agy:3:2',
+        result: { status: 'DONE' },
+        isError: false,
+      },
+    ]);
+
+    const crashedMessages: AgentMessage[] = [];
+    const crashedParser = new AgyStreamTurnParser({
+      turnNumber: 4,
+      emit: (msg) => crashedMessages.push(msg),
+    });
+    crashedParser.feed(`${JSON.stringify({
+      event: 'step_update',
+      step_update: {
+        step_index: 1,
+        state: 'ACTIVE',
+        step_type: 'tool',
+        tool_name: 'run_command',
+        tool_info: { parameters: { CommandLine: 'sleep 10' } },
+      },
+    })}\n`);
+    crashedParser.finish({ failed: true });
+    expect(crashedMessages.filter(m => m.type === 'tool-result')).toEqual([
+      {
+        type: 'tool-result',
+        toolName: 'Bash',
+        callId: 'agy:4:1',
+        result: { status: 'ERROR' },
+        isError: true,
+      },
+    ]);
+  });
 });
