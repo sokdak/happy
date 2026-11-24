@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { CHANGE_TITLE_INSTRUCTION } from '@/gemini/constants';
 import {
     buildCodexTurnPrompt,
+    CODEX_QUESTION_INSTRUCTION,
     hashCodexEnhancedMode,
     stripHappySystemBlocks,
     type CodexEnhancedMode,
@@ -12,6 +13,18 @@ const APPEND = '<options><option>Yes</option></options>';
 const wrapped = (text: string) => `<happy-system>\n${text}\n</happy-system>`;
 
 describe('buildCodexTurnPrompt', () => {
+    it('instructs intermediate questions on the first process turn even when resuming without an app preamble', () => {
+        const prompt = buildCodexTurnPrompt({
+            message: 'continue the task', mode: {},
+            includeAppendSystemPrompt: false, includeTitleInstruction: false,
+            includeQuestionInstruction: true,
+        });
+        expect(prompt).toBe(`continue the task\n\n${wrapped(CODEX_QUESTION_INSTRUCTION)}`);
+        expect(prompt).toContain('Default mode');
+        expect(prompt).toContain('Happy MCP request_user_input');
+        expect(stripHappySystemBlocks(prompt)).toBe('continue the task');
+    });
+
     it('prepends Happy append system prompt (wrapped) before the first Codex user message', () => {
         const prompt = buildCodexTurnPrompt({
             message: 'pick an option',

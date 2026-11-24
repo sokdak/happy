@@ -34,6 +34,12 @@ export function hashCodexEnhancedMode(mode: CodexEnhancedMode): string {
 export const HAPPY_SYSTEM_BLOCK_OPEN = '<happy-system>';
 export const HAPPY_SYSTEM_BLOCK_CLOSE = '</happy-system>';
 
+export const CODEX_QUESTION_INSTRUCTION = `# Questions during work
+
+When you need the user's input during a task, use the Happy MCP request_user_input tool to show an interactive question card, including in Default mode. Discover the Happy tool if it is deferred. Ask for missing information, preferences, or decisions through this tool instead of writing a question and a plain bullet list in commentary.
+Wait for the answer before continuing work that depends on it. If the request is cancelled or returns no answers, do not treat that as a selection or approval.
+The <options> XML instructions apply to final-response suggestions and are a fallback when no question tool is available; they do not replace interactive questions during work.`;
+
 function wrapHappySystem(text: string): string {
     return `${HAPPY_SYSTEM_BLOCK_OPEN}\n${text}\n${HAPPY_SYSTEM_BLOCK_CLOSE}`;
 }
@@ -55,6 +61,7 @@ export function buildCodexTurnPrompt(opts: {
     mode: Pick<CodexEnhancedMode, 'appendSystemPrompt'>;
     includeAppendSystemPrompt: boolean;
     includeTitleInstruction: boolean;
+    includeQuestionInstruction?: boolean;
 }): string {
     const parts: string[] = [];
 
@@ -63,6 +70,10 @@ export function buildCodexTurnPrompt(opts: {
     }
 
     parts.push(opts.message);
+
+    if (opts.includeQuestionInstruction) {
+        parts.push(wrapHappySystem(CODEX_QUESTION_INSTRUCTION));
+    }
 
     if (opts.includeTitleInstruction) {
         parts.push(wrapHappySystem(CHANGE_TITLE_INSTRUCTION));

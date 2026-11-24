@@ -16,10 +16,8 @@ import { initialMachineMetadata } from '@/daemon/run';
 import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { MessageQueue2, type PendingAttachment } from '@/utils/MessageQueue2';
-import { projectPath } from '@/projectPath';
-import { join } from 'node:path';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
-import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { startCodexHappyServer } from './startCodexHappyServer';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
 import { CodexDisplay } from "@/ui/ink/CodexDisplay";
 import { trimIdent } from "@/utils/trimIdent";
@@ -207,6 +205,7 @@ export async function runCodex(opts: {
     // (assigned later at line ~385 after client setup)
     let permissionHandler: CodexPermissionHandler;
     let userInputHandler: CodexUserInputHandler;
+    let happyServer: Awaited<ReturnType<typeof startCodexHappyServer>> | undefined;
     let client!: CodexAppServerClient;
     let reasoningProcessor!: ReasoningProcessor;
     let abortInProgress: Promise<void> | null = null;
@@ -445,6 +444,7 @@ export async function runCodex(opts: {
         logger.debug('[Codex] Abort requested - stopping current task');
         abortInProgress = (async () => {
             try {
+                happyServer?.cancelQuestions();
                 // Resolve any pending permission requests as 'abort' first.
                 if (permissionHandler) {
                     permissionHandler.abortAll();
@@ -522,7 +522,7 @@ export async function runCodex(opts: {
             }
 
             // Stop Happy MCP server
-            happyServer.stop();
+            happyServer?.stop();
 
             logger.debug('[Codex] Session termination complete, exiting');
             process.exit(0);
@@ -832,20 +832,14 @@ export async function runCodex(opts: {
     });
 
     // Start Happy MCP server (HTTP) and prepare STDIO bridge config for Codex
-    const happyServer = await startHappyServer(session);
-    // Launch the bridge via `node <path>` (rather than relying on the .mjs shebang)
-    // so it works on Windows, where Windows can't execute shebang scripts directly.
-    // codex would otherwise fail to start the MCP server, the change_title tool would
-    // not be visible to the model, and the model would improvise with shell echoes.
-    const bridgeEntrypoint = join(projectPath(), 'bin', 'happy-mcp.mjs');
-    const mcpServers = {
-        happy: {
-            command: process.execPath,
-            args: ['--no-warnings', '--no-deprecation', bridgeEntrypoint, '--url', happyServer.url]
-        }
-    } as const;
+    happyServer = await startCodexHappyServer({
+        get sessionId() { return session.sessionId; },
+        sendClaudeSessionMessage: message => session.sendClaudeSessionMessage(message),
+    }, userInputHandler);
+    const { mcpServers } = happyServer;
     let first = true;
     let appendSystemPromptInjected = false;
+    let questionInstructionInjected = false;
 
     try {
         logger.debug('[codex]: client.connect begin');
@@ -928,6 +922,7 @@ export async function runCodex(opts: {
 
             if (isCodexClearText(message.message)) {
                 logger.debug('[Codex] Handling /clear command - resetting Codex thread state');
+                happyServer.cancelQuestions();
                 client.clearThreadState();
                 currentTurnId = null;
                 codexStartedSubagents = new Set<string>();
@@ -940,6 +935,7 @@ export async function runCodex(opts: {
                 reasoningProcessor.abort();
                 diffProcessor.reset();
                 appendSystemPromptInjected = false;
+                questionInstructionInjected = false;
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
                 messageBuffer.addMessage('Context was reset', 'status');
@@ -1020,6 +1016,7 @@ export async function runCodex(opts: {
                     mode: message.mode,
                     includeAppendSystemPrompt,
                     includeTitleInstruction: first,
+                    includeQuestionInstruction: !questionInstructionInjected,
                 });
 
                 const result = await turnSteering.runTurn(message.mode, onTurnStarted => client.sendTurnAndWait(turnPrompt, {
@@ -1031,6 +1028,7 @@ export async function runCodex(opts: {
                     onTurnStarted,
                 }));
                 first = false;
+                questionInstructionInjected = true;
                 if (includeAppendSystemPrompt) {
                     appendSystemPromptInjected = true;
                 }
@@ -1046,6 +1044,7 @@ export async function runCodex(opts: {
                 messageBuffer.addMessage('Process exited unexpectedly', 'status');
                 session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
             } finally {
+                happyServer.cancelQuestions();
                 // Reset permission handler, reasoning processor, and diff processor
                 permissionHandler.reset();
                 reasoningProcessor.abort();  // Use abort to properly finish any in-progress tool calls

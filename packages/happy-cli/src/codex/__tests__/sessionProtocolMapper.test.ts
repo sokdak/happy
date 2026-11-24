@@ -7,6 +7,16 @@ import {
 } from '../utils/sessionProtocolMapper';
 
 describe('mapCodexMcpMessageToSessionEnvelopes', () => {
+    it.each(['mcp_tool_call_begin', 'mcp_tool_call_end'])('leaves Happy question %s to the interactive handler while preserving other MCP tools', type => {
+        const question = { type, call_id: 'transport-call',
+            invocation: { server: 'happy', tool: 'request_user_input', arguments: { questions: [] } } };
+        expect(mapCodexMcpMessageToSessionEnvelopes(question, { currentTurnId: 'turn-1' }).envelopes).toEqual([]);
+        const external = mapCodexMcpMessageToSessionEnvelopes({ ...question,
+            invocation: { ...question.invocation, server: 'external' } }, { currentTurnId: 'turn-1' });
+        expect(external.envelopes).toHaveLength(1);
+        expect(external.envelopes[0].ev.t).toBe(type === 'mcp_tool_call_begin' ? 'tool-call-start' : 'tool-call-end');
+    });
+
     it.each([
         { result: { Ok: { content: [] } } },
         { result: { Err: 'MCP server disconnected' } },
